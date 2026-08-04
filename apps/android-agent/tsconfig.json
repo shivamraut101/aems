@@ -1,0 +1,17 @@
+{
+  "extends": "@aems/config/tsconfig/react-native.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      // The dashboard is on React 19 and Expo SDK 52 is on React 18. Transitive
+      // packages (@react-navigation via expo-router) resolve their `@types/react`
+      // peer against the workspace root and pick up 19, whose ReactNode includes
+      // `bigint` — which makes every RN component fail as a JSX element type.
+      // Pin every `react` type reference in this app to the local 18 copy.
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"]
+    }
+  },
+  "include": ["app", "src", "modules", "*.ts", "*.tsx"]
+}

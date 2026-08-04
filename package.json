@@ -1,7 +1,7 @@
 {
   "name": "aems",
   "private": true,
-  "description": "Advanced Employee Monitoring System (AEMS) - monitoring for company-owned devices with employee consent and compliance controls.",
+  "description": "AEMS - AI workforce intelligence platform. Monitoring for company-owned devices with employee consent and compliance controls.",
   "engines": {
     "node": ">=20"
   },
@@ -13,22 +13,23 @@
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "db:generate": "pnpm --filter @aems/database generate",
-    "db:migrate": "pnpm --filter @aems/database migrate"
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset",
+    "db:push": "supabase db push",
+    "db:diff": "supabase db diff -f",
+    "db:types": "pnpm --filter @aems/types db:types",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "turbo": "^2.3.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.11",
     "prettier": "^3.4.0",
+    "supabase": "^2.2.1",
+    "turbo": "^2.3.0",
     "typescript": "^5.7.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@prisma/client",
-      "@prisma/engines",
-      "active-win",
-      "electron",
-      "prisma",
-      "sharp"
-    ]
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,json,md}": "prettier --write"
   }
 }

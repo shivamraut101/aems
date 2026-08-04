@@ -1,0 +1,51 @@
+project_id = "dayyrqcfktwwnkttlres"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+# `private` is deliberately absent: the RLS helper functions live there and must not
+# be reachable over the API.
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed/seed.sql"]
+
+[storage]
+enabled = true
+file_size_limit = "10MiB"
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+enable_signup = false
+
+[auth.email]
+enable_signup = false
+enable_confirmations = false
+
+[edge_runtime]
+enabled = true
+policy = "oneshot"
+
+[functions.screenshot-worker]
+verify_jwt = false
+
+[functions.report-worker]
+verify_jwt = false
+
+[functions.ai-summary-worker]
+verify_jwt = false
+
+[functions.notification-worker]
+verify_jwt = false

@@ -1,0 +1,26 @@
+{
+  "name": "@aems/auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aems/supabase": "workspace:*",
+    "@aems/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@aems/config": "workspace:*",
+    "@types/node": "^22.10.0",
+    "eslint": "^8.57.1",
+    "typescript": "^5.7.0"
+  }
+}

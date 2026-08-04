@@ -1,5 +1,5 @@
 {
-  "extends": "@aems/config/tsconfig/nestjs.json",
+  "extends": "@aems/config/tsconfig/node.json",
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src"

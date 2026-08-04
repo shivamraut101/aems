@@ -1,3 +1,11 @@
+const preset = require("@aems/config/eslint-preset");
+
 module.exports = {
-  extends: [require.resolve("@aems/config/eslint-preset")],
+  ...preset,
+  parserOptions: {
+    ...preset.parserOptions,
+    ecmaFeatures: { jsx: true },
+  },
+  env: { ...preset.env, browser: true },
+  ignorePatterns: [...preset.ignorePatterns, "src-tauri"],
 };

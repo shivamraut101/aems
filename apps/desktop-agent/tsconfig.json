@@ -1,10 +1,8 @@
 {
-  "extends": "@aems/config/tsconfig/node.json",
+  "extends": "@aems/config/tsconfig/react.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "rootDir": "src",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext"
+    "noEmit": true,
+    "types": ["vite/client"]
   },
-  "include": ["src"]
+  "include": ["src", "vite.config.ts"]
 }

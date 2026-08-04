@@ -1,3 +1,18 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# pnpm 10 reads this here, not from package.json.
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - supabase
+
+# The dashboard is on React 19; Expo SDK 52 / React Native 0.76 is on React 18.
+# Both are correct for their app, but pnpm resolves react-native's `@types/react`
+# peer against the workspace root and lands on 19 — whose ReactNode includes
+# `bigint`, which makes every RN component fail to typecheck as a JSX element.
+# Scope the peer back to 18 for the React Native subtree only.
+overrides:
+  "react-native>@types/react": "~18.3.12"
+  "@react-native/virtualized-lists>@types/react": "~18.3.12"

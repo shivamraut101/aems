@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // React Native has no DOM, but @types/react references DOM globals — Expo's own
+    // base tsconfig includes the lib for the same reason. Without it, JSX resolution
+    // fails with "cannot be used as a JSX component".
+    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "allowJs": true
+  }
+}

@@ -12,16 +12,23 @@ out/
 # turbo
 .turbo/
 
-# electron
-apps/agent/release/
-
 # env
 .env
 .env.local
 .env.*.local
 
-# prisma
-packages/database/generated/
+# tauri
+apps/desktop-agent/src-tauri/target/
+apps/desktop-agent/src-tauri/gen/
+
+# expo
+apps/android-agent/.expo/
+apps/android-agent/android/
+apps/android-agent/ios/
+
+# supabase
+supabase/.branches/
+supabase/.temp/
 
 # logs
 *.log
