@@ -2,7 +2,8 @@
   "extends": "@aems/config/tsconfig/node.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "declaration": true
   },
   "include": ["src"]
 }
