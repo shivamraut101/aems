@@ -34,7 +34,7 @@ the work, stop and raise it; don't route around it.
 | ---------------- | ------------------------------------- |
 | Package manager  | pnpm                                  |
 | Monorepo         | Turborepo                             |
-| Language         | TypeScript (Rust for desktop native, Kotlin for Android native) |
+| Language         | TypeScript (Kotlin for Android native modules) |
 | Frontend         | Next.js 15 (App Router)               |
 | UI               | Tailwind CSS + shadcn/ui              |
 | Client state     | Zustand                               |
@@ -49,7 +49,7 @@ the work, stop and raise it; don't route around it.
 | Realtime         | Supabase Realtime                     |
 | Storage          | Supabase Storage                      |
 | Background jobs  | Supabase Edge Functions               |
-| Desktop agent    | Tauri + Rust (UI: React + TypeScript) |
+| Desktop agent    | Electron + React + TypeScript         |
 | Android agent    | React Native + Expo (native: Kotlin)  |
 | Tables           | TanStack Table                        |
 | Icons            | Lucide                                |
@@ -68,7 +68,9 @@ Do not introduce these — each was ruled out deliberately:
   it already gives Postgres, type generation, auth integration, and realtime.
 - **Redis / BullMQ / any separate queue or worker runtime.** Background work runs as
   Supabase Edge Functions.
-- **Electron** for the desktop agent. It is Tauri + Rust.
+- **Tauri or Rust** in the desktop agent. Reversed on 2026-08-05: Electron is the
+  MVP choice (see `docs/stack.md` §10 for the reasoning). Tauri is the *Phase 2*
+  option, not a thing to reach for now.
 - **A hand-rolled auth system** (custom JWT signing, password hashing, session tables).
   Supabase Auth owns authentication; RLS owns authorization.
 - **A second storage provider** alongside Supabase Storage. R2 is a possible *future*
@@ -80,7 +82,7 @@ Do not introduce these — each was ruled out deliberately:
 apps/
   admin-dashboard/   Next.js 15 admin dashboard
   api/               Fastify backend
-  desktop-agent/     Tauri + Rust (Windows, macOS)
+  desktop-agent/     Electron + React + TS (Windows, macOS)
   android-agent/     React Native + Expo
 
 packages/
@@ -158,15 +160,26 @@ Supabase Storage, keyed by tenant:
 | AI Summary     | activity summarization, productivity insights, manager reports |
 | Notification   | idle alerts, offline alerts, report notifications             |
 
-### apps/desktop-agent (Tauri + Rust)
+### apps/desktop-agent (Electron + React + TypeScript)
 
-React + TypeScript frontend, Rust backend. Rust modules: screenshot capture, active
-window tracking, app tracking, idle detection, device info, sync engine.
+Node.js main process handles OS integration; React renderer handles UI; they talk over
+Electron IPC. Main-process modules: `screenshot`, `tracker`, `idle`, `device`, `sync`.
 
 Collects work sessions, active applications, website usage, screenshots, idle status,
 device information, heartbeats.
 
-Updates ship via the Tauri auto-updater.
+Auto-launch on startup, tray application, background sync. Updates ship via
+electron-updater.
+
+**Keep OS integration out of the renderer.** Node APIs belong in the main process
+behind IPC — `nodeIntegration` stays off and `contextIsolation` stays on. A monitoring
+agent that renders remote content with Node access in the renderer is a remote-code-
+execution hole.
+
+**The agent is replaceable by design.** It speaks to the API only through the event
+contract in `@aems/types`. Nothing agent-specific may leak into the API, schema, or
+dashboard — that is what keeps a Phase 2 Tauri rewrite from becoming a backend
+rewrite.
 
 ### apps/android-agent (React Native + Expo)
 
@@ -259,8 +272,10 @@ Ask before acting on these.
 2. **Nothing has been run against a live database.** The SQL in `supabase/migrations/`
    is unvalidated — no Supabase CLI login, no Docker, no psql at the time it was
    written. Apply it to a scratch project before trusting it.
-3. **Agent toolchains are not installed.** `cargo` is missing (blocks the Tauri build)
-   and the Android SDK is unverified (blocks the Expo build). Neither agent has been
-   compiled.
+3. **The desktop agent is mid-rewrite.** The Tauri + Rust implementation was built on
+   2026-08-05 and superseded the same day by the Electron decision. Until the Electron
+   rewrite lands, `apps/desktop-agent` is stale — do not extend the Rust code.
+4. **Android toolchain unverified.** The Android SDK has not been confirmed present,
+   so the Expo agent has never been built.
 
 Delete each item once it is resolved.

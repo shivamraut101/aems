@@ -20,7 +20,7 @@
 | Package Manager        | **pnpm**            |
 | Monorepo               | **Turborepo**       |
 | Main Language          | **TypeScript**      |
-| Desktop Native         | **Rust**            |
+| Desktop Runtime        | **Electron**        |
 | Android Native Modules | **Kotlin**          |
 | Code Quality           | ESLint + Prettier   |
 | Git Workflow           | Husky + lint-staged |
@@ -34,7 +34,7 @@ employee-monitoring/
 ├── apps/
 │   ├── admin-dashboard/     # Next.js
 │   ├── api/                 # Fastify
-│   ├── desktop-agent/       # Tauri + Rust
+│   ├── desktop-agent/       # Electron + React + TypeScript
 │   └── android-agent/       # React Native + Expo
 ├── packages/
 │   ├── ui/
@@ -157,23 +157,75 @@ No Redis/BullMQ. Use **Supabase Edge Functions**.
 
 ## 10. Desktop Agent
 
-Platforms: Windows, macOS.
+Platforms: Windows, macOS. (Linux is supported by Electron but is out of scope —
+see `docs/scope.md` §1.)
 
-**Framework: Tauri + Rust**
+**Framework: Electron + React + TypeScript**
 
 ```text
-Frontend: React + TypeScript
-Backend:  Rust
-  - Screenshot Capture
-  - Active Window Tracking
-  - App Tracking
-  - Idle Detection
-  - Device Info
-  - Sync Engine
+Electron
+    |
+React + TypeScript UI  (renderer)
+    |
+Node.js Main Process   (IPC)
+    |
+OS APIs
 ```
+
+```text
+src/
+├── main/            # Node.js main process
+│   ├── index.ts
+│   ├── screenshot.ts
+│   ├── tracker.ts
+│   ├── idle.ts
+│   ├── device.ts
+│   └── sync.ts
+├── renderer/        # React UI
+│   ├── dashboard/
+│   ├── login/
+│   └── settings/
+└── shared/
+    └── types/
+```
+
+Capabilities: full-screen and multi-monitor screenshot capture, active application and
+window-title tracking with usage duration, keyboard/mouse idle detection, device info
+(OS version, CPU, RAM, device name), auto-launch on startup, tray application, and
+background sync.
 
 Collects: work sessions, active applications, website usage, screenshots, idle status,
 device information, heartbeats.
+
+### Why Electron over Tauri for the MVP
+
+Not a claim that Electron is technically superior — the project constraints favour it.
+
+| Category | Electron | Tauri + Rust |
+| --- | --- | --- |
+| Windows / macOS support | Excellent | Excellent |
+| Development speed | **Faster** | Slower |
+| Developer availability | **Very high** | Lower |
+| Active app tracking / idle detection | **Easier** | More native work |
+| App size / RAM | Larger | **Smaller** |
+| Security | Requires hardening | **Stronger** |
+| Long-term enterprise product | Good | **Better** |
+
+The hard parts of this agent are OS integrations, not UI, and Electron's Node
+ecosystem already covers them. With a 5-day deadline, one client, and Android plus a
+dashboard also to deliver, the bottleneck is implementation and debugging speed —
+not runtime performance. Electron reduces delivery risk.
+
+### Phase 2 evolution path
+
+If this becomes a multi-tenant commercial product (50,000+ monitored employees),
+revisit Tauri + Rust for installer size, memory, and the stronger security model.
+
+**Keep that door open by design:** the agent talks to the API only through the event
+contract in `@aems/types` (`ActivityEventInput`, `IdleEventInput`, `HeartbeatInput`,
+device enrolment). The backend must never care whether an event came from Electron,
+Tauri, or Android — so a v2 desktop agent can replace v1 without touching the API,
+the schema, or the dashboard.
 
 ---
 
@@ -208,7 +260,7 @@ Activity Events → Analytics Processing → AI Model → Summary Storage
 - **Backend API:** DigitalOcean VPS / Railway / Render / AWS
 - **Database:** Supabase Cloud
 - **Storage:** Supabase Storage
-- **Desktop updates:** Tauri Auto Updater
+- **Desktop updates:** electron-updater (auto updater)
 
 ---
 
@@ -230,8 +282,9 @@ Activity Events → Analytics Processing → AI Model → Summary Storage
 | Realtime        | Supabase Realtime        |
 | Storage         | Supabase Storage         |
 | Background Jobs | Supabase Edge Functions  |
-| Desktop Agent   | Tauri + Rust             |
+| Desktop Agent   | Electron                 |
 | Desktop UI      | React + TypeScript       |
+| Desktop IPC     | Electron IPC             |
 | Android App     | React Native + Expo      |
 | Android Native  | Kotlin                   |
 | AI              | OpenAI / Claude / Gemini |
@@ -256,8 +309,8 @@ Activity Events → Analytics Processing → AI Model → Summary Storage
         |
 --------------------------------
 |                              |
-Windows/macOS Agent       Android Agent
-Tauri + Rust             React Native + Kotlin
+Electron Agent            Android Agent
+Windows/macOS             React Native + Kotlin
 ```
 
 This is the locked MVP stack: simple enough for the 5-day deadline, but structured

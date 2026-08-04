@@ -35,8 +35,8 @@ wins.
       |
 -------------------------------
 |                             |
-Windows/macOS Agent      Android Agent
-Tauri + Rust             React Native + Kotlin
+Electron Agent           Android Agent
+Windows/macOS            React Native + Kotlin
 ```
 
 Agents talk to the Fastify API and never to Supabase directly — they hold no Supabase
@@ -48,9 +48,10 @@ credentials, so consent and revocation are enforced in exactly one place.
   for server state, Zustand for filters, Recharts, TanStack Table.
 - `apps/api` — Fastify backend: device enrolment and auth, consent, event ingestion,
   screenshots, reports, analytics, audit log.
-- `apps/desktop-agent` — Tauri + Rust agent for Windows and macOS. React frontend,
-  Rust modules for screenshot capture, window tracking, idle detection, device info
-  and the sync engine. Blocking consent gate, permanent tray indicator.
+- `apps/desktop-agent` — Electron agent for Windows and macOS. React + TypeScript
+  renderer, Node.js main process for screenshot capture, window tracking, idle
+  detection, device info and the sync engine. Blocking consent gate, permanent tray
+  indicator, auto-launch on startup.
 - `apps/android-agent` — React Native + Expo app for company Android phones, with
   Kotlin native modules for `UsageStatsManager`, battery, device and network state.
   Blocking consent screen, foreground-service notification.
@@ -68,8 +69,9 @@ credentials, so consent and revocation are enforced in exactly one place.
 
 - Node >= 20, pnpm 10 (`packageManager` pinned in the root `package.json`)
 - A Supabase project (or Docker, for the local stack)
-- **Rust toolchain** — only to build `apps/desktop-agent`
 - **Android SDK / Android Studio** — only to build `apps/android-agent`
+
+No Rust toolchain is required — the desktop agent runs on Electron (Node.js).
 
 ## Getting started
 
@@ -93,7 +95,7 @@ pnpm db:reset                 # re-applies migrations and seeds
 The agents are built separately:
 
 ```sh
-pnpm --filter @aems/desktop-agent dev      # needs the Rust toolchain
+pnpm --filter @aems/desktop-agent dev      # Electron, Windows + macOS
 pnpm --filter @aems/android-agent android  # needs the Android SDK
 ```
 
