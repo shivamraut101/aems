@@ -8,12 +8,36 @@
 
 import type { ConsentMethod, DevicePlatform } from "./database.types.js";
 
-/** Sent once when an agent first runs on a machine. */
+/**
+ * Sent once when an agent first runs on a machine.
+ *
+ * Everything past `agentVersion` is inventory (scope §7) rather than identity: a
+ * platform that cannot read a figure omits it instead of guessing, because one
+ * unreadable field must not fail the whole enrolment.
+ */
 export interface DeviceEnrollmentRequest {
   platform: DevicePlatform;
   label: string;
   osVersion: string;
   agentVersion: string;
+  deviceName?: string;
+  model?: string;
+  cpu?: string | null;
+  ramMb?: number | null;
+  storageMb?: number | null;
+}
+
+/** One entry in a device's installed-application inventory. */
+export interface InstalledApplication {
+  name: string;
+  version?: string | null;
+  /** Uninstall key on Windows, bundle identifier on macOS. */
+  identifier?: string | null;
+}
+
+/** Cold path — sent at enrolment and then occasionally, never on the collection timer. */
+export interface DeviceApplicationsInput {
+  applications: InstalledApplication[];
 }
 
 export interface DeviceEnrollmentResponse {
@@ -53,6 +77,13 @@ export interface ActivityEventInput {
   appName: string;
   windowTitle?: string | null;
   url?: string | null;
+  /**
+   * Host the interval was spent on, already reduced from the URL.
+   *
+   * Website reporting (scope §2.5) groups on this rather than on `url`, so the
+   * reduction happens on the device — the API stores what it is given.
+   */
+  domain?: string | null;
   category?: string | null;
   startedAt: string;
   endedAt?: string | null;
@@ -64,11 +95,33 @@ export interface IdleEventInput {
   idleEndAt?: string | null;
 }
 
+/**
+ * One break the employee declared, as opposed to idle time inferred from the OS.
+ *
+ * Both are subtracted from active time, so a declared break and an inferred idle
+ * stretch must never cover the same seconds — the agent closes idle at the break.
+ */
+export interface BreakEventInput {
+  clientEventId: string;
+  breakStartAt: string;
+  breakEndAt?: string | null;
+}
+
 export interface ScreenshotMetadataInput {
   clientEventId: string;
   capturedAt: string;
   blurred?: boolean;
+  /** Without it the timeline cannot place a shot inside the session it belongs to. */
+  workSessionId?: number | null;
 }
+
+/**
+ * Either shape `POST /api/screenshots` returns.
+ *
+ * A replayed `clientEventId` yields `{ duplicate: true }` and no id. Treating that
+ * as a failure would re-upload the same megabytes forever.
+ */
+export type ScreenshotUploadResult = { screenshotId: number } | { duplicate: true };
 
 /** Agents batch events and flush periodically, so ingestion is always a list. */
 export interface ActivityBatch {
@@ -76,11 +129,13 @@ export interface ActivityBatch {
   workSessionId?: number | null;
   activity?: ActivityEventInput[];
   idle?: IdleEventInput[];
+  breaks?: BreakEventInput[];
 }
 
 export interface ActivityBatchResult {
   acceptedActivity: number;
   acceptedIdle: number;
+  acceptedBreaks: number;
   /** Rows skipped because their clientEventId was already stored. */
   duplicates: number;
 }

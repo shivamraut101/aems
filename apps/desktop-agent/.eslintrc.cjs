@@ -7,5 +7,5 @@ module.exports = {
     ecmaFeatures: { jsx: true },
   },
   env: { ...preset.env, browser: true },
-  ignorePatterns: [...preset.ignorePatterns, "src-tauri"],
+  ignorePatterns: [...preset.ignorePatterns, "out", "release"],
 };

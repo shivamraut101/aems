@@ -1,0 +1,445 @@
+import type {
+  ActivityBatch,
+  ActivityBatchResult,
+  HeartbeatInput,
+  ScreenshotUploadResult,
+} from "@aems/types";
+import { describe, expect, it } from "vitest";
+
+import type { CapturedScreenshot } from "./screenshot.js";
+import { MAX_EVENTS_PER_BATCH, SyncQueue, classifyError } from "./sync.js";
+
+/**
+ * Stands in for `AemsApiError`.
+ *
+ * The SDK cannot be imported as a value here: the repo's vitest alias rewrites every
+ * relative `.js` specifier to `.ts`, including the one inside the SDK's own compiled
+ * `dist/index.js`. Building the same `{ statusCode, code }` shape by hand also proves
+ * the classifier reads fields rather than relying on `instanceof`.
+ */
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = "AemsApiError";
+  }
+}
+
+const DEVICE = "33333333-3333-4333-8333-333333333333";
+const T0 = new Date("2026-08-05T09:00:00.000Z");
+
+interface UploadCall {
+  clientEventId: string;
+  capturedAt: string;
+  /** Read back off the multipart body, so a field lost on the way is visible here. */
+  workSessionId: ReturnType<FormData["get"]>;
+  bytes: number;
+}
+
+/** No network, no timers — every failure mode is set on the instance before the call. */
+class FakeApi {
+  readonly batches: ActivityBatch[] = [];
+  readonly uploads: UploadCall[] = [];
+  readonly heartbeats: HeartbeatInput[] = [];
+
+  ingestError: unknown = null;
+  uploadError: unknown = null;
+  heartbeatError: unknown = null;
+  uploadResult: ScreenshotUploadResult | null = null;
+  /** Runs while an ingest is in flight, so a test can observe an event mid-request. */
+  duringIngest: (() => void) | null = null;
+
+  async ingestActivity(batch: ActivityBatch): Promise<ActivityBatchResult> {
+    this.batches.push(batch);
+    this.duringIngest?.();
+    if (this.ingestError !== null) throw this.ingestError;
+    return {
+      acceptedActivity: 0,
+      acceptedIdle: 0,
+      acceptedBreaks: 0,
+      duplicates: 0,
+    };
+  }
+
+  async uploadScreenshot(form: FormData): Promise<ScreenshotUploadResult> {
+    const file = form.get("file") as Blob;
+    this.uploads.push({
+      clientEventId: String(form.get("clientEventId")),
+      capturedAt: String(form.get("capturedAt")),
+      workSessionId: form.get("workSessionId"),
+      bytes: file.size,
+    });
+    if (this.uploadError !== null) throw this.uploadError;
+    return this.uploadResult ?? { screenshotId: this.uploads.length };
+  }
+
+  async heartbeat(body: HeartbeatInput): Promise<{ ok: true }> {
+    this.heartbeats.push(body);
+    if (this.heartbeatError !== null) throw this.heartbeatError;
+    return { ok: true };
+  }
+}
+
+function activity(clientEventId: string, appName = "code") {
+  return {
+    clientEventId,
+    appName,
+    startedAt: "2026-08-05T09:00:00.000Z",
+    endedAt: "2026-08-05T09:01:00.000Z",
+  };
+}
+
+function idle(clientEventId: string) {
+  return {
+    clientEventId,
+    idleStartAt: "2026-08-05T09:10:00.000Z",
+    idleEndAt: "2026-08-05T09:15:00.000Z",
+  };
+}
+
+function breakEvent(clientEventId: string) {
+  return {
+    clientEventId,
+    breakStartAt: "2026-08-05T12:00:00.000Z",
+    breakEndAt: "2026-08-05T12:30:00.000Z",
+  };
+}
+
+function screenshot(clientEventId: string): CapturedScreenshot {
+  return {
+    clientEventId,
+    capturedAt: "2026-08-05T09:05:00.000Z",
+    displayId: "1",
+    workSessionId: 12,
+    image: Buffer.from("jpeg-bytes"),
+  };
+}
+
+describe("classifyError", () => {
+  it("treats consent_required as a stop signal rather than a retry", () => {
+    expect(classifyError(new ApiError("Consent required", 403, "consent_required"))).toBe(
+      "consent-required",
+    );
+  });
+
+  it("treats device_revoked as terminal rather than a retry", () => {
+    expect(classifyError(new ApiError("Device revoked", 403, "device_revoked"))).toBe("revoked");
+  });
+
+  it("stops on monitoring_disabled instead of hammering the API until it is re-enabled", () => {
+    expect(classifyError(new ApiError("Monitoring disabled", 403, "monitoring_disabled"))).toBe(
+      "revoked",
+    );
+  });
+
+  it("drops a 400 rather than poisoning the buffer with a body that will never validate", () => {
+    expect(classifyError(new ApiError("Invalid body", 400, "invalid_body"))).toBe("dropped");
+  });
+
+  it("retries a 5xx, because ingestion has no transaction and the batch may be half-written", () => {
+    expect(classifyError(new ApiError("Something went wrong", 500, "ingest_failed"))).toBe("retry");
+  });
+
+  it("retries an offline laptop, whose fetch rejects with no status code at all", () => {
+    expect(classifyError(new TypeError("fetch failed"))).toBe("retry");
+  });
+
+  it("treats a dead device token as terminal, not as one bad batch", () => {
+    expect(classifyError(new ApiError("Device is not enrolled", 401, "unauthorized"))).toBe(
+      "revoked",
+    );
+  });
+});
+
+describe("SyncQueue", () => {
+  it("counts an observed event as pending until the API has acknowledged it", () => {
+    const queue = new SyncQueue(new FakeApi(), DEVICE);
+
+    queue.enqueueActivity(activity("a1"));
+
+    expect(queue.pending).toBe(1);
+  });
+  it("skips the round-trip entirely when nothing has been observed", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+
+    await expect(queue.flush(null, T0)).resolves.toBe("empty");
+    expect(api.batches).toHaveLength(0);
+  });
+  it("sends what it buffered and stops counting it once the API has taken it", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+
+    await expect(queue.flush(7, T0)).resolves.toBe("sent");
+
+    expect(api.batches).toHaveLength(1);
+    expect(api.batches[0]?.deviceId).toBe(DEVICE);
+    expect(api.batches[0]?.workSessionId).toBe(7);
+    expect(api.batches[0]?.activity).toEqual([activity("a1")]);
+    expect(queue.pending).toBe(0);
+  });
+  it("keeps the buffer when a flush fails, and resends the identical ids next time", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    api.ingestError = new ApiError("Something went wrong", 500, "ingest_failed");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("retry");
+    expect(queue.pending).toBe(1);
+
+    api.ingestError = null;
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+    expect(api.batches[1]?.activity).toEqual([activity("a1")]);
+    expect(queue.pending).toBe(0);
+  });
+  it("does not destroy an event observed while the request was still in flight", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    api.duringIngest = () => queue.enqueueActivity(activity("a2"));
+
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+    expect(queue.pending).toBe(1);
+
+    api.duringIngest = null;
+    await queue.flush(null, T0);
+    expect(api.batches[1]?.activity).toEqual([activity("a2")]);
+  });
+  it("carries idle stretches in the same batch as activity, not a second request", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    queue.enqueueIdle(idle("i1"));
+
+    expect(queue.pending).toBe(2);
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+
+    expect(api.batches).toHaveLength(1);
+    expect(api.batches[0]?.idle).toEqual([idle("i1")]);
+    expect(queue.pending).toBe(0);
+  });
+  it("carries break stretches too, which scope 2.2 counts separately from idle", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueBreak(breakEvent("b1"));
+
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+
+    expect(api.batches[0]?.breaks).toEqual([breakEvent("b1")]);
+    expect(queue.pending).toBe(0);
+  });
+  it("discards the slice the API called invalid, so it cannot be retried forever", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    api.ingestError = new ApiError("Invalid body", 400, "invalid_body");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("dropped");
+
+    expect(queue.pending).toBe(0);
+  });
+  it("throws away everything on discard, so revoked data cannot resurface later", () => {
+    const queue = new SyncQueue(new FakeApi(), DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    queue.enqueueIdle(idle("i1"));
+    queue.enqueueBreak(breakEvent("b1"));
+
+    queue.discard();
+
+    expect(queue.pending).toBe(0);
+  });
+  it("uploads a buffered screenshot and stops counting it once stored", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueScreenshot(screenshot("s1"));
+
+    expect(queue.pending).toBe(1);
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+
+    expect(api.uploads).toEqual([
+      {
+        clientEventId: "s1",
+        capturedAt: "2026-08-05T09:05:00.000Z",
+        // Stamped on the frame at capture time, so the timeline can place it inside
+        // the session it was taken in.
+        workSessionId: "12",
+        bytes: Buffer.from("jpeg-bytes").length,
+      },
+    ]);
+    expect(queue.pending).toBe(0);
+  });
+  it("stamps lastSyncAt from the caller's clock, and only when the API actually took a batch", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    expect(queue.lastSyncAt).toBeNull();
+
+    api.ingestError = new ApiError("Something went wrong", 500, "ingest_failed");
+    queue.enqueueActivity(activity("a1"));
+    await queue.flush(null, T0);
+    expect(queue.lastSyncAt).toBeNull();
+
+    api.ingestError = null;
+    await queue.flush(null, new Date("2026-08-05T09:30:00.000Z"));
+    expect(queue.lastSyncAt).toBe("2026-08-05T09:30:00.000Z");
+  });
+  it("caps the buffer by dropping the oldest events, and says how many it lost", () => {
+    const lost: number[] = [];
+    const queue = new SyncQueue(new FakeApi(), DEVICE, {
+      maxBufferedEvents: 2,
+      onOverflow: (count) => lost.push(count),
+    });
+
+    queue.enqueueActivity(activity("a1"));
+    queue.enqueueActivity(activity("a2"));
+    queue.enqueueActivity(activity("a3"));
+
+    expect(queue.pending).toBe(2);
+    expect(lost).toEqual([1]);
+  });
+
+  it("evicts the oldest end of the buffer, keeping the most recent events", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE, { maxBufferedEvents: 2 });
+    queue.enqueueActivity(activity("a1"));
+    queue.enqueueActivity(activity("a2"));
+    queue.enqueueActivity(activity("a3"));
+
+    await queue.flush(null, T0);
+
+    expect(api.batches[0]?.activity).toEqual([activity("a2"), activity("a3")]);
+  });
+  it("buffers a repeated clientEventId once, because the API does not dedupe within a batch", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    queue.enqueueActivity(activity("a1"));
+
+    expect(queue.pending).toBe(1);
+    await queue.flush(null, T0);
+
+    expect(api.batches[0]?.activity).toEqual([activity("a1")]);
+  });
+  it("discards buffered screenshots as well, which are the most sensitive thing held", () => {
+    const queue = new SyncQueue(new FakeApi(), DEVICE);
+    queue.enqueueScreenshot(screenshot("s1"));
+
+    queue.discard();
+
+    expect(queue.pending).toBe(0);
+  });
+  it("posts a heartbeat carrying the open session, so last_seen_at stays fresh", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+
+    await expect(queue.heartbeat(7)).resolves.toBe("sent");
+
+    expect(api.heartbeats).toEqual([{ deviceId: DEVICE, workSessionId: 7 }]);
+  });
+  it("reports a revocation learned from the heartbeat, which also passes the device guard", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    api.heartbeatError = new ApiError("Device revoked", 403, "device_revoked");
+
+    await expect(queue.heartbeat(null)).resolves.toBe("revoked");
+  });
+
+  it("keeps heartbeating through a network blip instead of treating it as a stop", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    api.heartbeatError = new TypeError("fetch failed");
+
+    await expect(queue.heartbeat(null)).resolves.toBe("retry");
+  });
+  it("surfaces consent_required and keeps the buffer, since those events were consented to", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    api.ingestError = new ApiError("Consent required", 403, "consent_required");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("consent-required");
+
+    expect(queue.pending).toBe(1);
+    expect(queue.lastSyncAt).toBeNull();
+  });
+
+  it("surfaces device_revoked so the caller can wipe the token and stop for good", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    api.ingestError = new ApiError("Device revoked", 403, "device_revoked");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("revoked");
+  });
+
+  it("surfaces monitoring_disabled the same way, rather than looping on a 403", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    api.ingestError = new ApiError("Monitoring disabled", 403, "monitoring_disabled");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("revoked");
+  });
+
+  it("does not stream screenshots at a server that has just said stop", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueActivity(activity("a1"));
+    queue.enqueueScreenshot(screenshot("s1"));
+    api.ingestError = new ApiError("Consent required", 403, "consent_required");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("consent-required");
+
+    expect(api.uploads).toHaveLength(0);
+    expect(queue.pending).toBe(2);
+  });
+
+  it("keeps a screenshot whose upload failed, so a network blip is not a lost frame", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueScreenshot(screenshot("s1"));
+    api.uploadError = new TypeError("fetch failed");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("retry");
+
+    expect(queue.pending).toBe(1);
+  });
+
+  it("drops a frame the API refuses to store, which re-uploading would never fix", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueScreenshot(screenshot("s1"));
+    api.uploadError = new ApiError("Unsupported media type", 415, "unsupported_media_type");
+
+    await expect(queue.flush(null, T0)).resolves.toBe("dropped");
+
+    expect(queue.pending).toBe(0);
+  });
+
+  it("splits an oversized backlog into batches the API will accept", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE);
+    for (let i = 0; i < MAX_EVENTS_PER_BATCH + 5; i += 1) queue.enqueueActivity(activity(`a${i}`));
+
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+    expect(api.batches[0]?.activity).toHaveLength(MAX_EVENTS_PER_BATCH);
+    expect(queue.pending).toBe(5);
+
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+    expect(api.batches[1]?.activity).toHaveLength(5);
+    expect(queue.pending).toBe(0);
+  });
+  it("treats a duplicate screenshot response as stored, not as a failed upload", async () => {
+    const api = new FakeApi();
+    api.uploadResult = { duplicate: true };
+    const queue = new SyncQueue(api, DEVICE);
+    queue.enqueueScreenshot(screenshot("s1"));
+
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+
+    expect(queue.pending).toBe(0);
+  });
+});

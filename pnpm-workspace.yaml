@@ -7,6 +7,10 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
   - supabase
+  # node-pre-gyp fetches the win32 N-API prebuild during install. Without it the
+  # binding is missing, and get-windows then resolves to a silent no-op stub — the
+  # desktop agent would report zero application activity and raise no error at all.
+  - get-windows
 
 # The dashboard is on React 19; Expo SDK 52 / React Native 0.76 is on React 18.
 # Both are correct for their app, but pnpm resolves react-native's `@types/react`

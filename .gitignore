@@ -9,6 +9,14 @@ build/
 out/
 *.tsbuildinfo
 
+# electron-builder's buildResources — icons and macOS entitlements are source, not
+# output, and the blanket "build/" above would drop them from the repo.
+!apps/desktop-agent/build/
+!apps/desktop-agent/build/**
+
+# electron-builder installers
+apps/desktop-agent/release/
+
 # turbo
 .turbo/
 
@@ -16,10 +24,6 @@ out/
 .env
 .env.local
 .env.*.local
-
-# tauri
-apps/desktop-agent/src-tauri/target/
-apps/desktop-agent/src-tauri/gen/
 
 # expo
 apps/android-agent/.expo/

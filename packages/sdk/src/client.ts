@@ -4,12 +4,14 @@ import type {
   ApiError,
   ConsentSubmission,
   Device,
+  DeviceApplicationsInput,
   DeviceEnrollmentRequest,
   DeviceEnrollmentResponse,
   HeartbeatInput,
   Profile,
   ProductivitySummary,
   Report,
+  ScreenshotUploadResult,
   TimelineEntry,
   WorkSession,
 } from "@aems/types";
@@ -73,6 +75,10 @@ export class AemsClient {
     return this.request("POST", "/api/devices/heartbeat", body);
   }
 
+  reportApplications(body: DeviceApplicationsInput): Promise<{ upserted: number }> {
+    return this.request("POST", "/api/devices/applications", body);
+  }
+
   // -- consent ------------------------------------------------------------
 
   submitConsent(body: ConsentSubmission): Promise<{ consentId: string }> {
@@ -95,18 +101,15 @@ export class AemsClient {
 
   // -- screenshots --------------------------------------------------------
 
-  async uploadScreenshot(
-    deviceId: string,
-    clientEventId: string,
-    capturedAt: string,
-    image: Blob,
-  ): Promise<{ screenshotId: number }> {
-    const form = new FormData();
-    form.append("deviceId", deviceId);
-    form.append("clientEventId", clientEventId);
-    form.append("capturedAt", capturedAt);
-    form.append("file", image);
-
+  /**
+   * Uploads one screenshot as a ready-made multipart body.
+   *
+   * The route reads `file.fields` before draining the file stream, so field order is
+   * part of the contract rather than a detail — the body is therefore built by the
+   * caller that owns the frame (`screenshotFormData` in the agent) instead of being
+   * reassembled here from loose arguments that could be appended in the wrong order.
+   */
+  uploadScreenshot(form: FormData): Promise<ScreenshotUploadResult> {
     return this.request("POST", "/api/screenshots", form);
   }
 

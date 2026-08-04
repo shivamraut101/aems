@@ -274,10 +274,32 @@ Ask before acting on these.
    RLS suite in `supabase/tests/rls_isolation.sql` passes. **Re-run that suite after
    any policy change or any new column on `profiles`** — it already caught one
    privilege-escalation hole (migration `...0005`).
-3. **The desktop agent is mid-rewrite.** The Tauri + Rust implementation was built on
-   2026-08-05 and superseded the same day by the Electron decision. Until the Electron
-   rewrite lands, `apps/desktop-agent` is stale — do not extend the Rust code.
-4. **Android toolchain unverified.** The Android SDK has not been confirmed present,
+3. **The desktop agent buffers nothing to disk.** The Tauri + Rust implementation is
+   gone and the Electron agent is implemented end to end: the main-process modules
+   (`tracker`, `idle`, `screenshot`, `device`, `sync`, `session`) are real, and
+   `main/collector.ts` is the loop that drives them — consent re-checked every tick,
+   work session opened on clock-in and closed on shutdown, stop signals obeyed. What is
+   still missing is durability: the sync queue, the open focus interval and the day's
+   idle/break spans live in memory only, so a crash loses them and a mid-day restart
+   under-reports the totals until the server-side report catches up. There is also no
+   request timeout in the SDK and no dead-letter file for a 400-quarantined batch.
+4. **Untested surfaces in the desktop agent.** `main/index.ts`, `preload/index.ts`,
+   `main/config.ts` and every renderer file have no tests — which is where the
+   compliance surface physically lives (tray, consent wiring, the `safeStorage`
+   allowlist that keeps the device token out of plaintext). The collector's
+   `start()`/`stop()` timer is also undriven: every test calls `tick()` by hand, so
+   nothing proves the agent collects on its own.
+5. **The visible-indicator guarantee is weaker than it reads on both platforms.**
+   On Windows 11 22H2+ third-party tray icons default into the overflow flyout and
+   no API pins them out; on macOS the tray image is not a template image, so it can
+   render unreadably in some menu-bar themes. Non-negotiable #2 is not fully
+   satisfied by the tray alone — an always-on-top indicator window is the piece that
+   makes the claim true.
+6. **Website tracking has no Windows implementation.** `get-windows` reads browser
+   URLs via AppleScript, macOS only. Scope §2.5 needs a client decision: a managed
+   browser extension, a UIAutomation native module, or accepting window-title-derived
+   data on Windows.
+7. **Android toolchain unverified.** The Android SDK has not been confirmed present,
    so the Expo agent has never been built.
 
 Delete each item once it is resolved.

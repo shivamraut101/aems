@@ -1,0 +1,54 @@
+appId: com.aems.agent
+productName: AEMS Agent
+copyright: AEMS
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+
+# The macOS Swift helper and the Windows N-API binding are loaded from disk by
+# path, so neither can live inside the asar. node-pre-gyp comes along because
+# get-windows imports it statically on every platform, not just Windows.
+asarUnpack:
+  - "**/node_modules/get-windows/**"
+  - "**/node_modules/@mapbox/node-pre-gyp/**"
+
+win:
+  target:
+    - target: nsis
+      # get-windows publishes no win32-arm64 prebuild; x64 runs under emulation.
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  notarize: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  target:
+    # dmg is what people install; zip is what Squirrel.Mac updates through. A
+    # dmg-only build produces an app that can never update itself.
+    - target: dmg
+      arch: [universal]
+    - target: zip
+      arch: [universal]
+  extendInfo:
+    # Reading a browser tab URL sends an Apple Event. macOS SIGKILLs a process
+    # that does that without a usage description — this is crash avoidance.
+    NSAppleEventsUsageDescription: AEMS Agent reads the active browser tab so website time is attributed to the right site.
+    # Menu-bar agent: the status item is the visible surface, not a Dock icon.
+    LSUIElement: true
+
+publish:
+  provider: generic
+  url: https://updates.example.invalid/aems-agent

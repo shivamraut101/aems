@@ -2,7 +2,10 @@
   "extends": "@aems/config/tsconfig/react.json",
   "compilerOptions": {
     "noEmit": true,
+    // Deliberately no "node" here: the renderer runs with nodeIntegration off, so
+    // Node globals must fail to typecheck there as well as fail at runtime.
+    // Main-process code is covered by tsconfig.node.json instead.
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src/renderer", "src/shared"]
 }

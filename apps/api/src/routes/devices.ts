@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
 import { issueDeviceToken } from "../lib/device-token.js";
+import { assertConsent } from "../plugins/context.js";
 
 const enrollSchema = z.object({
   platform: z.enum(["windows", "macos", "android"]),
@@ -189,6 +190,18 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const device = request.device!;
+
+    // Battery, network and screen-active time are collected data, not liveness —
+    // the same consent gate as /activity and /screenshots applies. Only
+    // /heartbeat is exempt, because it carries no observation and is the channel
+    // through which a revoked agent finds out it has been revoked.
+    const consent = await assertConsent(app.supabase, device.deviceId);
+    if (!consent.ok) {
+      return reply
+        .code(403)
+        .send({ error: "consent_required", message: consent.message, statusCode: 403 });
+    }
+
     const body = parsed.data;
 
     const { error } = await app.supabase.from("device_telemetry").insert({
@@ -220,6 +233,18 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const device = request.device!;
+
+    // The list of software on someone's machine is monitoring data. Enrolment
+    // reports inventory before consent is accepted, so without this gate a
+    // device that never consented — or whose consent was withdrawn — would still
+    // hand over its installed-application list.
+    const consent = await assertConsent(app.supabase, device.deviceId);
+    if (!consent.ok) {
+      return reply
+        .code(403)
+        .send({ error: "consent_required", message: consent.message, statusCode: 403 });
+    }
+
     const now = new Date().toISOString();
 
     const rows = parsed.data.applications.map((application) => ({
