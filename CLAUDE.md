@@ -269,9 +269,11 @@ Ask before acting on these.
    "Cloudflare R2 / S3 compatible storage"; `docs/stack.md` §8 says Supabase Storage
    for the MVP with R2 as a possible later swap. The code follows `docs/stack.md`
    (Supabase Storage, single `aems` bucket). Confirm which is right before the demo.
-2. **Nothing has been run against a live database.** The SQL in `supabase/migrations/`
-   is unvalidated — no Supabase CLI login, no Docker, no psql at the time it was
-   written. Apply it to a scratch project before trusting it.
+2. ~~Nothing has been run against a live database.~~ **Resolved 2026-08-05.** All
+   migrations are applied to project `dayyrqcfktwwnkttlres` (Postgres 17.6) and the
+   RLS suite in `supabase/tests/rls_isolation.sql` passes. **Re-run that suite after
+   any policy change or any new column on `profiles`** — it already caught one
+   privilege-escalation hole (migration `...0005`).
 3. **The desktop agent is mid-rewrite.** The Tauri + Rust implementation was built on
    2026-08-05 and superseded the same day by the Electron decision. Until the Electron
    rewrite lands, `apps/desktop-agent` is stale — do not extend the Rust code.

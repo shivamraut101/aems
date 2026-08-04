@@ -19,6 +19,7 @@
     "db:push": "supabase db push",
     "db:diff": "supabase db diff -f",
     "db:types": "pnpm --filter @aems/types db:types",
+    "check:wiring": "node scripts/check-wiring.mjs",
     "prepare": "husky"
   },
   "devDependencies": {

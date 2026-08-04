@@ -12,7 +12,9 @@ max_rows = 1000
 [db]
 port = 54322
 shadow_port = 54320
-major_version = 15
+# Must match the hosted project (17.6). A mismatch means the local stack and
+# production disagree on behaviour, which is how "works locally" bugs happen.
+major_version = 17
 
 [db.seed]
 enabled = true
