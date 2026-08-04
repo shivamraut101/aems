@@ -1,0 +1,219 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  admin
+  manager
+  employee
+}
+
+enum DevicePlatform {
+  windows
+  macos
+  android
+}
+
+enum DeviceStatus {
+  active
+  offline
+  revoked
+}
+
+enum ConsentMethod {
+  in_app_dialog
+  onboarding_portal
+  signed_document
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  users     User[]
+  devices   Device[]
+  policies  Policy[]
+  auditLogs AuditLogEntry[]
+
+  @@map("organizations")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  orgId        String
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         UserRole @default(employee)
+  department   String?
+  createdAt    DateTime @default(now())
+
+  organization   Organization @relation(fields: [orgId], references: [id])
+  devices        Device[]
+  consentRecords ConsentRecord[]
+  workSessions   WorkSession[]
+  activityEvents ActivityEvent[]
+  idleEvents     IdleEvent[]
+  screenshots    Screenshot[]
+
+  @@index([orgId])
+  @@map("users")
+}
+
+model Device {
+  id           String         @id @default(cuid())
+  orgId        String
+  userId       String
+  platform     DevicePlatform
+  label        String
+  osVersion    String
+  agentVersion String
+  enrolledAt   DateTime       @default(now())
+  lastSeenAt   DateTime?
+  status       DeviceStatus   @default(active)
+
+  organization   Organization    @relation(fields: [orgId], references: [id])
+  user           User            @relation(fields: [userId], references: [id])
+  consentRecords ConsentRecord[]
+  workSessions   WorkSession[]
+  activityEvents ActivityEvent[]
+  idleEvents     IdleEvent[]
+  screenshots    Screenshot[]
+
+  @@index([orgId])
+  @@index([userId])
+  @@map("devices")
+}
+
+/** Proof that a device's user was notified of and agreed to monitoring. */
+model ConsentRecord {
+  id            String        @id @default(cuid())
+  orgId         String
+  userId        String
+  deviceId      String
+  policyVersion String
+  consentedAt   DateTime      @default(now())
+  method        ConsentMethod
+  ipAddress     String?
+  revokedAt     DateTime?
+
+  user   User   @relation(fields: [userId], references: [id])
+  device Device @relation(fields: [deviceId], references: [id])
+
+  @@index([orgId])
+  @@index([deviceId])
+  @@map("consent_records")
+}
+
+model Policy {
+  id                        String   @id @default(cuid())
+  orgId                     String
+  version                   String
+  name                      String
+  screenshotIntervalSeconds Int      @default(300)
+  idleThresholdSeconds      Int      @default(120)
+  trackedCategories         String[]
+  updatedAt                 DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@unique([orgId, version])
+  @@map("policies")
+}
+
+model WorkSession {
+  id         String    @id @default(cuid())
+  userId     String
+  deviceId   String
+  clockInAt  DateTime  @default(now())
+  clockOutAt DateTime?
+
+  user           User            @relation(fields: [userId], references: [id])
+  device         Device          @relation(fields: [deviceId], references: [id])
+  activityEvents ActivityEvent[]
+  screenshots    Screenshot[]
+
+  @@index([userId])
+  @@index([deviceId])
+  @@map("work_sessions")
+}
+
+/** A single application/window-focus interval captured by an agent. */
+model ActivityEvent {
+  id            String    @id @default(cuid())
+  userId        String
+  deviceId      String
+  workSessionId String?
+  appName       String
+  windowTitle   String?
+  url           String?
+  category      String?
+  startedAt     DateTime
+  endedAt       DateTime?
+
+  user        User         @relation(fields: [userId], references: [id])
+  device      Device       @relation(fields: [deviceId], references: [id])
+  workSession WorkSession? @relation(fields: [workSessionId], references: [id])
+
+  @@index([userId, startedAt])
+  @@index([deviceId, startedAt])
+  @@map("activity_events")
+}
+
+model IdleEvent {
+  id              String    @id @default(cuid())
+  userId          String
+  deviceId        String
+  idleStartAt     DateTime
+  idleEndAt       DateTime?
+  durationSeconds Int?
+
+  user   User   @relation(fields: [userId], references: [id])
+  device Device @relation(fields: [deviceId], references: [id])
+
+  @@index([userId, idleStartAt])
+  @@map("idle_events")
+}
+
+/** Screenshot metadata only; binary content lives in object storage (see .env STORAGE_*). */
+model Screenshot {
+  id            String   @id @default(cuid())
+  userId        String
+  deviceId      String
+  workSessionId String?
+  capturedAt    DateTime @default(now())
+  storageKey    String
+  thumbnailKey  String?
+  blurred       Boolean  @default(false)
+
+  user        User         @relation(fields: [userId], references: [id])
+  device      Device       @relation(fields: [deviceId], references: [id])
+  workSession WorkSession? @relation(fields: [workSessionId], references: [id])
+
+  @@index([userId, capturedAt])
+  @@index([deviceId, capturedAt])
+  @@map("screenshots")
+}
+
+model AuditLogEntry {
+  id         String   @id @default(cuid())
+  orgId      String
+  actorId    String
+  action     String
+  targetType String
+  targetId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, createdAt])
+  @@map("audit_log_entries")
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AEMS Agent</string>
+    <string name="consent_title">This device is monitored</string>
+    <string name="consent_body">This is a company-owned device. AEMS records installed-app usage and active/idle time during work hours for productivity and security compliance purposes, as described in your company\'s device usage policy. A persistent notification will show while monitoring is active.</string>
+    <string name="consent_accept">I Understand and Agree</string>
+    <string name="monitoring_notification_title">AEMS Agent</string>
+    <string name="monitoring_notification_text">Monitoring active on this device</string>
+</resources>

@@ -1,0 +1,34 @@
+{
+  "name": "aems",
+  "private": true,
+  "description": "Advanced Employee Monitoring System (AEMS) - monitoring for company-owned devices with employee consent and compliance controls.",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "db:generate": "pnpm --filter @aems/database generate",
+    "db:migrate": "pnpm --filter @aems/database migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "active-win",
+      "electron",
+      "prisma",
+      "sharp"
+    ]
+  }
+}

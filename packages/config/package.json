@@ -1,0 +1,19 @@
+{
+  "name": "@aems/config",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "eslint-preset.js",
+    "tsconfig"
+  ],
+  "exports": {
+    "./eslint-preset": "./eslint-preset.js",
+    "./tsconfig/*.json": "./tsconfig/*.json"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.1",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint-config-prettier": "^9.1.0"
+  }
+}

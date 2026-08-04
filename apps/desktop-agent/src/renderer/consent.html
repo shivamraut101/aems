@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>AEMS Monitoring Notice</title>
+    <style>
+      body {
+        font-family: -apple-system, Segoe UI, sans-serif;
+        margin: 0;
+        padding: 24px;
+        color: #1e293b;
+      }
+      h1 {
+        font-size: 18px;
+      }
+      p {
+        font-size: 13px;
+        line-height: 1.5;
+        color: #475569;
+      }
+      button {
+        margin-top: 16px;
+        padding: 10px 16px;
+        font-size: 14px;
+        border: none;
+        border-radius: 6px;
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>This device is monitored</h1>
+    <p>
+      This is a company-owned device. AEMS records application usage, active/idle time and
+      periodic screenshots during work sessions for productivity and security compliance
+      purposes. This notice is always accessible from the AEMS tray icon.
+    </p>
+    <p>By continuing, you acknowledge and consent to this monitoring as described in your
+      company's device usage policy.</p>
+    <button id="accept">I Understand and Agree</button>
+    <script>
+      document.getElementById("accept").addEventListener("click", () => {
+        window.aems.acceptConsent();
+      });
+    </script>
+  </body>
+</html>
