@@ -1,51 +1,56 @@
 "use client";
 
-import { EyeOff } from "lucide-react";
+import { ArrowRight, EyeOff, Laptop } from "lucide-react";
 import Link from "next/link";
 
 import { DayRangeControl } from "@/components/employee/day-range-control";
 import { OverviewTab } from "@/components/employee/overview-tab";
-import { ErrorState, Panel, SkeletonLines } from "@/components/employee/states";
+import { ErrorState, PanelSkeleton } from "@/components/states";
 import { useDayWindow } from "@/components/employee/use-day-window";
-import { useSession } from "@/lib/api";
+import { useApiQuery, useSession } from "@/lib/api";
+import { currentPolicyQuery } from "@/lib/queries/account";
 
+import { MePanel, MeShell } from "./me-shell";
+import { capturesPerWorkingDay, idleCadence, screenshotCadence, toPolicyTerms } from "./monitoring-terms";
 import { resolveSelfSubject, selfGreeting } from "./self-subject";
 
 /**
- * "My activity" — the one destination every role keeps.
+ * "My activity" — the destination every role keeps, and where an employee lands after
+ * signing in (`landingPathForRole`).
  *
  * Non-negotiable #3 says employees can read their own data, and it is enforced in RLS
  * and in the API (`/api/analytics/timeline` is `requireUser` and 403s only when an
- * employee asks for somebody else). This screen is the surface that makes the promise
- * visible: without it, an employee signing in landed on `/me` and got a 404, which is
- * a transparency guarantee that exists only on paper.
+ * employee asks about somebody else). This screen is what makes the promise visible.
  *
  * It reuses the manager Overview rather than reimplementing it, so the figures an
- * employee reads about themselves are computed by exactly the same code — and cannot
+ * employee reads about themselves are computed by exactly the same code and cannot
  * quietly disagree with what their manager is shown.
+ *
+ * Landing here and finding one page was the client's complaint. The rest of the
+ * section — My devices, Account — is in the sidebar's `personal` group; the terms panel
+ * at the foot is the short answer to "what is being collected", with the full answer
+ * one link away.
  */
 export function MyActivity() {
   const { data: session, isLoading, isError } = useSession();
   const day = useDayWindow();
   const subject = resolveSelfSubject({ session: session ?? null, isLoading, isError });
 
-  if (subject.state === "loading") return <MyActivitySkeleton />;
-
   if (subject.state === "error") {
     return (
-      <Shell>
+      <MeShell title="My activity" subtitle="Everything recorded about your work.">
         <ErrorState
           title="Could not load your account"
           message="We could not confirm who is signed in. Sign in again to continue."
         />
-      </Shell>
+      </MeShell>
     );
   }
 
   if (subject.state === "signed-out") {
     return (
-      <Shell>
-        <Panel>
+      <MeShell title="My activity" subtitle="Everything recorded about your work.">
+        <MePanel>
           <p className="text-sm text-muted-foreground">
             You are not signed in.{" "}
             <Link
@@ -56,24 +61,35 @@ export function MyActivity() {
             </Link>{" "}
             to see your activity.
           </p>
-        </Panel>
-      </Shell>
+        </MePanel>
+      </MeShell>
     );
   }
 
+  const heading =
+    subject.state === "ready" ? `Good day, ${selfGreeting(subject.fullName)}` : "My activity";
+
   return (
-    <Shell
-      heading={`Good day, ${selfGreeting(subject.fullName)}`}
-      subheading={day ? day.label : null}
+    <MeShell
+      title={heading}
+      subtitle={day ? day.label : "Everything recorded about your work, as your manager sees it."}
       control={day ? <DayRangeControl day={day} /> : null}
     >
-      {/* Stated before the data, not after: on a paused account the day is empty for
-          a reason, and an unexplained blank screen reads as a broken agent. */}
-      {subject.monitoringEnabled ? null : <MonitoringPaused />}
+      {/* Stated before the data, not after: on a paused account the day is empty for a
+          reason, and an unexplained blank screen reads as a broken agent. */}
+      {subject.state === "ready" && !subject.monitoringEnabled ? <MonitoringPaused /> : null}
 
-      {/* appsHref={null}: an employee cannot reach /people/:id/apps, so no link. */}
-      <OverviewTab profileId={subject.profileId} appsHref={null} />
-    </Shell>
+      {subject.state === "ready" ? (
+        /* appsHref={null}: an employee cannot reach /people/:id/apps, so no link. */
+        <OverviewTab profileId={subject.profileId} appsHref={null} />
+      ) : (
+        /* Only reachable when the cache has no session at all — the root layout seeds
+           it on every ordinary render, so this is the cold-start case, not the norm. */
+        <PanelSkeleton minHeightClass="min-h-[20rem]" lines={4} label="Loading your day" />
+      )}
+
+      <MonitoringSummary />
+    </MeShell>
   );
 }
 
@@ -84,48 +100,60 @@ function MonitoringPaused() {
       <p className="text-sm">
         <span className="font-medium">Monitoring is paused for your account.</span>{" "}
         <span className="text-muted-foreground">
-          Nothing new is being collected. Activity recorded before it was paused is still
-          shown here.
+          Nothing new is being collected. Activity recorded before it was paused is still shown
+          here.
         </span>
       </p>
     </div>
   );
 }
 
-function Shell({
-  heading = "My activity",
-  subheading,
-  control,
-  children,
-}: {
-  heading?: string;
-  subheading?: string | null;
-  control?: React.ReactNode;
-  children: React.ReactNode;
-}) {
+/**
+ * The terms, in one line, at the foot of the day they produced.
+ *
+ * Server-prefetched by `page.tsx`, so it is part of the first paint rather than a panel
+ * that appears a beat later. It is deliberately a summary and not the whole policy:
+ * this page is about what was recorded, and the page about *why* is one link away.
+ */
+function MonitoringSummary() {
+  const policy = useApiQuery(currentPolicyQuery);
+  const terms = toPolicyTerms(policy.data);
+  const captures = capturesPerWorkingDay(terms);
+
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">{heading}</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {subheading ?? "Everything recorded about your work, as your manager sees it."}
-          </p>
-        </div>
-        {control}
+    <MePanel title="What is being collected">
+      {terms ? (
+        <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">
+          Under <span className="font-medium text-foreground">{terms.name}</span> (version{" "}
+          {terms.version}), your enrolled devices record the applications you use, take a
+          screenshot {screenshotCadence(terms)}
+          {captures > 0 ? ` — about ${String(captures)} in an eight-hour day` : ""}, and count you
+          idle after no keyboard or mouse activity {idleCadence(terms)}. What you type is never
+          recorded.
+        </p>
+      ) : (
+        <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">
+          Your devices record the applications you use, screenshots at a set interval, and idle
+          periods. What you type is never recorded.
+        </p>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Link
+          href="/my-devices"
+          className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          <Laptop className="h-3.5 w-3.5" aria-hidden />
+          My devices and consent
+        </Link>
+        <Link
+          href="/account"
+          className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          Account
+          <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+        </Link>
       </div>
-
-      <div className="space-y-6">{children}</div>
-    </div>
-  );
-}
-
-function MyActivitySkeleton() {
-  return (
-    <Shell>
-      <Panel>
-        <SkeletonLines count={4} />
-      </Panel>
-    </Shell>
+    </MePanel>
   );
 }
