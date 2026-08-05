@@ -390,6 +390,48 @@ describe("Collector collection", () => {
   });
 });
 
+describe("Collector sleep", () => {
+  it("does not bill a three-hour sleep as work", async () => {
+    // The lid closes at 60s and reopens three hours later. Without a suspend hook the
+    // next sample simply closes the interval that was open when the machine went to
+    // sleep, and the whole sleep is reported as one span of focused work — the single
+    // largest way this product could overstate somebody's day.
+    const h = harness();
+    await h.collector.tick(at(0));
+
+    h.collector.suspend(at(60));
+    h.collector.wake(at(10_860));
+    await h.collector.tick(at(10_920));
+    await h.collector.shutdown(at(11_000));
+
+    // Work after waking is real and may be any length, so the assertion is not "no
+    // long interval" — it is that nothing STRADDLES the sleep. An interval opened
+    // before the lid shut and closed after it reopened is the three hours being
+    // billed, whatever its duration happens to be.
+    const straddling = sentActivity(h).filter((event) => {
+      const start = Date.parse(event.startedAt);
+      const end = event.endedAt == null ? Number.POSITIVE_INFINITY : Date.parse(event.endedAt);
+      return start <= at(60).getTime() && end >= at(10_860).getTime();
+    });
+
+    expect(straddling).toEqual([]);
+  });
+
+  it("closes the interval at the moment of suspend, keeping the work before it", async () => {
+    const h = harness();
+    await h.collector.tick(at(0));
+
+    h.collector.suspend(at(60));
+    await h.collector.shutdown(at(120));
+
+    const ended = sentActivity(h)
+      .map((event) => event.endedAt)
+      .filter((value): value is string => value !== null && value !== undefined);
+
+    expect(ended).toContain(at(60).toISOString());
+  });
+});
+
 describe("Collector breaks", () => {
   it("reports a declared break as its own event", async () => {
     const h = harness();

@@ -14,7 +14,9 @@ export interface LiveWorkforceRow {
   fullName: string | null;
   email: string | null;
   lastSeenAt: string | null;
-  status: "active" | "offline";
+  /** Set only while `status` is "idle" — when the current idle stretch began. */
+  idleSince: string | null;
+  status: "active" | "idle" | "offline";
 }
 
 export interface OverviewMetrics {

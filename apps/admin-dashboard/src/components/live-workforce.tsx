@@ -3,7 +3,7 @@
 import Link from "next/link";
 
 import { useLiveWorkforce } from "@/lib/api";
-import { relativeTime } from "@/lib/format";
+import { relativeTime, timeOfDay } from "@/lib/format";
 
 import { StatusDot } from "./status-dot";
 
@@ -86,6 +86,11 @@ export function LiveWorkforce() {
                   </td>
                   <td className="px-4 py-2.5">
                     <StatusDot status={row.status} />
+                    {row.idleSince ? (
+                      <span className="ml-1.5 text-xs text-muted-foreground">
+                        since {timeOfDay(row.idleSince)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="hidden px-4 py-2.5 text-muted-foreground sm:table-cell">
                     {PLATFORM_LABEL[row.platform]} · {row.label}

@@ -24,8 +24,16 @@ export const MAX_ACTIVITY_INTERVAL_MS = 5 * 60_000;
 export const FLUSH_INTERVAL_MS = 60_000;
 export const HEARTBEAT_INTERVAL_MS = 60_000;
 
-/** Used when a policy arrived without one, matching the API's own default. */
-export const DEFAULT_IDLE_THRESHOLD_SECONDS = 300;
+/**
+ * Used when a policy arrived without one.
+ *
+ * Must equal `policies.idle_threshold_seconds`'s column default, which is 120 — this
+ * read 300, and the comment claiming the two matched is what hid it. An agent that
+ * has not yet received a policy would have waited five minutes to call someone idle
+ * while every server-side calculation used two, so the same afternoon produced
+ * different idle totals depending on which side answered.
+ */
+export const DEFAULT_IDLE_THRESHOLD_SECONDS = 120;
 
 /** The two `ConfigStore` members the loop needs, narrowed so tests need no disk. */
 export interface CollectorConfigStore {
@@ -514,6 +522,43 @@ export class Collector {
    * closing the session first would leave them with a null `work_session_id`, which is
    * the state scope §2.2 cannot aggregate over.
    */
+  /**
+   * The machine is going to sleep, or the screen has locked.
+   *
+   * Closes the open focus interval at the moment it happens. Without this the next
+   * sample after resume closes an interval that began before the lid shut, and a
+   * three-hour sleep is reported as three hours of focused work — by a wide margin
+   * the largest way this agent could overstate somebody's day.
+   *
+   * Idle is deliberately NOT opened here: a sleeping machine is not an idle employee,
+   * and scope §2.2 counts idle against tracked time. Time asleep is simply absent,
+   * which is the honest answer.
+   */
+  suspend(now: Date = this.adapters.now()): void {
+    const open = this.parts.tracker.flush(now);
+    if (open !== null && mayCollect(this.parts.config.current)) {
+      this.parts.queue.enqueueActivity(open);
+    }
+
+    this.recomputeTotals(now);
+    this.persistDay();
+    this.adapters.onChanged();
+  }
+
+  /**
+   * Woken up. Nothing to reopen — the next tick observes the focused window fresh,
+   * which starts a new interval at that moment rather than back before the sleep.
+   *
+   * Named `wake` rather than `resume` because `resume()` is already taken by the
+   * crash-restore path above, and a duplicate member does not error at runtime: JS
+   * simply keeps the last definition, so the collision silently replaced the restore
+   * with this and lost every span a killed process was still timing.
+   */
+  wake(now: Date = this.adapters.now()): void {
+    this.recomputeTotals(now);
+    this.adapters.onChanged();
+  }
+
   async shutdown(now: Date = this.adapters.now()): Promise<void> {
     this.stop();
 
