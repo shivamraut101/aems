@@ -1,10 +1,13 @@
-import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
-import AemsUsage from "../modules/aems-usage";
-import { colors, spacing } from "../src/theme";
-import { useAgentState } from "../src/state";
+import AemsUsage from "../../modules/aems-usage";
+import { colors, spacing } from "../theme";
+import type { AgentStatus } from "../state";
+
+interface HomeScreenProps {
+  status: AgentStatus;
+}
 
 /**
  * Home screen — the "Company Work Companion" per docs/design.md.
@@ -13,19 +16,12 @@ import { useAgentState } from "../src/state";
  * status), not around what is being collected from them. The consent screen already
  * covers the latter in full; repeating it here would just be nagging.
  */
-export default function HomeScreen() {
-  const router = useRouter();
-  const { status, refresh } = useAgentState();
+export function HomeScreen({ status }: HomeScreenProps) {
   const [hasUsageAccess, setHasUsageAccess] = useState(true);
 
   useEffect(() => {
-    void refresh();
     setHasUsageAccess(AemsUsage.hasUsageAccess());
-  }, [refresh]);
-
-  useEffect(() => {
-    if (status.consentRequired) router.replace("/consent");
-  }, [status.consentRequired, router]);
+  }, []);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>

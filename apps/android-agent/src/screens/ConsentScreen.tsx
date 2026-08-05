@@ -1,21 +1,24 @@
-import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import AemsUsage from "../modules/aems-usage";
-import { colors, spacing } from "../src/theme";
-import { useAgentState } from "../src/state";
+import AemsUsage from "../../modules/aems-usage";
+import { colors, spacing } from "../theme";
+import type { AgentStatus } from "../state";
+
+interface ConsentScreenProps {
+  status: AgentStatus;
+  onAccept: () => Promise<void>;
+  onAccepted: () => void;
+}
 
 /**
  * Consent gate.
  *
- * Nothing is collected before this is accepted, and the screen cannot be swiped
- * away (gestureEnabled is false on the route). Everything the app will record is
- * listed plainly — the list is the disclosure, not a link to one.
+ * Nothing is collected before this is accepted, and there is no way back to it once
+ * accepted. Everything the app will record is listed plainly — the list is the
+ * disclosure, not a link to one.
  */
-export default function ConsentScreen() {
-  const router = useRouter();
-  const { status, acceptConsent } = useAgentState();
+export function ConsentScreen({ status, onAccept, onAccepted }: ConsentScreenProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,10 +26,10 @@ export default function ConsentScreen() {
     setBusy(true);
     setError(null);
     try {
-      await acceptConsent();
+      await onAccept();
       if (!AemsUsage.hasUsageAccess()) AemsUsage.requestUsageAccess();
       AemsUsage.startMonitoring();
-      router.replace("/");
+      onAccepted();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
