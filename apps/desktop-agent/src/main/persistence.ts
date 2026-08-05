@@ -494,6 +494,20 @@ export const DAY_STATE_FILE = "day-state.json";
 export const DEAD_LETTERS_FILE = "dead-letters.json";
 
 /**
+ * The plaintext half of the agent's state, directly under Electron's `userData` rather
+ * than in the state subdirectory beside the files above.
+ *
+ * Named here rather than in `config.ts`, which owns it, for a build reason that is not
+ * obvious and is load-bearing: the native messaging host reads this file, and
+ * `config.ts` imports `safeStorage` from Electron at module scope. Importing the name
+ * from there would pull `import { safeStorage } from "electron"` into the host's bundle
+ * — and the host runs under `ELECTRON_RUN_AS_NODE`, where that import is a link error
+ * before a single line executes. Two spellings of the filename would be worse still, so
+ * the constant moves rather than being copied.
+ */
+export const AGENT_CONFIG_FILE = "agent-config.json";
+
+/**
  * Where the store lives under Electron's `userData`.
  *
  * A subdirectory rather than `userData` itself, so a wipe of the durable state never

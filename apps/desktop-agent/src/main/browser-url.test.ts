@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createBrowserUrlReader,
+  createLinkedBrowserUrlReader,
   isBrowser,
   macosBrowserUrlReader,
   windowsBrowserUrlReader,
@@ -274,5 +275,74 @@ describe("reader fidelity", () => {
     // rather than draw an empty chart that reads as "nobody browsed".
     expect(createBrowserUrlReader("darwin").fidelity).toBe("browser-url");
     expect(createBrowserUrlReader("win32").fidelity).toBe("window-title");
+  });
+});
+
+describe("createLinkedBrowserUrlReader", () => {
+  const NOW = new Date("2026-08-05T09:00:00.000Z");
+
+  function link(url: string | null, linked: boolean) {
+    return { currentUrl: () => url, linked: () => linked };
+  }
+
+  it("prefers what the extension reported over what Windows could infer from a title", () => {
+    // This is the whole reason the extension exists: on Windows there is no supported
+    // way to read a tab's address, so the title reader recovers almost nothing.
+    const reader = createLinkedBrowserUrlReader(
+      windowsBrowserUrlReader,
+      link("https://github.com/aems/pulls", true),
+      () => NOW,
+    );
+
+    expect(
+      reader.read({ appName: "Google Chrome", windowTitle: "Pull requests", url: null }),
+    ).toBe("https://github.com/aems/pulls");
+  });
+
+  it("never attributes a browser's page to a window that is not a browser", () => {
+    // A report that arrived while the employee is in an editor is not evidence about
+    // the editor, and attributing it would put a website on an interval nobody spent
+    // on the web.
+    const reader = createLinkedBrowserUrlReader(
+      windowsBrowserUrlReader,
+      link("https://github.com/aems", true),
+      () => NOW,
+    );
+
+    expect(reader.read({ appName: "Code.exe", windowTitle: "index.ts", url: null })).toBeNull();
+  });
+
+  it("falls back to the platform reader when nothing fresh has been reported", () => {
+    const reader = createLinkedBrowserUrlReader(
+      windowsBrowserUrlReader,
+      link(null, true),
+      () => NOW,
+    );
+
+    expect(
+      reader.read({
+        appName: "Google Chrome",
+        windowTitle: "example.com/pricing - Google Chrome",
+        url: null,
+      }),
+    ).toBe("example.com/pricing");
+  });
+
+  it("claims browser-url fidelity only while an extension is actually connected", () => {
+    // The consent screen promises "website domains you visit" off this value, so it has
+    // to drop back the moment the extension is removed.
+    expect(
+      createLinkedBrowserUrlReader(windowsBrowserUrlReader, link(null, true), () => NOW).fidelity,
+    ).toBe("browser-url");
+
+    expect(
+      createLinkedBrowserUrlReader(windowsBrowserUrlReader, link(null, false), () => NOW).fidelity,
+    ).toBe("window-title");
+  });
+
+  it("leaves macOS at browser-url either way, because it could already read the address", () => {
+    expect(
+      createLinkedBrowserUrlReader(macosBrowserUrlReader, link(null, false), () => NOW).fidelity,
+    ).toBe("browser-url");
   });
 });

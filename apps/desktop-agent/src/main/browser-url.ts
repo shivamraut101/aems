@@ -108,6 +108,55 @@ export const macosBrowserUrlReader: BrowserUrlReader = {
 };
 
 /**
+ * What the managed browser extension has told the agent.
+ *
+ * An interface rather than the link store itself so this file keeps its one job —
+ * deciding what may be called an address — and stays loadable without a filesystem.
+ */
+export interface BrowserLinkView {
+  /** The page the extension last reported, or null when nothing fresh is on file. */
+  currentUrl(now: Date): string | null;
+  /** Whether any browser on this machine has an extension that has connected recently. */
+  linked(now: Date): boolean;
+}
+
+/**
+ * The platform reader, upgraded by the managed browser extension when one is connected.
+ *
+ * This is the whole point of the extension on Windows. There is no supported way to
+ * read a tab's address from outside the browser, so {@link windowsBrowserUrlReader}
+ * recovers a host only from the rare page that carried no `<title>` — in practice the
+ * Websites report is empty. An extension inside the browser knows the address for
+ * certain, and reporting it is the same act as being able to refuse it.
+ *
+ * Two rules keep it honest:
+ *
+ * - The extension's answer is used **only** for a focused window the agent already
+ *   believes is a browser. A report that arrived while the employee is in an editor is
+ *   not evidence about the editor, and attributing it would put a website on an
+ *   interval nobody spent on the web.
+ * - `fidelity` follows the connection rather than the platform, so the consent screen
+ *   promises "website domains you visit" exactly on the machines that can keep the
+ *   promise — and drops it again the moment the extension is removed.
+ */
+export function createLinkedBrowserUrlReader(
+  base: BrowserUrlReader,
+  link: BrowserLinkView,
+  now: () => Date = () => new Date(),
+): BrowserUrlReader {
+  return {
+    get fidelity(): UrlFidelity {
+      return link.linked(now()) ? "browser-url" : base.fidelity;
+    },
+
+    read(window) {
+      if (!isBrowser(window.appName)) return base.read(window);
+      return link.currentUrl(now()) ?? base.read(window);
+    },
+  };
+}
+
+/**
  * Windows: the window title, and only when it proves it holds an address.
  *
  * `WindowsResult` has no `url` field — there is no supported way to read a tab's

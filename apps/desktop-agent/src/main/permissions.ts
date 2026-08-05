@@ -14,6 +14,7 @@ import type {
   PermissionTarget,
   UrlFidelity,
 } from "../shared/types/index.js";
+import type { BrowserUrlReader } from "./browser-url.js";
 import { createBrowserUrlReader } from "./browser-url.js";
 import type { CapturedFrame, Capturer } from "./screenshot.js";
 
@@ -98,16 +99,23 @@ export class PermissionGatedCapturer implements Capturer {
 
 export class PermissionMonitor {
   /**
-   * Read from the URL reader rather than restated here, so the value the renderer shows
-   * an employee cannot drift from the reader that actually produces their website data.
+   * The reader itself, rather than a copy of its fidelity.
+   *
+   * Read on every `read()` rather than latched in the constructor, because the answer
+   * is no longer fixed for the life of the process: a managed browser extension
+   * connecting upgrades a Windows machine from `window-title` to `browser-url`, and
+   * removing it takes the claim away again. A latched value would leave the consent
+   * screen promising website tracking on a machine that had lost the extension hours
+   * earlier — which is the same class of untrue claim as a stale indicator.
    */
-  private readonly websiteTracking: UrlFidelity;
-
   constructor(
     private readonly api: MacPermissionApi,
     private readonly platform: NodeJS.Platform = process.platform,
-  ) {
-    this.websiteTracking = createBrowserUrlReader(platform).fidelity;
+    private readonly urlReader: BrowserUrlReader = createBrowserUrlReader(platform),
+  ) {}
+
+  private get websiteTracking(): UrlFidelity {
+    return this.urlReader.fidelity;
   }
 
   read(): AgentPermissions {
@@ -212,9 +220,11 @@ const requireElectron = createRequire(import.meta.url);
  * `systemPreferences` and `desktopCapturer` are only touched when a permission is
  * actually read or requested, so constructing this does not itself need a ready app.
  */
-export function createPermissionMonitor(): PermissionMonitor {
+export function createPermissionMonitor(urlReader?: BrowserUrlReader): PermissionMonitor {
   return new PermissionMonitor(
     macPermissionApi(requireElectron("electron") as ElectronPermissionSlice),
+    process.platform,
+    urlReader,
   );
 }
 

@@ -23,6 +23,15 @@ export interface DeviceHostFacts {
   cpuModel: string | null;
   totalMemoryBytes: number;
   totalStorageBytes: number | null;
+  /**
+   * Make and model, e.g. `LENOVO 21CB` or `MacBookPro18,3`.
+   *
+   * Read separately from everything else in this interface because it is the only
+   * field with no in-process source — see {@link readMachineModel}. Null until that
+   * subprocess answers, which is why the Devices table read "Unknown model" for every
+   * enrolled machine: nothing ever put a value here.
+   */
+  model: string | null;
 }
 
 /**
@@ -46,10 +55,20 @@ export function collectDeviceFacts(
     deviceName: host.hostname,
     osVersion: host.osVersion,
     agentVersion: host.agentVersion,
+    // The API validates `model` as an optional string of at most 120 characters, and
+    // rejects the whole enrolment past it. `undefined` rather than `null` because the
+    // field is `model?: string` — a null would fail the schema and cost the enrolment.
+    model: withinLimit(host.model, 120),
     cpu: host.cpuModel,
     ramMb: toMegabytes(host.totalMemoryBytes),
     storageMb: toMegabytes(host.totalStorageBytes),
   };
+}
+
+function withinLimit(value: string | null, max: number): string | undefined {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || trimmed.length === 0 || trimmed.length > max) return undefined;
+  return trimmed;
 }
 
 /**
@@ -71,7 +90,7 @@ const requireHere = createRequire(import.meta.url);
  * fields `node:os` already has. `process.getSystemVersion()` is what gives the
  * macOS marketing version instead of the Darwin kernel version.
  */
-function readHostFacts(): DeviceHostFacts {
+export function readHostFacts(): DeviceHostFacts {
   return {
     platform: process.platform,
     hostname: hostname(),
@@ -80,7 +99,114 @@ function readHostFacts(): DeviceHostFacts {
     cpuModel: cpus()[0]?.model ?? null,
     totalMemoryBytes: totalmem(),
     totalStorageBytes: readVolumeBytes(homedir()),
+    // Filled in by `collectEnrollmentRequest`, which can await the subprocess this
+    // synchronous reader cannot.
+    model: null,
   };
+}
+
+/**
+ * Everything `collectDeviceFacts` needs, including the one field that costs an OS call.
+ *
+ * This is what `index.ts` calls at enrolment. `collectDeviceFacts` stays synchronous
+ * and pure so its mapping rules — the platform refusal, the megabyte rounding, the
+ * length caps — remain testable without a process spawn.
+ */
+export async function collectEnrollmentRequest(): Promise<DeviceEnrollmentRequest> {
+  return collectDeviceFacts({ ...readHostFacts(), model: await readMachineModel() });
+}
+
+/**
+ * `SystemManufacturer` + `SystemProductName` out of `reg query`'s BIOS key.
+ *
+ * These are the values Windows itself shows in System Information, and they are the
+ * two halves of what an IT administrator calls "the model" — the product name alone is
+ * often a bare code like `21CB`, which identifies nothing without the maker in front
+ * of it. Vendors leave placeholder strings in either field on white-box machines, so
+ * those are dropped rather than reported as a model.
+ */
+export function parseWindowsModel(output: string): string | null {
+  const values = new Map<string, string>();
+
+  for (const line of output.split(/\r?\n/)) {
+    const value = REG_VALUE_LINE.exec(line);
+    if (value?.[1] !== undefined) values.set(value[1], (value[2] ?? "").trim());
+  }
+
+  const parts = [values.get("SystemManufacturer"), values.get("SystemProductName")]
+    .map((part) => (part === undefined || isPlaceholderModel(part) ? null : part))
+    .filter((part): part is string => part !== null);
+
+  return parts.length === 0 ? null : [...new Set(parts)].join(" ");
+}
+
+/**
+ * The strings vendors ship when they never filled the field in.
+ *
+ * "System manufacturer System Product Name" on a device row is worse than the em-dash
+ * it replaced: it looks like a real reading and tells an administrator nothing.
+ */
+const MODEL_PLACEHOLDERS = new Set([
+  "system manufacturer",
+  "system product name",
+  "to be filled by o.e.m.",
+  "to be filled by oem",
+  "default string",
+  "not specified",
+  "not applicable",
+  "none",
+  "n/a",
+  "o.e.m.",
+  "oem",
+  "unknown",
+]);
+
+function isPlaceholderModel(value: string): boolean {
+  const normalised = value.trim().toLowerCase();
+  return normalised.length === 0 || MODEL_PLACEHOLDERS.has(normalised);
+}
+
+/** `sysctl -n hw.model` prints one line: `MacBookPro18,3`, `Macmini9,1`. */
+export function parseMacModel(output: string): string | null {
+  const trimmed = output.trim();
+  return trimmed.length === 0 || isPlaceholderModel(trimmed) ? null : trimmed;
+}
+
+/**
+ * The machine's make and model.
+ *
+ * Neither platform exposes this to a process without asking the OS, and both answers
+ * come from a built-in that is not PowerShell: `reg.exe` reads the key the firmware
+ * populated at boot, and `sysctl` is a syscall wrapper. Enrolment is a cold path, so a
+ * one-off spawn there costs nothing the collection loop will feel — and a failure
+ * yields null, because a device that enrols without a model is far better than one
+ * that cannot enrol.
+ */
+export async function readMachineModel(
+  platform: string = process.platform,
+  exec: (file: string, args: string[]) => Promise<string> = defaultModelExec,
+): Promise<string | null> {
+  try {
+    if (platform === "win32") {
+      return parseWindowsModel(
+        await exec("reg", ["query", "HKLM\\HARDWARE\\DESCRIPTION\\System\\BIOS"]),
+      );
+    }
+
+    if (platform === "darwin") {
+      return parseMacModel(await exec("/usr/sbin/sysctl", ["-n", "hw.model"]));
+    }
+  } catch {
+    // A hardened image can deny either command. One missing field must never be what
+    // stops a machine enrolling.
+  }
+
+  return null;
+}
+
+async function defaultModelExec(file: string, args: string[]): Promise<string> {
+  const { stdout } = await run(file, args, { timeout: 5_000, windowsHide: true });
+  return stdout;
 }
 
 /**

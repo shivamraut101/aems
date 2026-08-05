@@ -5,8 +5,14 @@ import { safeStorage } from "electron";
 
 import { emptyConfig } from "../shared/types/index.js";
 import type { AgentConfig } from "../shared/types/index.js";
+import { AGENT_CONFIG_FILE as CONFIG_FILE } from "./persistence.js";
 
 const DEFAULT_API_URL = "http://localhost:3001";
+
+// The filename lives in `persistence.ts` and is re-exported here, where it belongs
+// conceptually. A second process — the native messaging host — opens this file, and it
+// must not reach `safeStorage` below to learn its name. See the note there.
+export { AGENT_CONFIG_FILE } from "./persistence.js";
 
 export function resolveApiUrl(): string {
   const fromEnv = process.env.AEMS_API_URL?.trim();
@@ -28,7 +34,7 @@ export class ConfigStore {
   private config: AgentConfig;
 
   constructor(directory: string) {
-    this.file = join(directory, "agent-config.json");
+    this.file = join(directory, CONFIG_FILE);
     this.tokenFile = join(directory, "device-token.bin");
     this.config = emptyConfig(resolveApiUrl());
   }

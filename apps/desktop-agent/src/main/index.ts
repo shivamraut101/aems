@@ -1,5 +1,9 @@
+import { execFile } from "node:child_process";
+import { chmodSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, sep } from "node:path";
+import { promisify } from "node:util";
 
 import { AemsClient } from "@aems/sdk";
 import type { AgentPolicy } from "@aems/types";
@@ -22,25 +26,51 @@ import type {
   EnrollRequest,
   PermissionTarget,
 } from "../shared/types/index.js";
+import type { BridgeInvocation } from "./bridge.js";
+import { readBridgeInvocation } from "./bridge.js";
+import { BROWSER_LINK_FILE, BrowserLinkStore, createBrowserLinkView } from "./bridge-link.js";
+import { AEMS_EXTENSION_IDS } from "./bridge-protocol.js";
+import { startBridge } from "./bridge-runtime.js";
+import type { BrowserUrlReader } from "./browser-url.js";
+import { createBrowserUrlReader, createLinkedBrowserUrlReader } from "./browser-url.js";
 import { Collector } from "./collector.js";
 import { ConfigStore } from "./config.js";
 import { DeadLetterFile } from "./dead-letter.js";
-import { collectDeviceFacts, collectInstalledApplications } from "./device.js";
+import { collectEnrollmentRequest, collectInstalledApplications } from "./device.js";
 import { IdleWatcher, setSystemIdleSource } from "./idle.js";
 import { ElectronIndicatorSurface, IndicatorController, loadTrayImage } from "./indicator.js";
+import { describeRegistration, registerNativeHost } from "./native-host.js";
 import { createPermissionMonitor, PermissionGatedCapturer } from "./permissions.js";
 import type { PermissionMonitor } from "./permissions.js";
-import { agentStateDirectory, createDurableStore, emptyDayState } from "./persistence.js";
-import type { DurableStore } from "./persistence.js";
+import {
+  AGENT_CONFIG_FILE,
+  agentStateDirectory,
+  createDurableStore,
+  emptyDayState,
+  JsonFile,
+  nodeDurableFs,
+} from "./persistence.js";
+import type { DurableFs, DurableStore } from "./persistence.js";
 import { ElectronCapturer, ScreenshotScheduler } from "./screenshot.js";
 import { SessionManager } from "./session.js";
 import { SyncQueue } from "./sync.js";
+import { createTelemetryReaders, TelemetryReporter } from "./telemetry.js";
+import type { TelemetryReaders } from "./telemetry.js";
 import { Tracker } from "./tracker.js";
 
 // electron-updater is CommonJS. A named ESM import of it depends on cjs-module-lexer
 // picking up its getter-style exports, which is not something to bet a release on.
 const requireCjs = createRequire(import.meta.url);
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Every diagnostic in this process goes to stderr, never stdout.
+ *
+ * In bridge mode stdout *is* the wire Chrome reads length-prefixed frames from, so one
+ * `console.log` on any path this process can reach would desynchronise the stream and
+ * kill the port with nothing in any log to explain it.
+ */
 function log(message: string, error?: unknown): void {
   console.error(`[aems] ${message}`, error ?? "");
 }
@@ -63,8 +93,17 @@ interface Runtime {
   idle: IdleWatcher;
   screenshots: ScreenshotScheduler;
   permissions: PermissionMonitor;
+  /**
+   * The platform URL reader, upgraded by the managed browser extension when one is
+   * connected. Held on the runtime because `attachDevice` rebuilds the tracker on a
+   * re-enrolment, and a default-constructed one would quietly drop back to reading
+   * window titles on Windows.
+   */
+  urlReader: BrowserUrlReader;
   /** The journal, today's spans and the dead-letter file, as one unit. */
   durable: DurableStore;
+  /** Battery, network and free storage. Built once: it caches the readings that cost a spawn. */
+  telemetryReaders: TelemetryReaders;
   deadLetters: DeadLetterFile;
   /** Which device the queue and session manager below belong to. */
   deviceId: string | null;
@@ -299,7 +338,7 @@ function attachDevice(deviceId: string, deviceToken: string): void {
     // enrolment would otherwise close and be reported under the new device's identity.
     // The capture schedule is deliberately kept — it is a consented cadence, not an
     // observation, and resetting it would fire a frame the moment the swap lands.
-    rt.tracker = new Tracker();
+    rt.tracker = new Tracker(undefined, rt.urlReader);
     rt.idle = new IdleWatcher();
   }
   rt.deviceId = deviceId;
@@ -334,6 +373,7 @@ function attachDevice(deviceId: string, deviceToken: string): void {
       tracker: rt.tracker,
       idle: rt.idle,
       screenshots: rt.screenshots,
+      telemetry: new TelemetryReporter(rt.client, rt.telemetryReaders),
       dayState: day,
     },
     // Every state the loop reaches — a clock-in, a stop signal, a break — has to
@@ -389,7 +429,10 @@ function registerIpc(): void {
       // Nothing user-scoped is ever held in this process now.
       const response = await client.enrollDeviceWithCode(
         request.enrollmentCode,
-        collectDeviceFacts(),
+        // Awaited rather than read synchronously: the machine model is the one
+        // enrolment fact with no in-process source, and without it every device row
+        // in the dashboard read "Unknown model".
+        await collectEnrollmentRequest(),
       );
 
       store.update({
@@ -554,6 +597,65 @@ function drainThenQuit(event: Electron.Event): void {
   });
 }
 
+/**
+ * Where `out/main/bridge.js` actually is — the second main entry the launcher runs.
+ *
+ * Packaged, it lives inside `app.asar`, and the launcher starts it with
+ * `ELECTRON_RUN_AS_NODE=1`. Whether Electron's asar hooks are installed in that mode is
+ * a version-dependent detail this agent should not bet a compliance feature on, so an
+ * unpacked copy is preferred whenever one exists. Adding
+ *
+ *     asarUnpack:
+ *       - out/main/bridge.js
+ *
+ * to `electron-builder.yml` is what produces it; without that line this falls back to
+ * the in-asar path, which is correct if the hooks are present and is the only other
+ * candidate if they are not.
+ */
+function bridgeScriptPath(): string {
+  const inAsar = join(import.meta.dirname, "bridge.js");
+  const unpacked = inAsar.replace(`app.asar${sep}`, `app.asar.unpacked${sep}`);
+
+  return unpacked !== inAsar && existsSync(unpacked) ? unpacked : inAsar;
+}
+
+/**
+ * Tells Chrome and Edge how to start this binary as a native messaging host.
+ *
+ * Fire-and-forget, and deliberately never awaited: a browser that cannot find the host
+ * is a degraded install — website tracking falls back to the platform reader and
+ * restrictions do not apply — but it is not a reason for a monitoring agent to refuse
+ * to launch. The outcome is logged either way, naming the scope, because "registered
+ * for this user" and "registered for the machine" are different rollouts and an
+ * administrator can only tell which they got if the agent says so.
+ */
+function registerBrowserBridge(fs: DurableFs): void {
+  void registerNativeHost({
+    platform: process.platform,
+    executablePath: process.execPath,
+    userDataPath: app.getPath("userData"),
+    homePath: homedir(),
+    fs,
+    run: async (file, args) => {
+      // execFile, never a shell: the manifest path is interpolated into this command
+      // line and a path containing `&` must not be able to run anything.
+      await execFileAsync(file, [...args], { windowsHide: true });
+    },
+    join,
+    extensionIds: AEMS_EXTENSION_IDS,
+    bridgeScriptPath: bridgeScriptPath(),
+    makeExecutable: (path) => {
+      chmodSync(path, 0o755);
+    },
+  })
+    .then((result) => {
+      log(describeRegistration(result));
+    })
+    .catch((error: unknown) => {
+      log("The browser bridge could not be registered", error);
+    });
+}
+
 function bootstrap(): void {
   app.on("second-instance", showWindow);
 
@@ -610,18 +712,34 @@ function bootstrap(): void {
     // Built before anything that consumes it: `SyncQueue` replays inside its constructor
     // and `SessionManager` loads inside its, so either one built ahead of the store would
     // silently restore nothing at all.
-    const durable = createDurableStore({
-      directory: agentStateDirectory(app.getPath("userData")),
-      log,
-    });
+    const stateDirectory = agentStateDirectory(app.getPath("userData"));
+    const durable = createDurableStore({ directory: stateDirectory, log });
     const deadLetters = new DeadLetterFile(durable.fs, durable.deadLetterPath, { log });
 
-    const permissions = createPermissionMonitor();
+    // The other half of the browser bridge. The bridge is a separate process — Chrome
+    // spawns it, this agent does not — so the two meet through this file rather than
+    // through a shared object. Built before the URL reader that consumes it.
+    const link = new BrowserLinkStore(
+      new JsonFile(durable.fs, join(stateDirectory, BROWSER_LINK_FILE), { log }),
+    );
+
+    const urlReader = createLinkedBrowserUrlReader(
+      createBrowserUrlReader(process.platform),
+      createBrowserLinkView(link),
+    );
+
+    // The monitor is handed the same reader the tracker uses, so the fidelity an
+    // employee is shown on the consent screen is produced by the object that actually
+    // resolves their website data — not by a second copy of the platform rule.
+    const permissions = createPermissionMonitor(urlReader);
+
+    registerBrowserBridge(durable.fs);
 
     runtime = {
       store,
       client: new AemsClient({ baseUrl: config.apiUrl, timeoutMs: REQUEST_TIMEOUT_MS }),
-      tracker: new Tracker(),
+      tracker: new Tracker(undefined, urlReader),
+      urlReader,
       idle: new IdleWatcher(),
       // The gate sits on the capturer rather than in the scheduler because this is the
       // last point before the display is actually read: nothing can route around it to
@@ -631,6 +749,7 @@ function bootstrap(): void {
       ),
       permissions,
       durable,
+      telemetryReaders: createTelemetryReaders({ powerMonitor }),
       deadLetters,
       deviceId: null,
       queue: null,
@@ -677,9 +796,73 @@ function bootstrap(): void {
   });
 }
 
-// A login-item launch racing a manual one would otherwise produce two agents
-// collecting the same machine twice.
-if (app.requestSingleInstanceLock()) {
+// -- the browser bridge ---------------------------------------------------
+
+/**
+ * Serves one native messaging port, then exits with it.
+ *
+ * No tray, no window, no collection loop and no device token: this process exists to
+ * carry an address from the browser to the running agent's state directory and to hand
+ * the browser back the policy it must enforce. Everything else the agent does belongs
+ * to the instance that holds the single-instance lock.
+ *
+ * **Chrome does not reach this branch.** The registered host is the launcher in
+ * `native-host.ts`, which runs `out/main/bridge.js` under `ELECTRON_RUN_AS_NODE=1` —
+ * because a full Electron process writes a stray CRLF to stdout on Windows before any
+ * of this code runs, and that alone destroys the wire. This branch remains because it
+ * is what makes the *ordering* below verifiable without a browser, and because a
+ * launcher edited by hand must still meet a host rather than a second agent.
+ */
+function runBridgeProcess(invocation: BridgeInvocation): void {
+  // Without this macOS bounces a dock icon every time a browser opens the port — a
+  // process the employee never started, appearing to start itself.
+  app.dock?.hide();
+
+  const userDataPath = app.getPath("userData");
+  const fs = nodeDurableFs();
+
+  startBridge(invocation, {
+    stdin: process.stdin,
+    stdout: process.stdout,
+    readConfig: () => fs.read(join(userDataPath, AGENT_CONFIG_FILE)),
+    link: new BrowserLinkStore(
+      new JsonFile(fs, join(agentStateDirectory(userDataPath), BROWSER_LINK_FILE), { log }),
+    ),
+    log,
+    now: () => new Date(),
+    exit: (code) => {
+      process.exit(code);
+    },
+  });
+
+  // stdin starts paused, and a paused stdin is also the only handle keeping this
+  // process alive — without this the bridge would exit before Chrome sent a byte.
+  process.stdin.resume();
+}
+
+// -- entry ----------------------------------------------------------------
+
+/**
+ * THE ORDER OF THESE THREE BRANCHES IS LOAD-BEARING. Read before editing.
+ *
+ * Chrome starts a *new* process for every native messaging port. If the bridge branch
+ * ran after `requestSingleInstanceLock()`, every one of those processes would find the
+ * lock held by the running agent, fall into the `else` and `app.quit()` before writing
+ * a byte — so the extension would see a channel that connects and instantly
+ * disconnects, forever, with nothing in any log to say why. And asking for the lock at
+ * all fires `second-instance` in the running agent, whose handler opens the agent
+ * window: every browser launch would pop a window in the employee's face.
+ *
+ * So the bridge is decided from `process.argv` alone, before the lock is requested, and
+ * the bridge branch never requests it. The agent branch is unchanged: a login-item
+ * launch racing a manual one must still produce one agent, not two collecting the same
+ * machine twice.
+ */
+const bridgeInvocation = readBridgeInvocation(process.argv);
+
+if (bridgeInvocation !== null) {
+  runBridgeProcess(bridgeInvocation);
+} else if (app.requestSingleInstanceLock()) {
   bootstrap();
 } else {
   app.quit();

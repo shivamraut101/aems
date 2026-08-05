@@ -5,7 +5,9 @@ import { IdleWatcher, readIdleSeconds, readIdleState } from "./idle.js";
 import type { DayState } from "./persistence.js";
 import { ScreenshotScheduler } from "./screenshot.js";
 import { SessionManager } from "./session.js";
+import type { SyncOutcome } from "./sync.js";
 import { classifyError, SyncQueue } from "./sync.js";
+import { TELEMETRY_INTERVAL_MS } from "./telemetry.js";
 import type { FocusSample } from "./tracker.js";
 import { sampleFocus, Tracker } from "./tracker.js";
 
@@ -69,6 +71,17 @@ export interface CollectorDayStore {
   update(patch: Partial<DayState>): DayState;
 }
 
+/**
+ * The device-telemetry sender, narrowed to the one call the loop makes.
+ *
+ * Deliberately not routed through `SyncQueue`: a battery percentage is only true at
+ * the instant it is read, so buffering one across an outage would put a week-old
+ * reading on a device row and date it as current. See `telemetry.ts`.
+ */
+export interface CollectorTelemetry {
+  report(totals: DayTotals): Promise<SyncOutcome>;
+}
+
 export interface CollectorParts {
   config: CollectorConfigStore;
   queue: SyncQueue;
@@ -76,6 +89,14 @@ export interface CollectorParts {
   tracker: Tracker;
   idle: IdleWatcher;
   screenshots: ScreenshotScheduler;
+  /**
+   * Battery, network, free storage and screen-active time (scope §7).
+   *
+   * Optional so every existing test constructs a loop without one. Absent, the four
+   * telemetry columns stay empty — which is exactly what shipped, and what this is
+   * here to fix.
+   */
+  telemetry?: CollectorTelemetry;
   /**
    * Where the parts of today that live only in memory are kept across a restart.
    *
@@ -119,6 +140,7 @@ export class Collector {
 
   private lastFlushAt: Date | null = null;
   private lastHeartbeatAt: Date | null = null;
+  private lastTelemetryAt: Date | null = null;
 
   /**
    * Closed idle stretches and breaks observed today.
@@ -252,6 +274,12 @@ export class Collector {
     await this.maybeHeartbeat(now);
 
     this.recomputeTotals(now);
+
+    // Telemetry IS collection — the route gates on consent exactly as ingestion does —
+    // so it runs only inside the gate, and after the totals are recomputed because the
+    // sample carries today's active seconds.
+    if (collecting) await this.maybeTelemetry(now);
+
     this.persistDay();
     this.adapters.onChanged();
   }
@@ -444,6 +472,31 @@ export class Collector {
 
     this.lastHeartbeatAt = now;
     this.applyOutcome(await this.parts.queue.heartbeat(this.parts.sessions.current), now);
+  }
+
+  /**
+   * Sends one battery/network/storage sample on the heartbeat cadence.
+   *
+   * Stamped before the attempt, like the flush, so a machine with no network does not
+   * spawn a battery reader on every five-second tick. The outcome is applied because
+   * this route is consent-gated: it is one more place the server can say "stop", and
+   * ignoring that here would leave the loop collecting after a withdrawal until the
+   * next flush happened to notice.
+   */
+  private async maybeTelemetry(now: Date): Promise<void> {
+    const telemetry = this.parts.telemetry;
+    if (telemetry === undefined) return;
+    if (!this.due(this.lastTelemetryAt, TELEMETRY_INTERVAL_MS, now)) return;
+
+    this.lastTelemetryAt = now;
+
+    try {
+      this.applyOutcome(await telemetry.report(this.totals), now);
+    } catch (error) {
+      // Device inventory is not collection-critical. A reader that throws despite its
+      // own guards must cost its sample, never the tick it is running inside.
+      this.adapters.log("Could not report device telemetry", error);
+    }
   }
 
   /** A clock that jumped backwards must not suspend syncing until it catches up. */

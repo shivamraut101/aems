@@ -336,3 +336,44 @@ describe("PermissionMonitor website-tracking fidelity", () => {
     expect(monitor.read().websiteTracking).toBe("browser-url");
   });
 });
+
+describe("PermissionMonitor and the managed browser extension", () => {
+  /** A reader whose fidelity moves, which is what a connected extension produces. */
+  function movingReader(fidelity: () => "browser-url" | "window-title") {
+    return {
+      get fidelity() {
+        return fidelity();
+      },
+      read: () => null,
+    };
+  }
+
+  it("reads the fidelity on every call, so a connection that lands mid-day is reflected", () => {
+    // Latched in the constructor, this left the consent screen promising website
+    // tracking on a machine that had lost its extension hours earlier.
+    let connected = false;
+    const monitor = new PermissionMonitor(
+      macApi(),
+      "win32",
+      movingReader(() => (connected ? "browser-url" : "window-title")),
+    );
+
+    expect(monitor.read().websiteTracking).toBe("window-title");
+    connected = true;
+    expect(monitor.read().websiteTracking).toBe("browser-url");
+  });
+
+  it("carries the same answer on macOS, where the rest of the readout is a real grant", () => {
+    const monitor = new PermissionMonitor(
+      macApi(),
+      "darwin",
+      movingReader(() => "browser-url"),
+    );
+
+    expect(monitor.read()).toEqual({
+      screenRecording: "granted",
+      accessibility: "granted",
+      websiteTracking: "browser-url",
+    });
+  });
+});

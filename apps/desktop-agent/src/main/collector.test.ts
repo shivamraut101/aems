@@ -10,7 +10,7 @@ import type {
 } from "@aems/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConfig } from "../shared/types/index.js";
+import type { AgentConfig, DayTotals } from "../shared/types/index.js";
 import { emptyConfig } from "../shared/types/index.js";
 import {
   Collector,
@@ -25,7 +25,9 @@ import { emptyDayState } from "./persistence.js";
 import type { CapturedFrame, Capturer } from "./screenshot.js";
 import { ScreenshotScheduler } from "./screenshot.js";
 import { SessionManager } from "./session.js";
+import type { SyncOutcome } from "./sync.js";
 import { SyncQueue } from "./sync.js";
+import { TELEMETRY_INTERVAL_MS } from "./telemetry.js";
 import type { FocusSample } from "./tracker.js";
 import { Tracker } from "./tracker.js";
 
@@ -132,6 +134,19 @@ class FakeStore {
   }
 }
 
+/** Records what the loop asked for, and can refuse on demand like the real route does. */
+class FakeTelemetry {
+  readonly samples: DayTotals[] = [];
+  outcome: SyncOutcome = "sent";
+  error: unknown = null;
+
+  report(totals: DayTotals): Promise<SyncOutcome> {
+    this.samples.push({ ...totals });
+    if (this.error !== null) return Promise.reject(this.error);
+    return Promise.resolve(this.outcome);
+  }
+}
+
 class FakeCapturer implements Capturer {
   calls = 0;
 
@@ -165,6 +180,7 @@ interface Harness {
   queue: SyncQueue;
   sessions: SessionManager;
   capturer: FakeCapturer;
+  telemetry: FakeTelemetry;
   logs: string[];
   /** What the next focus read returns. Reassign between ticks to move the focus. */
   focus: { sample: FocusSample | null; error: unknown };
@@ -178,6 +194,7 @@ function harness(config: AgentConfig = consented(), dayState?: FakeDayStore): Ha
   const queue = new SyncQueue(api, DEVICE);
   const sessions = new SessionManager(api, DEVICE);
   const capturer = new FakeCapturer();
+  const telemetry = new FakeTelemetry();
 
   const focus: Harness["focus"] = {
     sample: { appName: "Code", windowTitle: "collector.ts", url: null },
@@ -204,6 +221,7 @@ function harness(config: AgentConfig = consented(), dayState?: FakeDayStore): Ha
       tracker: new Tracker(),
       idle: new IdleWatcher(),
       screenshots: new ScreenshotScheduler(capturer),
+      telemetry,
       dayState,
     },
     adapters,
@@ -216,6 +234,7 @@ function harness(config: AgentConfig = consented(), dayState?: FakeDayStore): Ha
     queue,
     sessions,
     capturer,
+    telemetry,
     logs,
     focus,
     idleSeconds,
@@ -951,5 +970,76 @@ describe("Collector durability", () => {
     await h.collector.tick(at(0));
 
     expect(store.state.openIdleSince).toBe(at(-600).toISOString());
+  });
+});
+
+describe("device telemetry", () => {
+  it("sends a sample on the first tick, so a device row is never blank for a minute", async () => {
+    const h = harness();
+
+    await h.collector.tick(at(0));
+
+    expect(h.telemetry.samples).toHaveLength(1);
+  });
+
+  it("sends on the heartbeat cadence rather than on every five-second tick", async () => {
+    const h = harness();
+
+    await h.collector.tick(at(0));
+    await h.collector.tick(at(5));
+    await h.collector.tick(at(30));
+    expect(h.telemetry.samples).toHaveLength(1);
+
+    await h.collector.tick(at(TELEMETRY_INTERVAL_MS / 1000));
+    expect(h.telemetry.samples).toHaveLength(2);
+  });
+
+  it("carries today's active seconds, which is the honest reading for screen-active time", async () => {
+    const h = harness();
+
+    await h.collector.tick(at(0));
+    await h.collector.tick(at(TELEMETRY_INTERVAL_MS / 1000));
+
+    // A session opened at tick one, so by the second sample the day has run.
+    expect(h.telemetry.samples[1]?.activeSeconds).toBeGreaterThan(0);
+  });
+
+  it("sends nothing while the consent gate is closed, because the route is consent-gated", async () => {
+    const h = harness(consented({ consentedPolicyVersion: null }));
+
+    await h.collector.tick(at(0));
+
+    expect(h.telemetry.samples).toHaveLength(0);
+    // The heartbeat still goes, which is the whole distinction between the two.
+    expect(h.api.heartbeats).toHaveLength(1);
+  });
+
+  it("stops collecting when the telemetry route reports the device revoked", async () => {
+    const h = harness();
+    h.telemetry.outcome = "revoked";
+
+    await h.collector.tick(at(0));
+
+    expect(h.store.current.revoked).toBe(true);
+  });
+
+  it("reopens the consent gate when the telemetry route says consent has lapsed", async () => {
+    const h = harness();
+    h.telemetry.outcome = "consent-required";
+
+    await h.collector.tick(at(0));
+
+    expect(h.store.current.consentedPolicyVersion).toBeNull();
+  });
+
+  it("logs a throwing reporter rather than killing the tick it runs inside", async () => {
+    const h = harness();
+    h.telemetry.error = new Error("statfs exploded");
+
+    await h.collector.tick(at(0));
+
+    expect(h.logs).toContain("Could not report device telemetry");
+    // The rest of the tick still happened.
+    expect(h.api.heartbeats).toHaveLength(1);
   });
 });

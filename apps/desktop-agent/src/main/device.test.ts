@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   collectDeviceFacts,
@@ -6,7 +6,10 @@ import {
   collectMacApplications,
   collectWindowsApplications,
   parseMacApplication,
+  parseMacModel,
+  parseWindowsModel,
   parseWindowsUninstallKeys,
+  readMachineModel,
 } from "./device.js";
 import type { DeviceHostFacts } from "./device.js";
 
@@ -18,6 +21,7 @@ const windowsHost: DeviceHostFacts = {
   cpuModel: "AMD Ryzen 7 5800H with Radeon Graphics",
   totalMemoryBytes: 16 * 1024 * 1024 * 1024,
   totalStorageBytes: 512 * 1024 * 1024 * 1024,
+  model: "LENOVO 21CB",
 };
 
 const macHost: DeviceHostFacts = {
@@ -28,6 +32,7 @@ const macHost: DeviceHostFacts = {
   cpuModel: "Apple M2 Pro",
   totalMemoryBytes: 32 * 1024 * 1024 * 1024,
   totalStorageBytes: 1024 * 1024 * 1024 * 1024,
+  model: "MacBookPro18,3",
 };
 
 describe("collectDeviceFacts", () => {
@@ -63,6 +68,114 @@ describe("collectDeviceFacts", () => {
     expect(collectDeviceFacts({ ...windowsHost, totalMemoryBytes: mb }).ramMb).toBe(1);
     expect(collectDeviceFacts({ ...windowsHost, totalMemoryBytes: mb * 1.5 }).ramMb).toBe(2);
     expect(collectDeviceFacts({ ...windowsHost, totalMemoryBytes: mb * 1.4 }).ramMb).toBe(1);
+  });
+
+  it("reports the machine model, which is why every device read 'Unknown model'", () => {
+    expect(collectDeviceFacts(windowsHost).model).toBe("LENOVO 21CB");
+    expect(collectDeviceFacts(macHost).model).toBe("MacBookPro18,3");
+  });
+
+  it("omits an unreadable model rather than sending null, which the schema rejects", () => {
+    // `model?: string` — a null fails validation and takes the whole enrolment with it.
+    expect(collectDeviceFacts({ ...windowsHost, model: null }).model).toBeUndefined();
+    expect(collectDeviceFacts({ ...windowsHost, model: "   " }).model).toBeUndefined();
+  });
+
+  it("omits a model longer than the 120 characters the API accepts", () => {
+    expect(collectDeviceFacts({ ...windowsHost, model: "x".repeat(121) }).model).toBeUndefined();
+    expect(collectDeviceFacts({ ...windowsHost, model: "x".repeat(120) }).model).toHaveLength(120);
+  });
+});
+
+/** Verbatim `reg query HKLM\HARDWARE\DESCRIPTION\System\BIOS` output. */
+const BIOS_KEY_OUTPUT = [
+  "",
+  "HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\BIOS",
+  "    BaseBoardManufacturer    REG_SZ    LENOVO",
+  "    BIOSReleaseDate    REG_SZ    05/14/2024",
+  "    SystemFamily    REG_SZ    ThinkPad T14 Gen 3",
+  "    SystemManufacturer    REG_SZ    LENOVO",
+  "    SystemProductName    REG_SZ    21CB",
+  "",
+].join("\r\n");
+
+describe("parseWindowsModel", () => {
+  it("joins the maker to the product name, because neither identifies a machine alone", () => {
+    expect(parseWindowsModel(BIOS_KEY_OUTPUT)).toBe("LENOVO 21CB");
+  });
+
+  it("drops the placeholder strings a white-box builder leaves behind", () => {
+    const whitebox = [
+      "HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\BIOS",
+      "    SystemManufacturer    REG_SZ    System manufacturer",
+      "    SystemProductName    REG_SZ    System Product Name",
+    ].join("\r\n");
+
+    // "System manufacturer System Product Name" looks like a reading and says nothing.
+    expect(parseWindowsModel(whitebox)).toBeNull();
+  });
+
+  it("keeps whichever half was filled in", () => {
+    const partial = [
+      "HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\BIOS",
+      "    SystemManufacturer    REG_SZ    To Be Filled By O.E.M.",
+      "    SystemProductName    REG_SZ    B550M DS3H",
+    ].join("\r\n");
+
+    expect(parseWindowsModel(partial)).toBe("B550M DS3H");
+  });
+
+  it("does not repeat a maker that is already the product name", () => {
+    const repeated = [
+      "HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\BIOS",
+      "    SystemManufacturer    REG_SZ    Microsoft Corporation",
+      "    SystemProductName    REG_SZ    Microsoft Corporation",
+    ].join("\r\n");
+
+    expect(parseWindowsModel(repeated)).toBe("Microsoft Corporation");
+  });
+
+  it("reports nothing for output that carries neither value", () => {
+    expect(parseWindowsModel("")).toBeNull();
+    expect(parseWindowsModel("ERROR: The system was unable to find the specified key.")).toBeNull();
+  });
+});
+
+describe("parseMacModel", () => {
+  it("reads the one line sysctl prints", () => {
+    expect(parseMacModel("MacBookPro18,3\n")).toBe("MacBookPro18,3");
+  });
+
+  it("reports nothing for empty output", () => {
+    expect(parseMacModel("\n")).toBeNull();
+  });
+});
+
+describe("readMachineModel", () => {
+  it("asks reg.exe on Windows and sysctl on macOS", async () => {
+    const calls: string[] = [];
+    const exec = (file: string, args: string[]): Promise<string> => {
+      calls.push(`${file} ${args.join(" ")}`);
+      return Promise.resolve(file === "reg" ? BIOS_KEY_OUTPUT : "Macmini9,1\n");
+    };
+
+    expect(await readMachineModel("win32", exec)).toBe("LENOVO 21CB");
+    expect(await readMachineModel("darwin", exec)).toBe("Macmini9,1");
+    expect(calls).toEqual([
+      "reg query HKLM\\HARDWARE\\DESCRIPTION\\System\\BIOS",
+      "/usr/sbin/sysctl -n hw.model",
+    ]);
+  });
+
+  it("yields null rather than failing the enrolment when the command is denied", async () => {
+    const denied = (): Promise<string> => Promise.reject(new Error("Access is denied"));
+    expect(await readMachineModel("win32", denied)).toBeNull();
+  });
+
+  it("asks nothing at all on a platform the agent does not enrol", async () => {
+    const exec = vi.fn(() => Promise.resolve(""));
+    expect(await readMachineModel("linux", exec)).toBeNull();
+    expect(exec).not.toHaveBeenCalled();
   });
 });
 
