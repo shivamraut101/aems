@@ -12,6 +12,7 @@ import type {
   ProductivitySummary,
   Report,
   ScreenshotUploadResult,
+  TelemetryInput,
   TimelineEntry,
   WorkSession,
 } from "@aems/types";
@@ -114,6 +115,10 @@ export class AemsClient {
 
   reportApplications(body: DeviceApplicationsInput): Promise<{ upserted: number }> {
     return this.request("POST", "/api/devices/applications", body);
+  }
+
+  reportTelemetry(body: TelemetryInput): Promise<{ ok: true }> {
+    return this.request("POST", "/api/devices/telemetry", body);
   }
 
   // -- consent ------------------------------------------------------------

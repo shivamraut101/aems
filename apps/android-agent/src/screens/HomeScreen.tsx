@@ -1,3 +1,5 @@
+import * as Battery from "expo-battery";
+import * as Network from "expo-network";
 import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -10,6 +12,18 @@ interface HomeScreenProps {
   status: AgentStatus;
 }
 
+interface DeviceReadout {
+  todayFormatted: string;
+  batteryLabel: string;
+  networkLabel: string;
+}
+
+const EMPTY_READOUT: DeviceReadout = {
+  todayFormatted: "0h 00m",
+  batteryLabel: "—",
+  networkLabel: "—",
+};
+
 /**
  * Home screen — the "Company Work Companion" per docs/design.md.
  *
@@ -19,10 +33,26 @@ interface HomeScreenProps {
  */
 export function HomeScreen({ status }: HomeScreenProps) {
   const [hasUsageAccess, setHasUsageAccess] = useState(true);
+  const [readout, setReadout] = useState<DeviceReadout>(EMPTY_READOUT);
 
   useEffect(() => {
     setHasUsageAccess(AemsUsage.hasUsageAccess());
   }, []);
+
+  // Re-read on mount and again after every sync cycle (`status.lastSync` changes
+  // each time one completes) rather than on its own timer — battery/network/screen
+  // time drift is only interesting in step with the data the agent actually sends.
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadReadout().then((next) => {
+      if (!cancelled) setReadout(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [status.lastSync]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
@@ -32,12 +62,14 @@ export function HomeScreen({ status }: HomeScreenProps) {
 
         <View style={styles.hero}>
           <Text style={styles.heroLabel}>Today&rsquo;s work</Text>
-          <Text style={styles.heroValue}>{status.todayFormatted}</Text>
+          <Text style={styles.heroValue}>{readout.todayFormatted}</Text>
         </View>
 
         <View style={styles.rows}>
           <Row label="Status" value={status.collecting ? "Working" : "Paused"} tone={status.collecting ? "on" : "off"} />
-          <Row label="Device sync" value={status.lastSync} />
+          <Row label="Battery" value={readout.batteryLabel} />
+          <Row label="Network" value={readout.networkLabel} />
+          <Row label="Device sync" value={formatLastSync(status.lastSync)} />
           <Row label="Company policy" value={status.policyVersion ?? "—"} />
         </View>
 
@@ -56,6 +88,55 @@ export function HomeScreen({ status }: HomeScreenProps) {
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+async function loadReadout(): Promise<DeviceReadout> {
+  const [batteryLevel, batteryState, networkState, snapshot] = await Promise.all([
+    Battery.getBatteryLevelAsync(),
+    Battery.getBatteryStateAsync(),
+    Network.getNetworkStateAsync(),
+    AemsUsage.getDeviceSnapshot(),
+  ]);
+
+  return {
+    todayFormatted: formatHoursMinutes(snapshot.screenActiveSeconds),
+    batteryLabel: formatBattery(batteryLevel, batteryState),
+    networkLabel: formatNetwork(networkState),
+  };
+}
+
+function formatHoursMinutes(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
+function formatBattery(level: number, state: Battery.BatteryState): string {
+  if (level < 0) return "Unknown";
+  const percent = `${Math.round(level * 100)}%`;
+  return state === Battery.BatteryState.CHARGING ? `${percent} · Charging` : percent;
+}
+
+function formatNetwork(state: Network.NetworkState): string {
+  if (state.type === Network.NetworkStateType.WIFI) return "Wi-Fi";
+  if (state.type === Network.NetworkStateType.CELLULAR) return "Cellular";
+  if (state.type === Network.NetworkStateType.ETHERNET) return "Ethernet";
+  if (state.type === Network.NetworkStateType.NONE) return "Offline";
+  return state.isConnected ? "Connected" : "Offline";
+}
+
+function formatLastSync(lastSync: string): string {
+  if (lastSync === "Not synced") return lastSync;
+
+  const then = new Date(lastSync).getTime();
+  if (Number.isNaN(then)) return "Not synced";
+
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (elapsedSeconds < 60) return "Just now";
+  const minutes = Math.floor(elapsedSeconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
 }
 
 function Row({ label, value, tone }: { label: string; value: string; tone?: "on" | "off" }) {

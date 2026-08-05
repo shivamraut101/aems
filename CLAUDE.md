@@ -322,7 +322,4 @@ Ask before acting on these.
 8. **One mutation survives.** `main/indicator.ts:71` — making `show()` unconditional
    leaves the suite green, so nothing proves the indicator is hidden when it should be.
    The inverse (failing to show) is covered.
-9. **Android toolchain unverified.** The Android SDK has not been confirmed present,
-   so the Expo agent has never been built.
-
 Delete each item once it is resolved.

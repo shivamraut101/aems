@@ -6,7 +6,7 @@
  * alter what an already-deployed agent is allowed to send.
  */
 
-import type { ConsentMethod, DevicePlatform } from "./database.types.js";
+import type { ConsentMethod, DevicePlatform, NetworkType } from "./database.types.js";
 
 /**
  * Sent once when an agent first runs on a machine.
@@ -144,6 +144,20 @@ export interface HeartbeatInput {
   deviceId: string;
   /** Present when the agent currently has a session open. */
   workSessionId?: number | null;
+}
+
+/**
+ * Battery, network and screen-active time — collected data, not liveness. Unlike
+ * `HeartbeatInput`, this goes through the same consent gate as activity and
+ * screenshots, because it is an observation about the device rather than a signal
+ * that the agent is still alive.
+ */
+export interface TelemetryInput {
+  batteryLevel?: number | null;
+  batteryCharging?: boolean | null;
+  networkType?: NetworkType | null;
+  storageFreeMb?: number | null;
+  screenActiveSeconds?: number | null;
 }
 
 /** An aggregated slice of a person's day, combining activity, idle and screenshots. */

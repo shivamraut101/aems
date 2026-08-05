@@ -23,6 +23,8 @@
     },
     "plugins": [
       "expo-secure-store",
+      "expo-task-manager",
+      "expo-background-fetch",
       [
         "expo-notifications",
         {

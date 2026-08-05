@@ -93,7 +93,7 @@ class AemsUsageModule : Module() {
         "totalRamMb" to memory.totalMem / 1024 / 1024,
         "totalStorageMb" to stat.totalBytes / 1024 / 1024,
         "freeStorageMb" to stat.availableBytes / 1024 / 1024,
-        "screenActiveSeconds" to 0,
+        "screenActiveSeconds" to ScreenTimeTracker.getTodaySeconds(context),
       )
     }
 
