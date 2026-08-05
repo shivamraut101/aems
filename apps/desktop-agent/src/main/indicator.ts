@@ -187,6 +187,13 @@ const requireElectron = createRequire(import.meta.url);
  * - `focusable: false` + click-through — the indicator must never take a keystroke or
  *   a click away from the employee's actual work. A compliance signal that gets in
  *   the way is one somebody will find a way to kill.
+ * - `{ forward: true }` on that click-through — clicks still pass straight to whatever
+ *   is underneath, but mouse-*move* messages are also delivered to the page, which is
+ *   the only reason a `:hover` rule can fire in a window that ignores the mouse. The
+ *   pill uses it to fade its own panel out of the way when the cursor lands on it
+ *   (`renderer/screens/IndicatorWindow.tsx`). Dropping the flag disables that with no
+ *   error and no failing test — the pill would simply stay opaque over whatever it
+ *   covers. Windows and macOS only, which is the whole supported set (scope §1).
  * - `setContentProtection(true)` — keeps the window out of screen capture, so the
  *   agent does not photograph its own indicator into every screenshot it takes.
  *   Two documented degradations: on Windows 10 before 2004 the OS can only black the
