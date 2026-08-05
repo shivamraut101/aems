@@ -22,6 +22,7 @@ import {
 import { AEMS_BUCKET } from "@aems/supabase";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { validationFailure } from "../lib/validation.js";
 
 /**
  * Ceiling on rows pulled into one report.
@@ -382,7 +383,7 @@ async function resolveSpec<TBody extends ReportSpec>(
   if (!parsed.success) {
     reply
       .code(400)
-      .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+      .send(validationFailure(parsed.error, "invalid_body"));
     return null;
   }
 

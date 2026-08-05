@@ -22,7 +22,21 @@ export function agentBridge(): AgentApi | null {
  */
 export function bridgeErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : "";
-  const unwrapped = raw.replace(/^.*Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, "");
+
+  // Electron wraps anything thrown in a handler as
+  //   Error invoking remote method 'aems:enroll': AemsApiError: <message>
+  // The class name survives that unwrapping, and `AemsApiError:` in front of a
+  // sentence is noise to the person reading it — it names our code, not their problem.
+  const unwrapped = raw
+    .replace(/^.*Error invoking remote method '[^']*':\s*/, "")
+    .replace(/^[A-Za-z]*Error:\s*/, "");
+
   const message = unwrapped.trim();
-  return message.length > 0 ? message : fallback;
+  if (message.length === 0) return fallback;
+
+  // A message that still looks like a serialised object never reached a human
+  // readably. Better the fallback, which at least says what to do next.
+  if (message.startsWith("[") || message.startsWith("{")) return fallback;
+
+  return message;
 }

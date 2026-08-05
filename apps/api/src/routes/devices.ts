@@ -4,6 +4,7 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
+import { validationFailure } from "../lib/validation.js";
 import { issueDeviceToken } from "../lib/device-token.js";
 import {
   CODE_TTL_MS,
@@ -212,7 +213,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const session = request.session!;
@@ -304,7 +305,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const body = parsed.data;
@@ -381,7 +382,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const session = request.session!;
@@ -442,7 +443,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const device = request.device!;
@@ -466,7 +467,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const device = request.device!;
@@ -509,7 +510,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const device = request.device!;
@@ -585,7 +586,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const session = request.session!;
@@ -771,7 +772,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!parsedQuery.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_query", message: parsedQuery.error.message, statusCode: 400 });
+        .send(validationFailure(parsedQuery.error, "invalid_query"));
     }
 
     const session = request.session!;
