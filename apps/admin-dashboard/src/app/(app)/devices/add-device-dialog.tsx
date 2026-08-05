@@ -4,13 +4,21 @@ import { Check, Copy, Loader2, MonitorSmartphone, RefreshCw } from "lucide-react
 import { useEffect, useId, useState } from "react";
 
 import {
+  Button,
   Dialog,
-  Field,
-  FormError,
-  controlClass,
-  primaryButtonClass,
-  secondaryButtonClass,
-} from "@/components/dialog";
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@aems/ui";
+
+import { Field, FormError } from "@/components/dialog";
 import { describeError, useEmployees, useSession } from "@/lib/api";
 import { isDeactivated } from "@/lib/queries/employees-form";
 import { expiryLabel, useCreateEnrollmentCode } from "@/lib/queries/enrollment";
@@ -40,67 +48,72 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
   const code = mint.data ?? null;
 
   return (
-    <Dialog
-      title={code ? "Sign-in code" : "Add a device"}
-      description={
-        code
-          ? "Type this into the AEMS agent on the machine you are setting up."
-          : "Generates a one-time code that binds a computer to an employee. Nothing is collected until the person accepts the monitoring policy on that machine."
-      }
-      onClose={onClose}
-    >
-      {code ? (
-        <CodeStep code={code.code} expiresAt={code.expiresAt} who={code.fullName || code.email} onClose={onClose} />
-      ) : (
-        <>
-          {canChoose ? (
-            <Field label="Employee" htmlFor={selectId}>
-              <select
-                id={selectId}
-                className={controlClass}
-                value={profileId}
-                onChange={(event) => setProfileId(event.target.value)}
+    // Controlled and always open: the dialog only exists while the parent renders it,
+    // so dismissing it means unmounting rather than flipping a second piece of state.
+    <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{code ? "Sign-in code" : "Add a device"}</DialogTitle>
+          <DialogDescription>
+            {code
+              ? "Type this into the AEMS agent on the machine you are setting up."
+              : "Generates a one-time code that binds a computer to an employee. Nothing is collected until the person accepts the monitoring policy on that machine."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {code ? (
+          <CodeStep code={code.code} expiresAt={code.expiresAt} who={code.fullName || code.email} onClose={onClose} />
+        ) : (
+          <>
+            {canChoose ? (
+              <Field label="Employee" htmlFor={selectId}>
+                <Select value={profileId} onValueChange={setProfileId}>
+                  <SelectTrigger id={selectId}>
+                    <SelectValue placeholder="Myself" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="self">Myself</SelectItem>
+                    {/* Off-boarded people are excluded: the API refuses a code for
+                        them, so offering the name would only produce a 409. */}
+                    {(employees ?? [])
+                      .filter((person) => !isDeactivated(person))
+                      .map((person) => (
+                        <SelectItem key={person.id} value={person.id}>
+                          {person.full_name || person.email}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                The code will bind the machine to your own account.
+              </p>
+            )}
+
+            {mint.isError ? <FormError message={describeError(mint.error)} /> : null}
+
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button
+                disabled={mint.isPending}
+                onClick={() =>
+                  mint.mutate(profileId && profileId !== "self" ? { profileId } : {})
+                }
               >
-                <option value="">Myself</option>
-                {/* Off-boarded people are excluded: the API refuses a code for them,
-                    so offering the name would only produce a 409 after a click. */}
-                {(employees ?? [])
-                  .filter((person) => !isDeactivated(person))
-                  .map((person) => (
-                    <option key={person.id} value={person.id}>
-                      {person.full_name || person.email}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              The code will bind the machine to your own account.
-            </p>
-          )}
-
-          {mint.isError ? <FormError message={describeError(mint.error)} /> : null}
-
-          <div className="mt-5 flex justify-end gap-2">
-            <button type="button" className={secondaryButtonClass} onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              className={primaryButtonClass}
-              disabled={mint.isPending}
-              onClick={() => mint.mutate(profileId ? { profileId } : {})}
-            >
-              {mint.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              ) : (
-                <MonitorSmartphone className="h-4 w-4" aria-hidden />
-              )}
-              Generate code
-            </button>
-          </div>
-        </>
-      )}
+                {mint.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <MonitorSmartphone className="h-4 w-4" aria-hidden />
+                )}
+                Generate code
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
     </Dialog>
   );
 }
@@ -140,43 +153,43 @@ function CodeStep({
   }
 
   return (
-    <div>
+    <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
         For <span className="font-medium text-foreground">{who}</span>
       </p>
 
-      <div className="mt-3 rounded-lg border bg-secondary/40 p-5 text-center">
-        <p className="tabular select-all text-[30px] font-semibold tracking-[0.12em]">{code}</p>
+      <div className="rounded-lg border bg-secondary/40 p-4 text-center sm:p-5">
+        <p className="tabular select-all break-all text-[clamp(22px,7vw,30px)] font-semibold tracking-[0.12em]">{code}</p>
         <p className={`mt-2 text-xs ${expired ? "text-destructive" : "text-muted-foreground"}`}>
           {expiryLabel(expiresAt, now)}
         </p>
       </div>
 
-      <ol className="mt-4 space-y-1.5 text-sm text-muted-foreground">
+      <ol className="space-y-1.5 text-sm text-muted-foreground">
         <li>1. Open the AEMS agent on the employee's computer.</li>
         <li>2. Type the code above into the sign-in box.</li>
         <li>3. They read the monitoring policy and accept it there.</li>
       </ol>
 
-      <p className="mt-3 text-xs text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         The code works once. It is not stored and cannot be shown again — generate
         another if it is lost or expires.
       </p>
 
-      <div className="mt-5 flex justify-end gap-2">
-        <button type="button" className={secondaryButtonClass} onClick={copy}>
+      <DialogFooter className="mt-2">
+        <Button variant="outline" onClick={copy}>
           {copied ? (
             <Check className="h-4 w-4 text-[hsl(var(--success))]" aria-hidden />
           ) : (
             <Copy className="h-4 w-4" aria-hidden />
           )}
           {copied ? "Copied" : "Copy"}
-        </button>
-        <button type="button" className={primaryButtonClass} onClick={onClose}>
+        </Button>
+        <Button onClick={onClose}>
           {expired ? <RefreshCw className="h-4 w-4" aria-hidden /> : null}
           Done
-        </button>
-      </div>
+        </Button>
+      </DialogFooter>
     </div>
   );
 }
