@@ -82,6 +82,23 @@ curl http://localhost:3001/health         # {"status":"ok","uptime":...}
 
 Then open <http://localhost:3000> and sign in as `admin@aems.local`.
 
+### Is it actually working?
+
+With the API running:
+
+```sh
+pnpm smoke
+```
+
+It signs in for real, calls every endpoint the dashboard uses, and then checks that
+an employee is genuinely refused other people's data. That last group matters more
+than it looks: the API talks to Supabase with the **service-role key, which bypasses
+RLS**, so on this path the route guards are the only thing between an employee and
+the whole company. Unit tests prove the decision; this proves the wiring.
+
+It tells you what to fix when it cannot run — a missing service-role key and an API
+that is not started are separate, named errors, not one generic failure.
+
 ---
 
 ## 4. Desktop agent
