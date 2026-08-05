@@ -588,6 +588,28 @@ function bootstrap(): void {
     // rather than imported by the module that uses it.
     setSystemIdleSource(powerMonitor);
 
+    // A sleeping machine is not a working one. Left unhandled, the first sample after
+    // waking closes the interval that was open when the lid shut, so a laptop closed
+    // overnight reports the whole night as one span of focused work — the largest way
+    // this agent could overstate somebody's day. `lock-screen` is included because a
+    // locked workstation is equally not being used, and on Windows a lock often
+    // precedes sleep by minutes.
+    // Registered one by one rather than over a list: `powerMonitor.on` is overloaded
+    // per event name and rejects a union of them.
+    const onSuspend = (): void => {
+      runtime?.collector?.suspend();
+      publishStatus();
+    };
+    const onWake = (): void => {
+      runtime?.collector?.wake();
+      publishStatus();
+    };
+
+    powerMonitor.on("suspend", onSuspend);
+    powerMonitor.on("lock-screen", onSuspend);
+    powerMonitor.on("resume", onWake);
+    powerMonitor.on("unlock-screen", onWake);
+
     // Built before anything that consumes it: `SyncQueue` replays inside its constructor
     // and `SessionManager` loads inside its, so either one built ahead of the store would
     // silently restore nothing at all.
