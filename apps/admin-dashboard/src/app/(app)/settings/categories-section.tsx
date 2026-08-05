@@ -1,9 +1,29 @@
 "use client";
 
-import { Badge, Button } from "@aems/ui";
+import {
+  Badge,
+  Button,
+  CheckboxField,
+  Field,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@aems/ui";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { AlertTriangle, Loader2, Plus } from "lucide-react";
-import { useId, useState } from "react";
+import { useState } from "react";
+import { Controller, useForm } from "react-hook-form";
 
+import { TableSkeletonRows, type SkeletonColumn } from "@/components/states";
 import { describeError, useSession } from "@/lib/api";
 import {
   useCategoryRules,
@@ -16,31 +36,27 @@ import {
   PRODUCTIVITY_OPTIONS,
   describeRejection,
   formatRulePath,
-  hasErrors,
   productivityBadgeVariant,
   productivityLabel,
   rejectionConsequence,
   ruleConditions,
   ruleDraftFrom,
   ruleDraftToInput,
+  ruleFormSchema,
   rulesWithRejections,
-  validateRuleDraft,
   type CategoryRuleDto,
   type Productivity,
   type RuleDraft,
-  type RuleDraftErrors,
 } from "@/lib/queries/settings-view";
 
-import { Field, FieldGrid, Notice, Section, controlClass } from "./section";
+import { ConfirmPanel, FieldGrid, FormPanel, Notice, Section } from "./section";
 
 /**
  * How activity is classified, and the only place it can be changed.
  *
  * The rules are company data, evaluated server-side at ingestion *and* recomputed on
  * read — which is what lets a rule added today relabel yesterday's history without a
- * backfill. Four endpoints have existed for this since the categorisation engine
- * shipped and nothing in the dashboard called any of them, so every company was
- * frozen on whatever the seed installed.
+ * backfill.
  *
  * Two things this panel must do that a plain CRUD table would not:
  *
@@ -51,6 +67,14 @@ import { Field, FieldGrid, Notice, Section, controlClass } from "./section";
  *  2. **Show evaluation order.** First match wins. A rule list that does not say what
  *     runs first cannot explain why a rule "isn't working".
  */
+const RULE_SKELETON_COLUMNS: readonly SkeletonColumn[] = [
+  { key: "priority", label: "Priority", width: "w-8" },
+  { key: "category", label: "Category", width: "w-36" },
+  { key: "classified", label: "Classified as", width: "w-20" },
+  { key: "matches", label: "Matches when", width: "w-48" },
+  { key: "change", label: "", align: "right", width: "w-16" },
+];
+
 export function CategoriesSection() {
   const { data: session } = useSession();
   const query = useCategoryRules();
@@ -72,6 +96,7 @@ export function CategoriesSection() {
           <Button
             variant="outline"
             size="sm"
+            className="h-9"
             onClick={() => {
               setEditingId(null);
               setCreating(true);
@@ -114,102 +139,72 @@ export function CategoriesSection() {
             </div>
           ) : null}
 
-          <div className="overflow-x-auto rounded-lg border bg-card">
-            <table className="w-full min-w-[46rem] text-sm">
-              <caption className="sr-only">
-                Category rules in evaluation order, with the conditions each applies
-              </caption>
-              <thead>
-                <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th scope="col" className="px-4 py-2 font-medium">
-                    Priority
-                  </th>
-                  <th scope="col" className="px-4 py-2 font-medium">
-                    Category
-                  </th>
-                  <th scope="col" className="px-4 py-2 font-medium">
-                    Classified as
-                  </th>
-                  <th scope="col" className="px-4 py-2 font-medium">
-                    Matches when
-                  </th>
-                  <th scope="col" className="px-4 py-2 text-right font-medium">
-                    {canEdit ? "Change" : ""}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {query.isLoading ? (
-                  <RuleSkeleton />
-                ) : rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center">
-                      <p className="text-sm font-medium">No category rules yet</p>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        {canEdit
-                          ? "Every application and site is being recorded as Uncategorized and counted as neutral. Add a rule to start classifying it."
-                          : "All activity is recorded as Uncategorized until a super admin adds a rule."}
-                      </p>
-                    </td>
-                  </tr>
-                ) : (
-                  rows.map(({ rule, rejection }) =>
-                    editingId === rule.id ? (
-                      <tr key={rule.id} className="border-b last:border-0">
-                        <td colSpan={5} className="px-4 py-3">
-                          <RuleForm
-                            title={`Edit “${formatRulePath(rule.path)}”`}
-                            initial={ruleDraftFrom(rule)}
-                            ruleId={rule.id}
-                            onDone={() => setEditingId(null)}
-                            onCancel={() => setEditingId(null)}
-                          />
-                        </td>
-                      </tr>
-                    ) : (
-                      <RuleRow
-                        key={rule.id}
-                        rule={rule}
-                        rejection={rejection ? describeRejection(rejection) : null}
-                        canEdit={canEdit}
-                        onEdit={() => {
-                          setCreating(false);
-                          setEditingId(rule.id);
-                        }}
-                      />
-                    ),
-                  )
-                )}
-              </tbody>
-            </table>
-          </div>
+          <Table
+            containerClassName="rounded-lg border bg-card"
+            className="min-w-[46rem]"
+            aria-busy={query.isLoading || undefined}
+          >
+            <caption className="sr-only">
+              Category rules in evaluation order, with the conditions each applies
+            </caption>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead scope="col">Priority</TableHead>
+                <TableHead scope="col">Category</TableHead>
+                <TableHead scope="col">Classified as</TableHead>
+                <TableHead scope="col">Matches when</TableHead>
+                <TableHead scope="col" className="text-right">
+                  {canEdit ? "Change" : ""}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {query.isLoading ? (
+                <TableSkeletonRows columns={RULE_SKELETON_COLUMNS} rows={4} />
+              ) : rows.length === 0 ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={5} className="px-4 py-10 text-center">
+                    <p className="text-sm font-medium">No category rules yet</p>
+                    <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+                      {canEdit
+                        ? "Every application and site is being recorded as Uncategorized and counted as neutral. Add a rule to start classifying it."
+                        : "All activity is recorded as Uncategorized until a super admin adds a rule."}
+                    </p>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rows.map(({ rule, rejection }) =>
+                  editingId === rule.id ? (
+                    <TableRow key={rule.id} className="hover:bg-transparent">
+                      <TableCell colSpan={5} className="px-4 py-3">
+                        <RuleForm
+                          title={`Edit “${formatRulePath(rule.path)}”`}
+                          initial={ruleDraftFrom(rule)}
+                          ruleId={rule.id}
+                          onDone={() => setEditingId(null)}
+                          onCancel={() => setEditingId(null)}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    <RuleRow
+                      key={rule.id}
+                      rule={rule}
+                      rejection={rejection ? describeRejection(rejection) : null}
+                      canEdit={canEdit}
+                      onEdit={() => {
+                        setCreating(false);
+                        setEditingId(rule.id);
+                      }}
+                    />
+                  ),
+                )
+              )}
+            </TableBody>
+          </Table>
         </>
       )}
     </Section>
-  );
-}
-
-function RuleSkeleton() {
-  return (
-    <>
-      {Array.from({ length: 4 }, (_, index) => (
-        <tr key={index} className="border-b last:border-0">
-          <td className="px-4 py-2.5">
-            <span className="block h-4 w-8 animate-pulse rounded bg-muted" />
-          </td>
-          <td className="px-4 py-2.5">
-            <span className="block h-4 w-36 animate-pulse rounded bg-muted" />
-          </td>
-          <td className="px-4 py-2.5">
-            <span className="block h-4 w-20 animate-pulse rounded bg-muted" />
-          </td>
-          <td className="px-4 py-2.5">
-            <span className="block h-4 w-48 animate-pulse rounded bg-muted" />
-          </td>
-          <td className="px-4 py-2.5" />
-        </tr>
-      ))}
-    </>
   );
 }
 
@@ -230,23 +225,23 @@ function RuleRow({
 
   return (
     <>
-      <tr className="border-b transition-colors last:border-0 hover:bg-secondary/40">
-        <td className="tabular px-4 py-2.5 text-muted-foreground">{rule.priority}</td>
-        <td className="px-4 py-2.5">
+      <TableRow>
+        <TableCell className="tabular text-muted-foreground">{rule.priority}</TableCell>
+        <TableCell>
           <span className="font-medium">{formatRulePath(rule.path)}</span>
           {rejection ? (
-            <span className="mt-0.5 flex items-start gap-1.5 text-xs text-warning">
-              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+            <span className="mt-0.5 flex items-start gap-1.5 text-xs">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warning" aria-hidden />
               <span className="text-muted-foreground">Skipped — {rejection}</span>
             </span>
           ) : null}
-        </td>
-        <td className="px-4 py-2.5">
+        </TableCell>
+        <TableCell>
           <Badge variant={productivityBadgeVariant(rule.productivity)}>
             {productivityLabel(rule.productivity)}
           </Badge>
-        </td>
-        <td className="px-4 py-2.5">
+        </TableCell>
+        <TableCell>
           <ul className="space-y-0.5">
             {conditions.map((condition) => (
               <li key={condition.label} className="text-xs">
@@ -263,16 +258,17 @@ function RuleRow({
               <li className="text-xs text-muted-foreground">Case sensitive</li>
             ) : null}
           </ul>
-        </td>
-        <td className="px-4 py-2.5 text-right">
+        </TableCell>
+        <TableCell className="text-right">
           {canEdit && !confirming ? (
             <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={onEdit}>
+              <Button variant="outline" size="sm" className="h-9" onClick={onEdit}>
                 Edit
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
+                className="h-9"
                 onClick={() => {
                   remove.reset();
                   setConfirming(true);
@@ -282,57 +278,45 @@ function RuleRow({
               </Button>
             </div>
           ) : null}
-        </td>
-      </tr>
+        </TableCell>
+      </TableRow>
 
       {confirming ? (
-        <tr className="border-b bg-secondary/30 last:border-0">
-          <td colSpan={5} className="px-4 py-3">
-            <div className="flex flex-wrap items-start gap-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">
-                  Delete “{formatRulePath(rule.path)}”?
-                </p>
-                <p className="mt-0.5 text-sm text-muted-foreground">
-                  Activity this rule claimed falls through to the next matching rule, or to
-                  Uncategorized. Reports recompute from the rules in force, so history changes
-                  too — nothing is deleted, but it is relabelled.
-                </p>
-                {remove.isError ? (
-                  <p role="alert" className="mt-1.5 text-sm text-destructive">
-                    {describeError(remove.error)}
-                  </p>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setConfirming(false)}
-                  disabled={remove.isPending}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate(rule.id, { onSuccess: () => setConfirming(false) })}
-                >
-                  {remove.isPending ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                      Deleting
-                    </>
-                  ) : (
-                    "Delete rule"
-                  )}
-                </Button>
-              </div>
-            </div>
-          </td>
-        </tr>
+        <TableRow className="bg-secondary/30 hover:bg-secondary/30">
+          <TableCell colSpan={5} className="px-4 py-3">
+            <ConfirmPanel
+              title={`Delete “${formatRulePath(rule.path)}”?`}
+              detail="Activity this rule claimed falls through to the next matching rule, or to Uncategorized. Reports recompute from the rules in force, so history changes too — nothing is deleted, but it is relabelled."
+              error={remove.isError ? describeError(remove.error) : null}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9"
+                onClick={() => setConfirming(false)}
+                disabled={remove.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-9"
+                disabled={remove.isPending}
+                onClick={() => remove.mutate(rule.id, { onSuccess: () => setConfirming(false) })}
+              >
+                {remove.isPending ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                    Deleting
+                  </>
+                ) : (
+                  "Delete rule"
+                )}
+              </Button>
+            </ConfirmPanel>
+          </TableCell>
+        </TableRow>
       ) : null}
     </>
   );
@@ -341,8 +325,11 @@ function RuleRow({
 /**
  * Create and edit share one form.
  *
- * Both endpoints take the same body and the same refusals apply, so two forms would
- * be two places for the validation to drift apart.
+ * Both endpoints take the same body and the same refusals apply, so two forms would be
+ * two places for the validation to drift apart. React Hook Form drives it and
+ * `ruleFormSchema` resolves it — and that schema calls the real `compileRules`, so a
+ * pattern the engine could not run is refused here, in the engine's own words, rather
+ * than being stored and silently skipped forever.
  */
 function RuleForm({
   title,
@@ -357,167 +344,138 @@ function RuleForm({
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const fieldId = useId();
-  const [draft, setDraft] = useState<RuleDraft>(initial);
-  const [errors, setErrors] = useState<RuleDraftErrors>({});
-
   const create = useCreateCategoryRule();
   const update = useUpdateCategoryRule();
   const active = ruleId === null ? create : update;
 
-  const set = <K extends keyof RuleDraft>(key: K, value: RuleDraft[K]) => {
-    setDraft((previous) => ({ ...previous, [key]: value }));
-    // All of them, not just this field: the engine judges the rule as a whole, so
-    // typing into Domain can be what fixes an error currently blamed on the rule.
-    setErrors({});
-  };
+  const {
+    control,
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<RuleDraft>({
+    resolver: zodResolver(ruleFormSchema),
+    defaultValues: initial,
+  });
+
+  // The engine judges a rule as a whole, so "needs at least one condition" belongs to
+  // the three match fields together rather than to any one of them.
+  const conditionsError = errors.root?.["conditions"]?.message;
 
   return (
-    <form
-      className="rounded-lg border bg-card px-4 py-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const found = validateRuleDraft(draft);
-        setErrors(found);
-        if (hasErrors(found)) return;
-
+    <FormPanel
+      title={title}
+      description="Every condition you set must match. Patterns are regular expressions, except a bare hostname in Domain, which matches that host and its subdomains."
+      onSubmit={handleSubmit((draft) => {
         const input = ruleDraftToInput(draft);
         if (ruleId === null) create.mutate(input, { onSuccess: onDone });
         else update.mutate({ id: ruleId, input }, { onSuccess: onDone });
-      }}
+      })}
     >
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
-        Every condition you set must match. Patterns are regular expressions, except a bare
-        hostname in Domain, which matches that host and its subdomains.
-      </p>
-
       <div className="mt-4">
         <FieldGrid>
           <Field
             label="Category"
-            htmlFor={`${fieldId}-path`}
             hint="Up to four levels, separated by > or /."
-            error={errors.path}
+            error={errors.path?.message}
           >
-            <input
-              id={`${fieldId}-path`}
-              className={controlClass}
-              value={draft.path}
-              placeholder="Work > Development"
-              onChange={(event) => set("path", event.target.value)}
-              aria-invalid={errors.path ? true : undefined}
-              aria-describedby={errors.path ? `${fieldId}-path-error` : `${fieldId}-path-hint`}
-            />
+            {(field) => (
+              <Input {...field} {...register("path")} placeholder="Work > Development" />
+            )}
           </Field>
 
-          <Field
-            label="Classified as"
-            htmlFor={`${fieldId}-productivity`}
-            hint="Drives the work-pattern split on every report."
-          >
-            <select
-              id={`${fieldId}-productivity`}
-              className={controlClass}
-              value={draft.productivity}
-              onChange={(event) => set("productivity", event.target.value as Productivity)}
-            >
-              {PRODUCTIVITY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+          <Field label="Classified as" hint="Drives the work-pattern split on every report.">
+            {(field) => (
+              <Controller
+                control={control}
+                name="productivity"
+                render={({ field: control }) => (
+                  <Select
+                    value={control.value}
+                    onValueChange={(value) => control.onChange(value as Productivity)}
+                  >
+                    <SelectTrigger {...field}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PRODUCTIVITY_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
           </Field>
 
           <Field
             label="Application matches"
-            htmlFor={`${fieldId}-app`}
             hint="Regular expression tested against the application name."
-            error={errors.matchApp}
+            error={errors.matchApp?.message}
           >
-            <input
-              id={`${fieldId}-app`}
-              className={`${controlClass} font-mono`}
-              value={draft.matchApp}
-              placeholder="^(Code|WebStorm)"
-              onChange={(event) => set("matchApp", event.target.value)}
-              aria-invalid={errors.matchApp ? true : undefined}
-              aria-describedby={errors.matchApp ? `${fieldId}-app-error` : `${fieldId}-app-hint`}
-            />
+            {(field) => (
+              <Input
+                {...field}
+                {...register("matchApp")}
+                className="font-mono"
+                placeholder="^(Code|WebStorm)"
+              />
+            )}
           </Field>
 
           <Field
             label="Domain matches"
-            htmlFor={`${fieldId}-domain`}
             hint="A bare hostname matches its subdomains too."
-            error={errors.matchDomain}
+            error={errors.matchDomain?.message}
           >
-            <input
-              id={`${fieldId}-domain`}
-              className={`${controlClass} font-mono`}
-              value={draft.matchDomain}
-              placeholder="github.com"
-              onChange={(event) => set("matchDomain", event.target.value)}
-              aria-invalid={errors.matchDomain ? true : undefined}
-              aria-describedby={
-                errors.matchDomain ? `${fieldId}-domain-error` : `${fieldId}-domain-hint`
-              }
-            />
+            {(field) => (
+              <Input
+                {...field}
+                {...register("matchDomain")}
+                className="font-mono"
+                placeholder="github.com"
+              />
+            )}
           </Field>
 
           <Field
             label="Window title matches"
-            htmlFor={`${fieldId}-title`}
             hint="Regular expression tested against the window title."
-            error={errors.matchTitle}
+            error={errors.matchTitle?.message}
           >
-            <input
-              id={`${fieldId}-title`}
-              className={`${controlClass} font-mono`}
-              value={draft.matchTitle}
-              onChange={(event) => set("matchTitle", event.target.value)}
-              aria-invalid={errors.matchTitle ? true : undefined}
-              aria-describedby={
-                errors.matchTitle ? `${fieldId}-title-error` : `${fieldId}-title-hint`
-              }
-            />
+            {(field) => (
+              <Input {...field} {...register("matchTitle")} className="font-mono" />
+            )}
           </Field>
 
           <Field
             label="Priority"
-            htmlFor={`${fieldId}-priority`}
             hint="Lower runs first. Evaluation stops at the first rule that matches."
-            error={errors.priority}
+            error={errors.priority?.message}
           >
-            <input
-              id={`${fieldId}-priority`}
-              className={controlClass}
-              inputMode="numeric"
-              value={draft.priority}
-              onChange={(event) => set("priority", event.target.value)}
-              aria-invalid={errors.priority ? true : undefined}
-              aria-describedby={
-                errors.priority ? `${fieldId}-priority-error` : `${fieldId}-priority-hint`
-              }
-            />
+            {(field) => <Input {...field} {...register("priority")} inputMode="numeric" />}
           </Field>
         </FieldGrid>
 
-        <label className="mt-3.5 flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-input"
-            checked={!draft.ignoreCase}
-            onChange={(event) => set("ignoreCase", !event.target.checked)}
-          />
-          <span>Match case exactly</span>
-        </label>
+        <Controller
+          control={control}
+          name="ignoreCase"
+          render={({ field }) => (
+            <CheckboxField
+              containerClassName="mt-3.5"
+              label="Match case exactly"
+              checked={!field.value}
+              onCheckedChange={(checked) => field.onChange(checked !== true)}
+            />
+          )}
+        />
       </div>
 
-      {errors.match ? (
+      {conditionsError ? (
         <p role="alert" className="mt-3 text-sm text-destructive">
-          {errors.match}
+          {conditionsError}
         </p>
       ) : null}
 
@@ -532,12 +490,13 @@ function RuleForm({
           type="button"
           variant="ghost"
           size="sm"
+          className="h-9"
           onClick={onCancel}
           disabled={active.isPending}
         >
           Cancel
         </Button>
-        <Button type="submit" size="sm" disabled={active.isPending}>
+        <Button type="submit" size="sm" className="h-9" disabled={active.isPending}>
           {active.isPending ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
@@ -550,6 +509,6 @@ function RuleForm({
           )}
         </Button>
       </div>
-    </form>
+    </FormPanel>
   );
 }

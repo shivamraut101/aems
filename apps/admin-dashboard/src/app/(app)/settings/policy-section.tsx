@@ -1,8 +1,19 @@
 "use client";
 
-import { Button } from "@aems/ui";
-import { Check, Loader2 } from "lucide-react";
-import { useId, useState } from "react";
+import {
+  Button,
+  Field,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@aems/ui";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Controller, useForm } from "react-hook-form";
 
 import { describeError, useSession } from "@/lib/api";
 import { useCompanyPolicy, usePublishPolicy } from "@/lib/queries/settings";
@@ -10,43 +21,41 @@ import {
   IDLE_THRESHOLD_OPTIONS,
   POLICY_ROLLOUT_NOTE,
   SCREENSHOT_INTERVAL_OPTIONS,
-  hasErrors,
   intervalLabel,
   intervalOptionsWith,
   policyDraftFrom,
   policyDraftToInput,
+  policyFormSchema,
   policyState,
   screenshotIntervalChoices,
   screenshotsPerDay,
-  validatePolicyDraft,
   type PolicyDraft,
-  type PolicyDraftErrors,
   type PolicyRecord,
 } from "@/lib/queries/settings-view";
 
 import {
+  Confirmation,
   DefinitionList,
   DefinitionRow,
-  Field,
   FieldGrid,
+  FormPanel,
   Notice,
   Section,
   ValueSkeleton,
-  controlClass,
 } from "./section";
 
 /**
  * The monitoring policy in force, and the form that publishes the next one.
  *
  * **Publish, never edit.** Consent is recorded against a policy version
- * (non-negotiable #1), so mutating the row an employee consented to would rewrite
- * what they agreed to after the fact. Every change here inserts a new version and
- * leaves the old one standing as history.
+ * (non-negotiable #1), so mutating the row an employee consented to would rewrite what
+ * they agreed to after the fact. Every change here inserts a new version and leaves the
+ * old one standing as history.
  *
- * Until this form existed a fresh tenant was stuck: `POST /api/devices/enroll`
- * refuses with `no_policy` when a company has none, so no agent could enrol at all
- * and the only remedy the screen offered was "publish through the API or a
- * migration" — which is not a remedy, it is a shrug.
+ * Until this form existed a fresh tenant was stuck: `POST /api/devices/enroll` refuses
+ * with `no_policy` when a company has none, so no agent could enrol at all and the only
+ * remedy the screen offered was "publish through the API or a migration" — which is not
+ * a remedy, it is a shrug.
  */
 export function PolicySection() {
   const { data: session } = useSession();
@@ -72,23 +81,17 @@ export function PolicySection() {
       description="What the desktop and Android agents are configured to collect. Publishing creates a new version; the previous one stays as history."
       actions={
         canPublish && state === "ready" && !editing ? (
-          <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+          <Button variant="outline" size="sm" className="h-9" onClick={() => setEditing(true)}>
             Publish a new version
           </Button>
         ) : null
       }
     >
       {published ? (
-        <div
-          role="status"
-          className="mb-3 flex items-start gap-2.5 rounded-lg border border-success/40 bg-success/5 px-4 py-3"
-        >
-          <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          <div className="min-w-0 text-sm">
-            <p className="font-medium">{published}</p>
-            <p className="mt-0.5 text-muted-foreground">{POLICY_ROLLOUT_NOTE}</p>
-          </div>
-        </div>
+        <Confirmation>
+          <p className="font-medium">{published}</p>
+          <p className="mt-0.5 text-muted-foreground">{POLICY_ROLLOUT_NOTE}</p>
+        </Confirmation>
       ) : null}
 
       {state === "loading" ? (
@@ -143,19 +146,21 @@ export function PolicySection() {
       {state === "ready" && query.data ? <PolicyFacts policy={query.data} /> : null}
 
       {showForm ? (
-        <PolicyForm
-          current={query.data ?? null}
-          firstVersion={state === "missing"}
-          onCancel={state === "missing" ? null : () => setEditing(false)}
-          onPublished={(version) => {
-            setEditing(false);
-            setPublished(
-              version
-                ? `Version ${version} is now the policy in force.`
-                : "The new policy is now in force.",
-            );
-          }}
-        />
+        <div className="mt-3">
+          <PolicyForm
+            current={query.data ?? null}
+            firstVersion={state === "missing"}
+            onCancel={state === "missing" ? null : () => setEditing(false)}
+            onPublished={(version) => {
+              setEditing(false);
+              setPublished(
+                version
+                  ? `Version ${version} is now the policy in force.`
+                  : "The new policy is now in force.",
+              );
+            }}
+          />
+        </div>
       ) : null}
     </Section>
   );
@@ -216,6 +221,13 @@ function PolicyFacts({ policy }: { policy: PolicyRecord }) {
   );
 }
 
+/**
+ * React Hook Form + Zod, per `CLAUDE.md`.
+ *
+ * The schema delegates to `validatePolicyDraft`, which is the same function the panel
+ * validated with before and is covered by its own tests — so the form gained a
+ * resolver without the validation rules being rewritten into a second place.
+ */
 function PolicyForm({
   current,
   firstVersion,
@@ -227,158 +239,135 @@ function PolicyForm({
   onCancel: (() => void) | null;
   onPublished: (version: string | null) => void;
 }) {
-  const fieldId = useId();
-  const [draft, setDraft] = useState<PolicyDraft>(() => policyDraftFrom(current));
-  const [errors, setErrors] = useState<PolicyDraftErrors>({});
   const mutation = usePublishPolicy();
 
-  const set = <K extends keyof PolicyDraft>(key: K, value: PolicyDraft[K]) => {
-    setDraft((previous) => ({ ...previous, [key]: value }));
-    // Clear only the field being corrected; leaving the others visible is what makes
-    // a multi-error form fixable in one pass.
-    setErrors((previous) => {
-      if (!(key in previous)) return previous;
-      const next = { ...previous };
-      delete next[key];
-      return next;
-    });
-  };
+  const {
+    control,
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors },
+  } = useForm<PolicyDraft>({
+    resolver: zodResolver(policyFormSchema(current ? [current.version] : [])),
+    defaultValues: policyDraftFrom(current),
+  });
 
-  const screenshotOptions = screenshotIntervalChoices(draft.screenshotIntervalSeconds);
-  const idleOptions = intervalOptionsWith(IDLE_THRESHOLD_OPTIONS, draft.idleThresholdSeconds);
+  const screenshotSeconds = watch("screenshotIntervalSeconds");
+  const idleSeconds = watch("idleThresholdSeconds");
+  const screenshotOptions = screenshotIntervalChoices(screenshotSeconds);
+  const idleOptions = intervalOptionsWith(IDLE_THRESHOLD_OPTIONS, idleSeconds);
 
   return (
-    <form
-      className="mt-3 rounded-lg border bg-card px-4 py-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const found = validatePolicyDraft(draft, current ? [current.version] : []);
-        setErrors(found);
-        if (hasErrors(found)) return;
-
-        // The version comes from the stored row, never from the draft: it is usually
-        // the server's to mint, and echoing back what was typed would print a version
-        // that does not exist.
+    <FormPanel
+      title={firstVersion ? "Publish the first policy" : "Publish a new version"}
+      description={
+        firstVersion
+          ? "These are the terms every agent enforces and every employee consents to. They can be changed later by publishing another version."
+          : "The version in force stays as history. Consent already recorded is against the version it was given, not this one."
+      }
+      onSubmit={handleSubmit((draft) => {
+        // The version in the confirmation comes from the stored row, never from the
+        // draft: it is usually the server's to mint, and echoing back what was typed
+        // would print a version that does not exist.
         mutation.mutate(policyDraftToInput(draft), {
           onSuccess: (policy) => onPublished(policy?.version ?? null),
         });
-      }}
+      })}
     >
-      <h3 className="text-sm font-semibold">
-        {firstVersion ? "Publish the first policy" : "Publish a new version"}
-      </h3>
-      <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
-        {firstVersion
-          ? "These are the terms every agent enforces and every employee consents to. They can be changed later by publishing another version."
-          : "The version in force stays as history. Consent already recorded is against the version it was given, not this one."}
-      </p>
-
       <div className="mt-4">
         <FieldGrid>
           <Field
             label="Version (optional)"
-            htmlFor={`${fieldId}-version`}
             hint="Leave blank and the server assigns the next version in its YYYY.MM.N series. Set one only to mirror a label agreed elsewhere — it is quoted in every consent record."
-            error={errors.version}
+            error={errors.version?.message}
           >
-            <input
-              id={`${fieldId}-version`}
-              className={controlClass}
-              value={draft.version}
-              placeholder="Assigned automatically"
-              onChange={(event) => set("version", event.target.value)}
-              aria-invalid={errors.version ? true : undefined}
-              aria-describedby={
-                errors.version ? `${fieldId}-version-error` : `${fieldId}-version-hint`
-              }
-            />
+            {(field) => (
+              <Input {...field} {...register("version")} placeholder="Assigned automatically" />
+            )}
           </Field>
 
           <Field
             label="Policy name"
-            htmlFor={`${fieldId}-name`}
             hint="What an employee sees when they are asked to consent."
-            error={errors.name}
+            error={errors.name?.message}
           >
-            <input
-              id={`${fieldId}-name`}
-              className={controlClass}
-              value={draft.name}
-              onChange={(event) => set("name", event.target.value)}
-              aria-invalid={errors.name ? true : undefined}
-              aria-describedby={errors.name ? `${fieldId}-name-error` : `${fieldId}-name-hint`}
-            />
+            {(field) => <Input {...field} {...register("name")} />}
           </Field>
 
           <Field
             label="Screenshot interval"
-            htmlFor={`${fieldId}-shot`}
-            hint={`About ${screenshotsPerDay(draft.screenshotIntervalSeconds)} captures over an eight-hour day.`}
-            error={errors.screenshotIntervalSeconds}
+            hint={`About ${screenshotsPerDay(screenshotSeconds)} captures over an eight-hour day.`}
+            error={errors.screenshotIntervalSeconds?.message}
           >
-            <select
-              id={`${fieldId}-shot`}
-              className={controlClass}
-              value={draft.screenshotIntervalSeconds}
-              onChange={(event) => set("screenshotIntervalSeconds", Number(event.target.value))}
-              aria-invalid={errors.screenshotIntervalSeconds ? true : undefined}
-              aria-describedby={
-                errors.screenshotIntervalSeconds ? `${fieldId}-shot-error` : `${fieldId}-shot-hint`
-              }
-            >
-              {screenshotOptions.map((option) => (
-                <option key={option.seconds} value={option.seconds}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            {(field) => (
+              <Controller
+                control={control}
+                name="screenshotIntervalSeconds"
+                render={({ field: control }) => (
+                  <Select
+                    value={String(control.value)}
+                    onValueChange={(value) => control.onChange(Number(value))}
+                  >
+                    <SelectTrigger {...field}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {screenshotOptions.map((option) => (
+                        <SelectItem key={option.seconds} value={String(option.seconds)}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
           </Field>
 
           <Field
             label="Idle threshold"
-            htmlFor={`${fieldId}-idle`}
             hint="Inactivity for this long marks the session idle. Idle time is recorded, never deducted."
-            error={errors.idleThresholdSeconds}
+            error={errors.idleThresholdSeconds?.message}
           >
-            <select
-              id={`${fieldId}-idle`}
-              className={controlClass}
-              value={draft.idleThresholdSeconds}
-              onChange={(event) => set("idleThresholdSeconds", Number(event.target.value))}
-              aria-invalid={errors.idleThresholdSeconds ? true : undefined}
-              aria-describedby={
-                errors.idleThresholdSeconds ? `${fieldId}-idle-error` : `${fieldId}-idle-hint`
-              }
-            >
-              {idleOptions.map((option) => (
-                <option key={option.seconds} value={option.seconds}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            {(field) => (
+              <Controller
+                control={control}
+                name="idleThresholdSeconds"
+                render={({ field: control }) => (
+                  <Select
+                    value={String(control.value)}
+                    onValueChange={(value) => control.onChange(Number(value))}
+                  >
+                    <SelectTrigger {...field}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {idleOptions.map((option) => (
+                        <SelectItem key={option.seconds} value={String(option.seconds)}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
           </Field>
         </FieldGrid>
 
         <div className="mt-3.5">
           <Field
             label="Tracked categories"
-            htmlFor={`${fieldId}-categories`}
             hint="Comma-separated. Leave empty to record all activity and let the category rules below classify it."
-            error={errors.trackedCategories}
+            error={errors.trackedCategories?.message}
           >
-            <input
-              id={`${fieldId}-categories`}
-              className={controlClass}
-              value={draft.trackedCategories}
-              placeholder="Development, Communication, Research"
-              onChange={(event) => set("trackedCategories", event.target.value)}
-              aria-invalid={errors.trackedCategories ? true : undefined}
-              aria-describedby={
-                errors.trackedCategories
-                  ? `${fieldId}-categories-error`
-                  : `${fieldId}-categories-hint`
-              }
-            />
+            {(field) => (
+              <Input
+                {...field}
+                {...register("trackedCategories")}
+                placeholder="Development, Communication, Research"
+              />
+            )}
           </Field>
         </div>
       </div>
@@ -397,13 +386,14 @@ function PolicyForm({
             type="button"
             variant="ghost"
             size="sm"
+            className="h-9"
             onClick={onCancel}
             disabled={mutation.isPending}
           >
             Cancel
           </Button>
         ) : null}
-        <Button type="submit" size="sm" disabled={mutation.isPending}>
+        <Button type="submit" size="sm" className="h-9" disabled={mutation.isPending}>
           {mutation.isPending ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
@@ -414,6 +404,6 @@ function PolicyForm({
           )}
         </Button>
       </div>
-    </form>
+    </FormPanel>
   );
 }
