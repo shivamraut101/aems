@@ -9,6 +9,7 @@ import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { assertConsent } from "../plugins/context.js";
+import { validationFailure } from "../lib/validation.js";
 
 const activityEventSchema = z.object({
   clientEventId: z.string().uuid(),
@@ -287,7 +288,7 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const device = request.device!;
@@ -445,7 +446,7 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const session = request.session!;
@@ -476,7 +477,7 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const session = request.session!;

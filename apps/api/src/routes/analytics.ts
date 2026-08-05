@@ -16,6 +16,7 @@ import { z } from "zod";
 // One definition of how long a screenshot link lives, shared with the route that
 // already owns that decision. Two constants would drift.
 import { SIGNED_URL_TTL_SECONDS } from "./screenshots.js";
+import { validationFailure } from "../lib/validation.js";
 
 const rangeSchema = z.object({
   profileId: z.string().uuid(),
@@ -134,7 +135,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_query", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_query"));
     }
 
     const session = request.session!;
@@ -186,7 +187,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_query", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_query"));
     }
 
     const session = request.session!;
@@ -290,7 +291,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_query", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_query"));
     }
 
     const session = request.session!;
@@ -473,7 +474,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_query", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_query"));
     }
 
     const session = request.session!;

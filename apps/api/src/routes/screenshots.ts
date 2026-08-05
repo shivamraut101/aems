@@ -13,6 +13,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { assertConsent } from "../plugins/context.js";
+import { validationFailure } from "../lib/validation.js";
 
 const metadataSchema = z.object({
   clientEventId: z.string().uuid(),
@@ -123,7 +124,7 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_body"));
     }
 
     const meta = parsed.data;
@@ -187,7 +188,7 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_query", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_query"));
     }
 
     const session = request.session!;
@@ -253,7 +254,7 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply
         .code(400)
-        .send({ error: "invalid_query", message: parsed.error.message, statusCode: 400 });
+        .send(validationFailure(parsed.error, "invalid_query"));
     }
 
     const session = request.session!;

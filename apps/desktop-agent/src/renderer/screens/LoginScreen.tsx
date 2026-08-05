@@ -18,6 +18,38 @@ const FORM_ID = "enrolment";
  * (`EnrollRequest`), which keeps credentials out of the renderer entirely — this
  * window never holds anything reusable, and main drops the token once consent lands.
  */
+/** Length of a code once the dashes and spaces are taken out. */
+const CODE_LENGTH = 8;
+
+/**
+ * What is wrong with what was typed, or null if it is worth sending.
+ *
+ * Exported so the rules are testable without an Electron window. Deliberately does
+ * NOT try to guess whether the code is real — only whether it is the right shape.
+ * Telling someone their valid-looking code was rejected is the server's job; telling
+ * them they have typed three characters is this screen's.
+ */
+export function codeComplaint(input: string): string | null {
+  const bare = input.replace(/[\s-]/g, "");
+
+  if (bare.length === 0) return "Enter the sign-in code from the dashboard.";
+
+  if (/[^0-9A-Za-z]/.test(bare)) {
+    return "A sign-in code is letters and numbers only, like APRN-6YS8.";
+  }
+
+  if (bare.length < CODE_LENGTH) {
+    const missing = CODE_LENGTH - bare.length;
+    return `That code is ${missing} character${missing === 1 ? "" : "s"} short. It looks like APRN-6YS8.`;
+  }
+
+  if (bare.length > CODE_LENGTH) {
+    return "That is longer than a sign-in code. It looks like APRN-6YS8.";
+  }
+
+  return null;
+}
+
 export function LoginScreen({ onEnrolled }: LoginScreenProps): ReactElement {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -27,13 +59,22 @@ export function LoginScreen({ onEnrolled }: LoginScreenProps): ReactElement {
 
   async function enroll(): Promise<void> {
     const bridge = agentBridge();
-    if (bridge === null || trimmed.length === 0 || busy) return;
+    if (bridge === null || busy) return;
+
+    // Answered here rather than by the server. A code too short to be one is a typo,
+    // and a round trip to learn that is both slower and — until the message was
+    // rewritten — how a person ended up reading a Zod issue array.
+    const complaint = codeComplaint(trimmed);
+    if (complaint !== null) {
+      setError(complaint);
+      return;
+    }
 
     setBusy(true);
     setError(null);
 
     try {
-      onEnrolled(await bridge.enroll({ accessToken: trimmed }));
+      onEnrolled(await bridge.enroll({ enrollmentCode: trimmed }));
     } catch (cause) {
       setError(
         bridgeErrorMessage(

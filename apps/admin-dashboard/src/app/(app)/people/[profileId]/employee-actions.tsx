@@ -32,7 +32,7 @@ import {
   destructiveButtonClass,
   primaryButtonClass,
   secondaryButtonClass,
-} from "../dialog";
+} from "@/components/dialog";
 
 /**
  * Management actions for one person — scope §4.2, on the page a manager already

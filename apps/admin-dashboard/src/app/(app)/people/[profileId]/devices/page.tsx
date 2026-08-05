@@ -21,7 +21,7 @@ import {
   FormError,
   destructiveButtonClass,
   secondaryButtonClass,
-} from "../../dialog";
+} from "@/components/dialog";
 import { sortApplications, useDeviceApplications, useRevokeDevice } from "./device-queries";
 
 /**
