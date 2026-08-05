@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import AemsUsage from "../../modules/aems-usage";
 import { colors, spacing } from "../theme";
@@ -24,34 +25,36 @@ export function HomeScreen({ status }: HomeScreenProps) {
   }, []);
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.greeting}>{status.greeting}</Text>
-      <Text style={styles.name}>{status.fullName ?? "Welcome"}</Text>
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.greeting}>{status.greeting}</Text>
+        <Text style={styles.name}>{status.fullName ?? "Welcome"}</Text>
 
-      <View style={styles.hero}>
-        <Text style={styles.heroLabel}>Today&rsquo;s work</Text>
-        <Text style={styles.heroValue}>{status.todayFormatted}</Text>
-      </View>
-
-      <View style={styles.rows}>
-        <Row label="Status" value={status.collecting ? "Working" : "Paused"} tone={status.collecting ? "on" : "off"} />
-        <Row label="Device sync" value={status.lastSync} />
-        <Row label="Company policy" value={status.policyVersion ?? "—"} />
-      </View>
-
-      {!hasUsageAccess ? (
-        <View style={styles.notice}>
-          <Text style={styles.noticeTitle}>Usage access needed</Text>
-          <Text style={styles.noticeBody}>
-            Android requires you to grant usage access in system settings before app
-            activity can be recorded.
-          </Text>
-          <Text style={styles.link} onPress={() => AemsUsage.requestUsageAccess()}>
-            Open settings
-          </Text>
+        <View style={styles.hero}>
+          <Text style={styles.heroLabel}>Today&rsquo;s work</Text>
+          <Text style={styles.heroValue}>{status.todayFormatted}</Text>
         </View>
-      ) : null}
-    </ScrollView>
+
+        <View style={styles.rows}>
+          <Row label="Status" value={status.collecting ? "Working" : "Paused"} tone={status.collecting ? "on" : "off"} />
+          <Row label="Device sync" value={status.lastSync} />
+          <Row label="Company policy" value={status.policyVersion ?? "—"} />
+        </View>
+
+        {!hasUsageAccess ? (
+          <View style={styles.notice}>
+            <Text style={styles.noticeTitle}>Usage access needed</Text>
+            <Text style={styles.noticeBody}>
+              Android requires you to grant usage access in system settings before app
+              activity can be recorded.
+            </Text>
+            <Text style={styles.link} onPress={() => AemsUsage.requestUsageAccess()}>
+              Open settings
+            </Text>
+          </View>
+        ) : null}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 

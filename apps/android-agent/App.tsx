@@ -1,5 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ConsentScreen } from "./src/screens/ConsentScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
@@ -22,7 +23,7 @@ export default function App() {
   }, [status.consentRequired]);
 
   return (
-    <>
+    <SafeAreaProvider>
       <StatusBar style="auto" />
       {screen === "consent" ? (
         <ConsentScreen
@@ -33,6 +34,6 @@ export default function App() {
       ) : (
         <HomeScreen status={status} />
       )}
-    </>
+    </SafeAreaProvider>
   );
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import AemsUsage from "../../modules/aems-usage";
 import { colors, spacing } from "../theme";
@@ -38,44 +39,46 @@ export function ConsentScreen({ status, onAccept, onAccepted }: ConsentScreenPro
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Before monitoring starts</Text>
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.title}>Before monitoring starts</Text>
 
-      <Text style={styles.body}>
-        This is a company-owned device. Once you agree, this app will record:
-      </Text>
+        <Text style={styles.body}>
+          This is a company-owned device. Once you agree, this app will record:
+        </Text>
 
-      <View style={styles.list}>
-        {[
-          "Which apps you use, and for how long",
-          "Whether the device is online and its battery level",
-          "Device model, Android version and storage",
-          "When the app last synchronised with your employer",
-        ].map((item) => (
-          <View key={item} style={styles.listRow}>
-            <Text style={styles.bullet}>•</Text>
-            <Text style={styles.listText}>{item}</Text>
-          </View>
-        ))}
-      </View>
+        <View style={styles.list}>
+          {[
+            "Which apps you use, and for how long",
+            "Whether the device is online and its battery level",
+            "Device model, Android version and storage",
+            "When the app last synchronised with your employer",
+          ].map((item) => (
+            <View key={item} style={styles.listRow}>
+              <Text style={styles.bullet}>•</Text>
+              <Text style={styles.listText}>{item}</Text>
+            </View>
+          ))}
+        </View>
 
-      <Text style={styles.note}>
-        A notification stays visible the whole time monitoring is running. You can
-        withdraw consent at any time from the web dashboard, which stops collection
-        immediately. Policy version {status.policyVersion ?? "—"}.
-      </Text>
+        <Text style={styles.note}>
+          A notification stays visible the whole time monitoring is running. You can
+          withdraw consent at any time from the web dashboard, which stops collection
+          immediately. Policy version {status.policyVersion ?? "—"}.
+        </Text>
 
-      <Pressable
-        onPress={() => void accept()}
-        disabled={busy}
-        style={({ pressed }) => [styles.button, (pressed || busy) && styles.buttonPressed]}
-        accessibilityRole="button"
-      >
-        <Text style={styles.buttonText}>{busy ? "Saving…" : "I understand and agree"}</Text>
-      </Pressable>
+        <Pressable
+          onPress={() => void accept()}
+          disabled={busy}
+          style={({ pressed }) => [styles.button, (pressed || busy) && styles.buttonPressed]}
+          accessibilityRole="button"
+        >
+          <Text style={styles.buttonText}>{busy ? "Saving…" : "I understand and agree"}</Text>
+        </Pressable>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-    </ScrollView>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
