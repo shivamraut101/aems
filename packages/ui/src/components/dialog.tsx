@@ -33,8 +33,11 @@ const DialogOverlay = React.forwardRef<
     className={cn(
       "fixed inset-0 z-50 bg-background/80",
       // No backdrop blur: docs/design.md rules out glassmorphism.
-      "data-[state=open]:animate-in data-[state=closed]:animate-out",
-      "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
+      // `animate-fade-in`/`-out` are defined in tailwind-preset.js. They replaced
+      // `animate-in fade-in-0`, which are `tailwindcss-animate` names — that plugin is
+      // not a dependency here, so those classes generated no CSS at all.
+      "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",
+      "motion-reduce:animate-none",
       className,
     )}
     {...props}
@@ -57,8 +60,8 @@ const DialogContent = React.forwardRef<
         "fixed left-1/2 top-1/2 z-50 grid w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2",
         "max-h-[calc(100vh-2rem)] overflow-y-auto",
         "gap-4 rounded-lg border bg-card p-5 shadow-lg sm:p-6",
-        "data-[state=open]:animate-in data-[state=closed]:animate-out",
-        "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
+        "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",
+        "motion-reduce:animate-none",
         "focus-visible:outline-none",
         className,
       )}

@@ -33,7 +33,10 @@ const DropdownMenuContent = React.forwardRef<
         "z-50 min-w-[10rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md",
         // Never taller than the space it has; the list scrolls instead of the page.
         "max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto",
-        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
+        // Defined in tailwind-preset.js — the `animate-in`/`fade-in-0` these replaced
+        // are `tailwindcss-animate` names, and that plugin is not a dependency here.
+        "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",
+        "motion-reduce:animate-none",
         className,
       )}
       {...props}
