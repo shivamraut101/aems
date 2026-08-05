@@ -1,54 +1,53 @@
 import { adminClient, authorize, json } from "../_shared/client.ts";
+import { renderPdf } from "./pdf.ts";
+import type { RenderResponse } from "./plan.ts";
 
-interface Interval {
-  start: number;
-  end: number;
-}
+/** One drain does a bounded amount of work; the schedule comes back in two minutes. */
+const BATCH_SIZE = 10;
 
-/** Same merge rule the dashboard uses — overlapping spans must not double-count. */
-function merge(intervals: Interval[]): Interval[] {
-  const valid = intervals.filter((i) => Number.isFinite(i.start) && Number.isFinite(i.end) && i.end > i.start);
-  if (valid.length === 0) return [];
-
-  const sorted = [...valid].sort((a, b) => a.start - b.start);
-  const merged: Interval[] = [{ ...sorted[0] }];
-
-  for (let i = 1; i < sorted.length; i += 1) {
-    const current = sorted[i];
-    const last = merged[merged.length - 1];
-    if (current.start <= last.end) {
-      last.end = Math.max(last.end, current.end);
-    } else {
-      merged.push({ ...current });
-    }
-  }
-
-  return merged;
-}
-
-function seconds(intervals: Interval[]): number {
-  return Math.round(merge(intervals).reduce((sum, i) => sum + (i.end - i.start), 0) / 1000);
-}
+/** A report that cannot render in this long is not going to. */
+const RENDER_TIMEOUT_MS = 60_000;
 
 /**
  * Report worker.
  *
- * Picks up rows the API queued as `pending`, renders a CSV, stores it, and flips the
- * row to `ready`. A row that throws is marked `failed` rather than left pending, so
- * a broken report never looks like a slow one.
+ * Picks up rows the API queued as `pending`, asks the API for the rendered document,
+ * writes the file, and flips the row to `ready`. A row that throws is marked `failed`
+ * with the reason recorded on the row, so a broken report never looks like a slow one
+ * and the cause does not live only in this function's log.
+ *
+ * It deliberately computes nothing. The previous version re-implemented the interval
+ * merge by hand and got four things wrong that the dashboard got right — idle was
+ * never subtracted, the window end was a null fallback rather than a cap, events
+ * overlapping the start of the window were dropped, and each application's spans were
+ * merged independently so one person on two devices produced a day longer than a day.
+ * Two implementations of the same arithmetic is how that happens; there is now one,
+ * in `packages/analytics`, behind `GET /api/reports/:id/render`.
  */
 Deno.serve(async (request: Request) => {
   const denied = authorize(request);
   if (denied) return denied;
 
+  const apiUrl = Deno.env.get("AEMS_API_URL");
+  const workerSecret = Deno.env.get("WORKER_SECRET");
+
+  if (!apiUrl || !workerSecret) {
+    return json(
+      { error: "AEMS_API_URL and WORKER_SECRET must be set for the report worker" },
+      500,
+    );
+  }
+
   const supabase = adminClient();
 
   const { data: queued, error } = await supabase
     .from("reports")
-    .select("*")
+    // Only the id: everything else about the report — format, grouping, scope —
+    // is resolved by the API when it renders. The worker never interprets a spec.
+    .select("id")
     .eq("status", "pending")
     .order("created_at")
-    .limit(10);
+    .limit(BATCH_SIZE);
 
   if (error) return json({ error: error.message }, 500);
 
@@ -56,45 +55,13 @@ Deno.serve(async (request: Request) => {
 
   for (const report of queued ?? []) {
     try {
-      let query = supabase
-        .from("activity_events")
-        .select("profile_id, app_name, category, started_at, ended_at")
-        .eq("company_id", report.company_id)
-        .gte("started_at", report.period_start)
-        .lte("started_at", report.period_end);
-
-      if (report.profile_id) query = query.eq("profile_id", report.profile_id);
-
-      const { data: events } = await query;
-
-      const byProfile = new Map<string, Map<string, Interval[]>>();
-      const periodEnd = Date.parse(report.period_end);
-
-      for (const event of events ?? []) {
-        const apps = byProfile.get(event.profile_id) ?? new Map<string, Interval[]>();
-        const spans = apps.get(event.app_name) ?? [];
-        spans.push({
-          start: Date.parse(event.started_at),
-          end: event.ended_at ? Date.parse(event.ended_at) : periodEnd,
-        });
-        apps.set(event.app_name, spans);
-        byProfile.set(event.profile_id, apps);
-      }
-
-      const rows = ["profile_id,app_name,seconds"];
-      for (const [profileId, apps] of byProfile) {
-        for (const [appName, spans] of apps) {
-          // Quote the app name — window titles contain commas often enough.
-          rows.push(`${profileId},"${appName.replace(/"/g, '""')}",${seconds(spans)}`);
-        }
-      }
-
-      const path = `${report.company_id}/${report.profile_id ?? "company"}/reports/${report.kind}-${report.id}.csv`;
+      const rendered = await fetchRendered(apiUrl, workerSecret, report.id);
+      const body = await serialise(rendered);
 
       const { error: uploadError } = await supabase.storage
         .from("aems")
-        .upload(path, new Blob([rows.join("\n")], { type: "text/csv" }), {
-          contentType: "text/csv",
+        .upload(rendered.storagePath, body, {
+          contentType: rendered.contentType,
           upsert: true,
         });
 
@@ -102,15 +69,58 @@ Deno.serve(async (request: Request) => {
 
       await supabase
         .from("reports")
-        .update({ status: "ready", storage_path: path })
+        .update({
+          status: "ready",
+          storage_path: rendered.storagePath,
+          row_count: rendered.rowCount,
+          failure_reason: null,
+        })
         .eq("id", report.id);
 
       results.push({ id: report.id, status: "ready" });
     } catch (err) {
-      await supabase.from("reports").update({ status: "failed" }).eq("id", report.id);
-      results.push({ id: report.id, status: `failed: ${String(err)}` });
+      const reason = err instanceof Error ? err.message : String(err);
+      await supabase
+        .from("reports")
+        // Truncated: this is surfaced to a manager, not a log sink.
+        .update({ status: "failed", failure_reason: reason.slice(0, 500) })
+        .eq("id", report.id);
+      results.push({ id: report.id, status: `failed: ${reason}` });
     }
   }
 
   return json({ processed: results });
 });
+
+async function fetchRendered(
+  apiUrl: string,
+  secret: string,
+  reportId: number,
+): Promise<RenderResponse> {
+  // A hung API must not hold the whole drain open; the next run retries the row.
+  const abort = AbortSignal.timeout(RENDER_TIMEOUT_MS);
+
+  const response = await fetch(`${apiUrl.replace(/\/$/, "")}/api/reports/${reportId}/render`, {
+    headers: { "x-worker-secret": secret },
+    signal: abort,
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Render failed (${response.status}): ${detail.slice(0, 200)}`);
+  }
+
+  return (await response.json()) as RenderResponse;
+}
+
+async function serialise(rendered: RenderResponse): Promise<Blob> {
+  if (rendered.format === "pdf") {
+    if (!rendered.plan) throw new Error("PDF report arrived without a page plan");
+    const bytes = await renderPdf(rendered.plan);
+    return new Blob([bytes], { type: "application/pdf" });
+  }
+
+  if (rendered.csv === null) throw new Error("CSV report arrived without a body");
+  // The BOM and CRLF are already in the string; encoding it as UTF-8 preserves both.
+  return new Blob([rendered.csv], { type: "text/csv;charset=utf-8" });
+}

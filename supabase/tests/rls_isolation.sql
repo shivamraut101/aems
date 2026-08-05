@@ -73,6 +73,13 @@ insert into public.audit_log_entries (id, company_id, actor_id, action, target_t
 overriding system value values
   (9001,'11111111-0000-4000-8000-000000000001','bbbbbbbb-0000-4000-8000-000000000002','device.enrolled','device','de000001-0000-4000-8000-000000000011');
 
+-- One rule per tenant. These decide what counts as productive, so write access to
+-- them is write access to everyone's numbers: an employee who could edit a rule
+-- could recategorise their own day without touching a single activity row.
+insert into public.category_rules (id, company_id, priority, category_path, productivity, match_app) values
+  ('ca000001-0000-4000-8000-000000000021','11111111-0000-4000-8000-000000000001',10,array['Development'],'productive','code.exe'),
+  ('ca000002-0000-4000-8000-000000000022','22222222-0000-4000-8000-000000000002',10,array['Browsing'],'neutral','safari');
+
 -- ---------------------------------------------------------------------------
 -- Part 1 - visibility
 -- ---------------------------------------------------------------------------
@@ -85,6 +92,11 @@ insert into results select 'alice(employee): own telemetry only',       '1', cou
 insert into results select 'alice(employee): own device apps only',     '1', count(*)::text from public.device_applications;
 insert into results select 'alice(employee): NO audit log',             '0', count(*)::text from public.audit_log_entries;
 insert into results select 'alice(employee): own company only',         '1', count(*)::text from public.companies;
+-- Counted as "nothing from the other tenant", not as an absolute. Creating a company
+-- fires `companies_seed_category_rules`, which grants it 21 starter rules, so any
+-- fixed number here breaks the day someone edits that default set.
+insert into results select 'alice(employee): NO other-tenant rules',    '0', count(*)::text from public.category_rules where company_id <> '11111111-0000-4000-8000-000000000001';
+insert into results select 'alice(employee): CAN see own company rule', 'yes', case when count(*) = 1 then 'yes' else 'no' end from public.category_rules where id = 'ca000001-0000-4000-8000-000000000021';
 reset role;
 
 set local role authenticated;
@@ -151,6 +163,20 @@ begin
     insert into results values ('employee forges activity row', 'BLOCKED', 'NOT BLOCKED');
   exception when others then insert into results values ('employee forges activity row', 'BLOCKED', 'BLOCKED'); end;
 
+  -- Categorisation is a scoring lever, not reference data. Insert raises (the
+  -- WITH CHECK fails); update matches nothing and returns silently, so both
+  -- signals are needed again.
+  begin
+    insert into public.category_rules (company_id, priority, category_path, productivity, match_app)
+    values ('11111111-0000-4000-8000-000000000001',1,array['Development'],'productive','solitaire.exe');
+    insert into results values ('employee forges category rule', 'BLOCKED', 'NOT BLOCKED');
+  exception when others then insert into results values ('employee forges category rule', 'BLOCKED', 'BLOCKED'); end;
+
+  update public.category_rules set productivity='productive'
+    where id='ca000001-0000-4000-8000-000000000021';
+  get diagnostics n = row_count;
+  insert into results values ('employee rescores own company rule', '0 rows', n || ' rows');
+
   delete from public.activity_events where id = 7001;
   get diagnostics n = row_count;
   insert into results values ('employee deletes own activity', '0 rows', n || ' rows');
@@ -167,11 +193,46 @@ begin
   execute 'reset role';
 end $$;
 
+-- Category rules are super-admin-only by design, so a manager is the interesting
+-- negative case: managers read everyone's activity, which makes it easy to assume
+-- they may also tune the rules that score it. They may not.
+do $$
+declare n int;
+begin
+  execute 'set local role authenticated';
+  execute $q$set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-4000-8000-000000000002","role":"authenticated"}'$q$;
+
+  update public.category_rules set productivity='unproductive'
+    where id='ca000001-0000-4000-8000-000000000021';
+  get diagnostics n = row_count;
+  insert into results values ('manager rescores company rule', '0 rows', n || ' rows');
+
+  -- Switch identity WITHOUT dropping back to the table owner in between. A bare
+  -- `reset role` here would run the next two statements as the superuser, which
+  -- bypasses RLS entirely — the tests would pass while proving nothing.
+  execute $q$set local request.jwt.claims = '{"sub":"cccccccc-0000-4000-8000-000000000003","role":"authenticated"}'$q$;
+
+  -- Carol is a super_admin, but of Globex. Role alone must not be the gate.
+  update public.category_rules set productivity='unproductive'
+    where id='ca000001-0000-4000-8000-000000000021';
+  get diagnostics n = row_count;
+  insert into results values ('super_admin rescores OTHER tenant rule', '0 rows', n || ' rows');
+
+  -- ...and the legitimate case must still work, or the policy is merely broken.
+  update public.category_rules set productivity='productive'
+    where id='ca000002-0000-4000-8000-000000000022';
+  get diagnostics n = row_count;
+  insert into results values ('super_admin rescores OWN rule (legitimate)', '1 rows', n || ' rows');
+
+  execute 'reset role';
+end $$;
+
 -- ground truth, read with RLS bypassed, after every attempt above
 insert into results select 'GROUND TRUTH: activity row survived',  'yes', case when count(*)=1 then 'yes' else 'NO - DELETED' end from public.activity_events where id=7001;
 insert into results select 'GROUND TRUTH: audit entry untampered', 'yes', case when max(action)='device.enrolled' then 'yes' else 'NO - '||max(action) end from public.audit_log_entries where id=9001;
 insert into results select 'GROUND TRUTH: monitoring still on',    'yes', case when bool_and(monitoring_enabled) then 'yes' else 'NO - DISABLED' end from public.profiles where id='aaaaaaaa-0000-4000-8000-000000000001';
 insert into results select 'GROUND TRUTH: role unchanged',         'employee', max(role) from public.profiles where id='aaaaaaaa-0000-4000-8000-000000000001';
+insert into results select 'GROUND TRUTH: Acme rule unrescored',   'productive', max(productivity) from public.category_rules where id='ca000001-0000-4000-8000-000000000021';
 
 select
   test,

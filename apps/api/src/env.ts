@@ -1,6 +1,29 @@
-import "dotenv/config";
+import fs from "node:fs";
+import path from "node:path";
 
+import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
+
+// pnpm runs a workspace script with cwd set to that package, so dotenv's default
+// `<cwd>/.env` resolves to apps/api/.env and never finds the repo-root file the
+// dashboard, the agents and the Edge Functions all share. Walk up instead.
+//
+// Nearest wins: dotenv keeps the first value it sees for a key, so loading from
+// the innermost directory outward lets a package-local .env override the root.
+function loadEnvFiles(from: string = process.cwd()): void {
+  let dir = from;
+
+  for (;;) {
+    const candidate = path.join(dir, ".env");
+    if (fs.existsSync(candidate)) loadDotenv({ path: candidate });
+
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // filesystem root
+    dir = parent;
+  }
+}
+
+loadEnvFiles();
 
 const schema = z.object({
   API_PORT: z.coerce.number().default(3001),

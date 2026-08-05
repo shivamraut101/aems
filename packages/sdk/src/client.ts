@@ -3,6 +3,7 @@ import type {
   ActivityBatchResult,
   ApiError,
   ConsentSubmission,
+  DayTimeline,
   Device,
   DeviceApplicationsInput,
   DeviceEnrollmentRequest,
@@ -13,7 +14,6 @@ import type {
   Report,
   ScreenshotUploadResult,
   TelemetryInput,
-  TimelineEntry,
   WorkSession,
 } from "@aems/types";
 
@@ -168,8 +168,23 @@ export class AemsClient {
     return this.request("GET", `/api/analytics/productivity?${query.toString()}`);
   }
 
-  getTimeline(profileId: string, from: string, to: string): Promise<TimelineEntry[]> {
+  /**
+   * The reduced day view: slots, spans, markers and totals in one response.
+   *
+   * `bucketSeconds` is a fixed grid, not a free range — 60, 300, 600, 1800 or 3600,
+   * defaulting to 600. The set is deliberately not typed as a union here: it is owned
+   * by `@aems/analytics`, and the SDK is what the *agents* speak to, so pulling the
+   * analytics package in to narrow one argument would put the whole reduction engine
+   * in an agent bundle. The API validates and returns 400 on anything else.
+   */
+  getTimeline(
+    profileId: string,
+    from: string,
+    to: string,
+    bucketSeconds?: number,
+  ): Promise<DayTimeline> {
     const query = new URLSearchParams({ profileId, from, to });
+    if (bucketSeconds !== undefined) query.set("bucketSeconds", String(bucketSeconds));
     return this.request("GET", `/api/analytics/timeline?${query.toString()}`);
   }
 

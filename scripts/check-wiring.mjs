@@ -31,12 +31,14 @@ if (process.argv.includes('--print-schema')) {
 }
 
 // Snapshot of the live schema. Last refreshed 2026-08-05 against project
-// dayyrqcfktwwnkttlres after migration 20260805000006.
+// dayyrqcfktwwnkttlres after migrations 20260805000007 (categories),
+// 20260805000008 (ai_summaries uniqueness) and 20260805000010 (report specs).
 const SCHEMA = {
   activity_events: 'id,company_id,profile_id,device_id,work_session_id,app_name,window_title,url,category,started_at,ended_at,client_event_id,created_at,domain',
   ai_summaries: 'id,company_id,profile_id,kind,period_start,period_end,provider,model,content,created_at',
   audit_log_entries: 'id,company_id,actor_id,action,target_type,target_id,metadata,created_at',
   break_events: 'id,company_id,profile_id,device_id,work_session_id,break_start_at,break_end_at,duration_seconds,client_event_id,created_at',
+  category_rules: 'id,company_id,priority,category_path,productivity,match_app,match_title,match_domain,ignore_case,created_at,updated_at',
   companies: 'id,name,created_at,updated_at',
   consent_records: 'id,company_id,profile_id,device_id,policy_version,method,ip_address,consented_at,revoked_at',
   device_applications: 'id,company_id,device_id,name,version,identifier,first_seen_at,last_seen_at',
@@ -45,7 +47,7 @@ const SCHEMA = {
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',
   policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at',
   profiles: 'id,company_id,email,full_name,role,department,created_at,updated_at,manager_id,monitoring_enabled',
-  reports: 'id,company_id,profile_id,kind,period_start,period_end,status,storage_path,created_at,updated_at',
+  reports: 'id,company_id,profile_id,kind,period_start,period_end,status,storage_path,created_at,updated_at,format,grouping,params,requested_by,row_count,failure_reason',
   screenshots: 'id,company_id,profile_id,device_id,work_session_id,captured_at,storage_path,thumbnail_path,blurred,client_event_id,created_at',
   work_sessions: 'id,company_id,profile_id,device_id,clock_in_at,clock_out_at,created_at',
 }
@@ -77,7 +79,10 @@ for (const file of files) {
 
   // A query chain runs from one .from() to the next. Scoping by line window
   // instead would bleed across the sibling queries inside a Promise.all.
-  const froms = [...src.matchAll(/\.from\(\s*["'`]([a-z_]+)["'`]\s*\)/g)]
+  // The trailing `,?` matters: prettier breaks a long `.from("category_rules")` onto
+  // its own line and adds a trailing comma, and without this the whole table — every
+  // column it selects and filters on — was silently invisible to this check.
+  const froms = [...src.matchAll(/\.from\(\s*["'`]([a-z_]+)["'`]\s*,?\s*\)/g)]
 
   for (let k = 0; k < froms.length; k += 1) {
     const table = froms[k][1]
