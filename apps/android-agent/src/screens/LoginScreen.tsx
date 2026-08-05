@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { colors, spacing } from "../theme";
+import { PressableScale } from "../components/PressableScale";
+import { useTheme } from "../theme";
 
 interface LoginScreenProps {
   onLogin: (accessToken: string) => Promise<void>;
@@ -17,14 +18,17 @@ interface LoginScreenProps {
  * see `state.ts`'s `login()` for why the token itself never touches disk.
  */
 export function LoginScreen({ onLogin }: LoginScreenProps) {
+  const theme = useTheme();
   const [code, setCode] = useState("");
+  const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmed = code.trim();
+  const disabled = busy || trimmed.length === 0;
 
   async function submit() {
-    if (trimmed.length === 0 || busy) return;
+    if (disabled) return;
 
     setBusy(true);
     setError(null);
@@ -44,89 +48,114 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
     }
   }
 
+  const styles = createStyles(theme);
+
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>Sign in to this device</Text>
-
-        <Text style={styles.body}>
-          Signing in binds this phone to your employee account, so the work it reports
-          is recorded under your name.
-        </Text>
-        <Text style={styles.body}>
-          Open the AEMS dashboard, go to Devices → Add device, and paste the sign-in
-          code it shows you.
-        </Text>
-
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-
-        <View style={styles.field}>
-          <Text style={styles.label}>Sign-in code</Text>
-          <TextInput
-            style={styles.input}
-            value={code}
-            onChangeText={setCode}
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!busy}
-            placeholder="Paste the code from the dashboard"
-            placeholderTextColor={colors.muted}
-          />
-          <Text style={styles.hint}>
-            The code expires shortly after the dashboard shows it. Generate a new one
-            if this fails.
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.titleBlock}>
+          <Text style={styles.largeTitle}>Sign in to this device</Text>
+          <Text style={styles.body}>
+            Signing in binds this phone to your employee account, so the work it
+            reports is recorded under your name.
           </Text>
         </View>
 
-        <Pressable
+        <Text style={styles.callout}>
+          Open the AEMS dashboard, go to Devices → Add device, and paste the
+          sign-in code it shows you.
+        </Text>
+
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+        <View style={styles.group}>
+          <Text style={styles.groupLabel}>SIGN-IN CODE</Text>
+          <View
+            style={[
+              styles.fieldCard,
+              focused && styles.fieldCardFocused,
+              theme.shadow,
+            ]}
+          >
+            <TextInput
+              style={styles.input}
+              value={code}
+              onChangeText={setCode}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!busy}
+              placeholder="Paste the code from the dashboard"
+              placeholderTextColor={theme.colors.muted}
+            />
+          </View>
+          <Text style={styles.footnote}>
+            The code expires shortly after the dashboard shows it. Generate a new
+            one if this fails.
+          </Text>
+        </View>
+
+        <PressableScale
           onPress={() => void submit()}
-          disabled={busy || trimmed.length === 0}
-          style={({ pressed }) => [
-            styles.button,
-            (pressed || busy || trimmed.length === 0) && styles.buttonPressed,
-          ]}
+          disabled={disabled}
           accessibilityRole="button"
+          accessibilityState={{ disabled }}
+          style={[styles.button, disabled && styles.buttonDisabled]}
         >
           <Text style={styles.buttonText}>{busy ? "Signing in…" : "Bind this device"}</Text>
-        </Pressable>
+        </PressableScale>
 
         <Text style={styles.note}>
-          Nothing is recorded yet. The next screen sets out exactly what this agent
-          collects, and you decide there.
+          Nothing is recorded yet. The next screen sets out exactly what this
+          agent collects, and you decide there.
         </Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.md },
-  title: { color: colors.foreground, fontSize: 22, fontWeight: "600" },
-  body: { color: colors.foreground, fontSize: 15, lineHeight: 22 },
-  field: { gap: 6 },
-  label: { color: colors.foreground, fontSize: 14, fontWeight: "500" },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 8,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 12,
-    fontSize: 15,
-    color: colors.foreground,
-    backgroundColor: colors.card,
-  },
-  hint: { color: colors.muted, fontSize: 13, lineHeight: 18 },
-  button: {
-    marginTop: spacing.sm,
-    paddingVertical: 14,
-    borderRadius: 8,
-    backgroundColor: colors.indigo,
-    alignItems: "center",
-  },
-  buttonPressed: { opacity: 0.75 },
-  buttonText: { color: "#fff", fontWeight: "600", fontSize: 15 },
-  note: { color: colors.muted, fontSize: 13, lineHeight: 20 },
-  error: { color: colors.destructive, fontSize: 13 },
-});
+function createStyles(theme: ReturnType<typeof useTheme>) {
+  const { colors, spacing, typography, radius, minTouchTarget } = theme;
+
+  return StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.background },
+    content: { padding: spacing.lg, paddingTop: spacing.md, gap: spacing.lg },
+    titleBlock: { gap: spacing.sm },
+    largeTitle: { ...typography.largeTitle, color: colors.foreground },
+    body: { ...typography.body, color: colors.foreground },
+    callout: { ...typography.callout, color: colors.muted, lineHeight: 21 },
+    errorText: { ...typography.subhead, color: colors.destructive },
+    group: { gap: spacing.sm },
+    groupLabel: {
+      ...typography.caption,
+      color: colors.muted,
+      marginLeft: spacing.xs,
+      textTransform: "uppercase",
+    },
+    fieldCard: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius,
+      backgroundColor: colors.card,
+      minHeight: minTouchTarget,
+      justifyContent: "center",
+      paddingHorizontal: spacing.md,
+    },
+    fieldCardFocused: { borderColor: colors.indigo, borderWidth: 1.5 },
+    input: { ...typography.body, color: colors.foreground, paddingVertical: spacing.sm },
+    footnote: { ...typography.footnote, color: colors.muted, marginLeft: spacing.xs },
+    button: {
+      minHeight: minTouchTarget,
+      borderRadius: radius,
+      backgroundColor: colors.indigo,
+      alignItems: "center",
+      justifyContent: "center",
+      ...theme.shadow,
+    },
+    buttonDisabled: { opacity: 0.4 },
+    buttonText: { ...typography.headline, color: "#FFFFFF" },
+    note: { ...typography.footnote, color: colors.muted, textAlign: "center" },
+  });
+}

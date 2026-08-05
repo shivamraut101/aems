@@ -1,6 +1,9 @@
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
+import { View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { useFonts } from "@expo-google-fonts/inter";
 
 import { registerBackgroundSync } from "./src/background-task";
 import { ConsentScreen } from "./src/screens/ConsentScreen";
@@ -8,8 +11,12 @@ import { HomeScreen } from "./src/screens/HomeScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
 import { useAgentState } from "./src/state";
 import { runSyncCycle } from "./src/sync";
+import { fontFamily, useTheme, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "./src/theme";
 
 const FOREGROUND_SYNC_INTERVAL_MS = 60_000;
+
+/** Restrained per docs/design.md's "avoid heavy animation" — a quick crossfade, not a slide or a bounce. */
+const SCREEN_TRANSITION_MS = 220;
 
 /**
  * Root component. Three screens, swapped by hand instead of pulling in a router —
@@ -18,6 +25,13 @@ const FOREGROUND_SYNC_INTERVAL_MS = 60_000;
  */
 export default function App() {
   const { status, refresh, login, acceptConsent } = useAgentState();
+  const theme = useTheme();
+  const [fontsLoaded] = useFonts({
+    [fontFamily.regular]: Inter_400Regular,
+    [fontFamily.medium]: Inter_500Medium,
+    [fontFamily.semibold]: Inter_600SemiBold,
+    [fontFamily.bold]: Inter_700Bold,
+  });
 
   useEffect(() => {
     void refresh();
@@ -46,16 +60,29 @@ export default function App() {
     return () => clearInterval(interval);
   }, [status.screen, refresh]);
 
+  if (!fontsLoaded) {
+    // No spinner, no flash of system-font text — the background alone reads as a
+    // launch screen for the brief moment fonts take to load.
+    return <View style={{ flex: 1, backgroundColor: theme.colors.background }} />;
+  }
+
   return (
     <SafeAreaProvider>
-      <StatusBar style="auto" />
-      {status.screen === "login" ? (
-        <LoginScreen onLogin={login} />
-      ) : status.screen === "consent" ? (
-        <ConsentScreen status={status} onAccept={acceptConsent} onAccepted={refresh} />
-      ) : (
-        <HomeScreen status={status} />
-      )}
+      <StatusBar style={theme.mode === "dark" ? "light" : "dark"} />
+      <Animated.View
+        key={status.screen}
+        entering={FadeIn.duration(SCREEN_TRANSITION_MS)}
+        exiting={FadeOut.duration(SCREEN_TRANSITION_MS)}
+        style={{ flex: 1, backgroundColor: theme.colors.background }}
+      >
+        {status.screen === "login" ? (
+          <LoginScreen onLogin={login} />
+        ) : status.screen === "consent" ? (
+          <ConsentScreen status={status} onAccept={acceptConsent} onAccepted={refresh} />
+        ) : (
+          <HomeScreen status={status} />
+        )}
+      </Animated.View>
     </SafeAreaProvider>
   );
 }

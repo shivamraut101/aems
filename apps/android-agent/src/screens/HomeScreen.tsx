@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { PressableScale } from "../components/PressableScale";
+import { useTheme } from "../theme";
 import AemsUsage from "../../modules/aems-usage";
-import { colors, spacing } from "../theme";
 import type { AgentStatus } from "../state";
 
 interface HomeScreenProps {
@@ -32,6 +33,7 @@ const EMPTY_READOUT: DeviceReadout = {
  * covers the latter in full; repeating it here would just be nagging.
  */
 export function HomeScreen({ status }: HomeScreenProps) {
+  const theme = useTheme();
   const [hasUsageAccess, setHasUsageAccess] = useState(true);
   const [readout, setReadout] = useState<DeviceReadout>(EMPTY_READOUT);
 
@@ -54,35 +56,64 @@ export function HomeScreen({ status }: HomeScreenProps) {
     };
   }, [status.lastSync]);
 
+  const styles = createStyles(theme);
+  const rows: Array<{ label: string; value: string; tone?: "on" | "off" }> = [
+    { label: "Status", value: status.collecting ? "Working" : "Paused", tone: status.collecting ? "on" : "off" },
+    { label: "Battery", value: readout.batteryLabel },
+    { label: "Network", value: readout.networkLabel },
+    { label: "Device sync", value: formatLastSync(status.lastSync) },
+    { label: "Company policy", value: status.policyVersion ?? "—" },
+  ];
+
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.greeting}>{status.greeting}</Text>
-        <Text style={styles.name}>{status.fullName ?? "Welcome"}</Text>
+        <View style={styles.titleBlock}>
+          <Text style={styles.greeting}>{status.greeting}</Text>
+          <Text style={styles.largeTitle}>{status.fullName ?? "Welcome"}</Text>
+        </View>
 
-        <View style={styles.hero}>
-          <Text style={styles.heroLabel}>Today&rsquo;s work</Text>
+        <View style={[styles.hero, theme.shadow]}>
+          <Text style={styles.heroLabel}>TODAY&rsquo;S WORK</Text>
           <Text style={styles.heroValue}>{readout.todayFormatted}</Text>
         </View>
 
-        <View style={styles.rows}>
-          <Row label="Status" value={status.collecting ? "Working" : "Paused"} tone={status.collecting ? "on" : "off"} />
-          <Row label="Battery" value={readout.batteryLabel} />
-          <Row label="Network" value={readout.networkLabel} />
-          <Row label="Device sync" value={formatLastSync(status.lastSync)} />
-          <Row label="Company policy" value={status.policyVersion ?? "—"} />
+        <View style={[styles.card, theme.shadow]}>
+          {rows.map((row, index) => (
+            <View key={row.label} style={[styles.row, index < rows.length - 1 && styles.rowDivider]}>
+              <Text style={styles.rowLabel}>{row.label}</Text>
+              <View style={styles.rowValueWrap}>
+                {row.tone ? (
+                  <View
+                    style={[
+                      styles.dot,
+                      { backgroundColor: row.tone === "on" ? theme.colors.emerald : theme.colors.muted },
+                    ]}
+                  />
+                ) : null}
+                <Text style={styles.rowValue}>{row.value}</Text>
+              </View>
+            </View>
+          ))}
         </View>
 
         {!hasUsageAccess ? (
-          <View style={styles.notice}>
-            <Text style={styles.noticeTitle}>Usage access needed</Text>
-            <Text style={styles.noticeBody}>
-              Android requires you to grant usage access in system settings before app
-              activity can be recorded.
-            </Text>
-            <Text style={styles.link} onPress={() => AemsUsage.requestUsageAccess()}>
-              Open settings
-            </Text>
+          <View style={[styles.notice, theme.shadow]}>
+            <View style={styles.noticeAccent} />
+            <View style={styles.noticeBody}>
+              <Text style={styles.noticeTitle}>Usage access needed</Text>
+              <Text style={styles.noticeText}>
+                Android requires you to grant usage access in system settings before
+                app activity can be recorded.
+              </Text>
+              <PressableScale
+                onPress={() => AemsUsage.requestUsageAccess()}
+                accessibilityRole="button"
+                style={styles.linkTouchArea}
+              >
+                <Text style={styles.link}>Open settings</Text>
+              </PressableScale>
+            </View>
           </View>
         ) : null}
       </ScrollView>
@@ -139,57 +170,57 @@ function formatLastSync(lastSync: string): string {
   return `${hours}h ago`;
 }
 
-function Row({ label, value, tone }: { label: string; value: string; tone?: "on" | "off" }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <View style={styles.rowValueWrap}>
-        {tone ? (
-          <View style={[styles.dot, { backgroundColor: tone === "on" ? colors.emerald : colors.muted }]} />
-        ) : null}
-        <Text style={styles.rowValue}>{value}</Text>
-      </View>
-    </View>
-  );
-}
+function createStyles(theme: ReturnType<typeof useTheme>) {
+  const { colors, spacing, typography, radius, minTouchTarget } = theme;
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.md },
-  greeting: { color: colors.muted, fontSize: 15 },
-  name: { color: colors.foreground, fontSize: 24, fontWeight: "600", marginTop: -6 },
-  hero: {
-    marginTop: spacing.sm,
-    padding: spacing.lg,
-    borderRadius: 8,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  heroLabel: { color: colors.muted, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 },
-  heroValue: { color: colors.foreground, fontSize: 34, fontWeight: "700", marginTop: 4 },
-  rows: { borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
-  row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: spacing.md,
-    paddingVertical: 13,
-    backgroundColor: colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  rowLabel: { color: colors.muted, fontSize: 14 },
-  rowValueWrap: { flexDirection: "row", alignItems: "center", gap: 7 },
-  rowValue: { color: colors.foreground, fontSize: 14, fontWeight: "500" },
-  dot: { width: 7, height: 7, borderRadius: 4 },
-  notice: {
-    padding: spacing.md,
-    borderRadius: 8,
-    backgroundColor: colors.warningSurface,
-    gap: 6,
-  },
-  noticeTitle: { color: colors.foreground, fontWeight: "600" },
-  noticeBody: { color: colors.muted, lineHeight: 20 },
-  link: { color: colors.indigo, fontWeight: "600", marginTop: 2 },
-});
+  return StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.background },
+    content: { padding: spacing.lg, paddingTop: spacing.md, gap: spacing.lg },
+    titleBlock: { gap: 2 },
+    greeting: { ...typography.subhead, color: colors.muted },
+    largeTitle: { ...typography.largeTitle, color: colors.foreground },
+    hero: {
+      padding: spacing.lg,
+      borderRadius: radius,
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    heroLabel: { ...typography.caption, color: colors.muted, letterSpacing: 0.6 },
+    heroValue: { ...typography.largeTitle, color: colors.foreground, marginTop: 4 },
+    card: {
+      borderRadius: radius,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.card,
+      overflow: "hidden",
+    },
+    row: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      minHeight: minTouchTarget,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+    },
+    rowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+    rowLabel: { ...typography.callout, color: colors.muted },
+    rowValueWrap: { flexDirection: "row", alignItems: "center", gap: 7 },
+    rowValue: { ...typography.subhead, color: colors.foreground },
+    dot: { width: 7, height: 7, borderRadius: 4 },
+    notice: {
+      flexDirection: "row",
+      borderRadius: radius,
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+      overflow: "hidden",
+    },
+    noticeAccent: { width: 3, backgroundColor: colors.amber },
+    noticeBody: { flex: 1, padding: spacing.md, gap: spacing.xs },
+    noticeTitle: { ...typography.headline, color: colors.foreground },
+    noticeText: { ...typography.footnote, color: colors.muted },
+    linkTouchArea: { minHeight: minTouchTarget, justifyContent: "center", marginLeft: -spacing.xs },
+    link: { ...typography.subhead, color: colors.indigo, paddingHorizontal: spacing.xs },
+  });
+}

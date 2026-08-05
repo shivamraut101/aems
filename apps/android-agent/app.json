@@ -38,7 +38,8 @@
             "kotlinVersion": "1.9.24"
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "tsconfigPaths": false
