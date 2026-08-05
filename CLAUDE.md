@@ -222,9 +222,23 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm format
+pnpm check       # both static checks below
 ```
 
 Node >= 20, pnpm pinned via `packageManager` in the root `package.json`.
+
+Two checks catch what the compiler cannot, because both cross a boundary made of
+strings. Run them with `pnpm check` before any push.
+
+| Check | Catches |
+| --- | --- |
+| `pnpm check:wiring` | A table, column or embed the API or an Edge Function names that the schema does not have |
+| `pnpm check:routes` | An `/api/...` path the dashboard or SDK calls that Fastify never registers |
+
+The second exists because that failure already shipped: the dashboard called
+`GET /api/analytics/insights` and `GET /api/policies/current`, neither of which
+existed, and both 404s rendered as ordinary empty states — so the AI Insights page
+and the Settings policy block were permanently blank with nothing reporting an error.
 
 ---
 

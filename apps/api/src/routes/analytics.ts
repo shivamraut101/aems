@@ -8,6 +8,7 @@ import {
   signedUrlIndex,
   summarisePeriod,
 } from "@aems/analytics";
+import { canViewOthers, type SessionProfile } from "@aems/auth";
 import { AEMS_BUCKET } from "@aems/supabase";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
@@ -38,6 +39,63 @@ const timelineSchema = rangeSchema.extend({
     })
     .default(DEFAULT_SLOT_SECONDS),
 });
+
+/**
+ * `profileId` is required for the two per-person kinds and meaningless for the
+ * company one, so the rule lives in the schema rather than in the handler. Asking
+ * for a daily summary without saying whose is a malformed request, not an empty one.
+ */
+export const insightsSchema = z
+  .object({
+    kind: z.enum(["daily", "weekly", "insight"]),
+    profileId: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(90).default(14),
+  })
+  .refine((value) => value.kind === "insight" || value.profileId !== undefined, {
+    message: "profileId is required for daily and weekly summaries",
+    path: ["profileId"],
+  });
+
+export type InsightsQuery = z.infer<typeof insightsSchema>;
+
+/**
+ * May this caller read these summaries? Pure, so it can be tested without a database.
+ *
+ * Split out of the handler deliberately: this is the whole of the authorisation
+ * decision for AI summaries, and inline in a route it could only be exercised by
+ * standing up Postgres, Supabase Auth and a signed JWT.
+ */
+export function insightsDenial(
+  query: Pick<InsightsQuery, "kind" | "profileId">,
+  session: Pick<SessionProfile, "role" | "profileId">,
+): { statusCode: 403; message: string } | null {
+  // `canViewOthers`, not `role !== "employee"`. Asking what a role MAY do fails closed
+  // when a role is added later and forgotten here (`ROLE_RANK[unknown]` is undefined,
+  // and `undefined >= 1` is false); asking what it is NOT fails open, handing the new
+  // role manager rights by default.
+  //
+  // Note `@aems/auth` describes itself as a UX layer with the database as the real
+  // boundary. That holds for the dashboard's own Supabase reads, where RLS is enforced.
+  // It does NOT hold here: `app.supabase` is the service-role client and bypasses RLS
+  // entirely, so on this path these checks are the only boundary there is.
+  if (canViewOthers(session.role)) return null;
+
+  // The company insight aggregates colleagues, so it is other people's data under
+  // another name and an employee may not have it whatever `profileId` they send.
+  //
+  // Order relative to the ownership check below is cosmetic, not security: both are
+  // sequential denials, so either ordering refuses the same requests and only the
+  // message changes. Verified by mutation — swapping them leaves the suite green.
+  if (query.kind === "insight") {
+    return { statusCode: 403, message: "Company insights are for managers and admins" };
+  }
+
+  if (query.profileId !== session.profileId) {
+    return { statusCode: 403, message: "Not your data" };
+  }
+
+  return null;
+}
 
 /** How long a device may go quiet before the dashboard calls it offline. */
 const OFFLINE_AFTER_MS = 2 * 60 * 1000;
@@ -360,5 +418,49 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
         status,
       };
     });
+  });
+
+  /**
+   * Summaries the AI worker has already written. Read-only — nothing here calls a model.
+   *
+   * `docs/scope.md` §6 names three: a daily employee summary, a weekly one, and
+   * company-wide insights. The first two belong to a person and the third does not,
+   * which is why `profile_id` is nullable on the table and why `kind` alone decides
+   * whether `profileId` is required.
+   */
+  app.get("/insights", { preHandler: app.requireUser }, async (request, reply) => {
+    const parsed = insightsSchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_query", message: parsed.error.message, statusCode: 400 });
+    }
+
+    const session = request.session!;
+    const { kind, profileId, limit } = parsed.data;
+
+    // The dashboard already hides the company option from employees, and only ever
+    // asks for the signed-in person's own summaries. Both are courtesies, not
+    // controls — the request still has to be refused here.
+    const denial = insightsDenial({ kind, profileId }, session);
+    if (denial !== null) {
+      return reply
+        .code(denial.statusCode)
+        .send({ error: "forbidden", message: denial.message, statusCode: denial.statusCode });
+    }
+
+    let query = app.supabase
+      .from("ai_summaries")
+      .select("*")
+      .eq("company_id", session.companyId)
+      .eq("kind", kind);
+
+    // A company insight has no owner, so filtering it by profile would return nothing
+    // at all rather than the row the caller asked for.
+    query = kind === "insight" ? query.is("profile_id", null) : query.eq("profile_id", profileId!);
+
+    const { data } = await query.order("period_start", { ascending: false }).limit(limit);
+
+    return data ?? [];
   });
 };

@@ -243,6 +243,9 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@22.20.1)(jsdom@30.0.1(@noble/hashes@2.2.0))(lightningcss@1.27.0)(terser@5.49.1)
 
   apps/desktop-agent:
     dependencies:

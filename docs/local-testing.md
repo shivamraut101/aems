@@ -125,8 +125,10 @@ the employee timeline, app and website breakdowns, device inventory.
 
 Not working locally without extra setup:
 
-- **AI insights** — needs `ANTHROPIC_API_KEY` in `.env` and the `ai-summary` Edge
-  Function deployed. Rows that already exist render fine without it.
+- **AI insights** — the page and its read endpoint work, but the seed contains no
+  `ai_summaries` rows, so it shows its empty state until the worker has run. Writing
+  summaries needs `ANTHROPIC_API_KEY` in `.env` and the `ai-summary` Edge Function
+  deployed.
 - **Screenshots from the agent** — upload works, but the seed contains no screenshot
   rows, so the gallery is empty until an agent runs for a few minutes.
 - **Website tracking on Windows** — `get-windows` reads browser URLs via AppleScript,
