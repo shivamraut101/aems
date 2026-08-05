@@ -40,6 +40,17 @@ export type PermissionState =
   "granted" | "denied" | "restricted" | "not-determined" | "unknown" | "not-required";
 
 /**
+ * How much of a browser address the platform can actually be seen to report.
+ *
+ * Lives here rather than beside the reader that produces it because it is a claim the
+ * renderer has to make to the employee, not an implementation detail of `main/`.
+ * `window-title` means the address is only ever recovered when a page carried no
+ * `<title>` of its own — in practice almost never — so a Windows machine reporting an
+ * empty Websites view is the platform working as designed, not the agent failing.
+ */
+export type UrlFidelity = "browser-url" | "window-title";
+
+/**
  * Whether the OS still lets the agent see what it claims to be collecting.
  *
  * macOS can revoke Screen Recording at any time, and Sequoia re-prompts on a
@@ -50,9 +61,40 @@ export interface AgentPermissions {
   screenRecording: PermissionState;
   /** Needed for browser URL reads on macOS. Not a concept on Windows. */
   accessibility: PermissionState;
+  /**
+   * A capability, not a grant — which is why it is not a `PermissionState`.
+   *
+   * Nothing the employee or an administrator can click changes it, so it deliberately
+   * does not feed `permissionGaps`: a permanent "limited" badge on every Windows
+   * machine would train people to ignore the badge that means a real, fixable block.
+   */
+  websiteTracking: UrlFidelity;
 }
 
 export type PermissionTarget = "screen-recording" | "accessibility";
+
+/**
+ * Whether a state means "the agent is being stopped from seeing this".
+ *
+ * `not-determined` counts: nothing is captured until the employee answers the OS
+ * prompt, so from a readout's point of view it is identical to a refusal. `unknown`
+ * does not — reporting a gap we cannot confirm would cry wolf.
+ *
+ * Shared rather than renderer-local because the main process asks the same question
+ * when it decides whether the indicator says "Monitoring" or "Monitoring — limited",
+ * and two copies of a compliance rule eventually disagree.
+ */
+export function isPermissionBlocked(state: PermissionState): boolean {
+  return state === "denied" || state === "restricted" || state === "not-determined";
+}
+
+/** True when the OS is blocking something the agent claims to be collecting. */
+export function hasPermissionGap(permissions: AgentPermissions): boolean {
+  return (
+    isPermissionBlocked(permissions.screenRecording) ||
+    isPermissionBlocked(permissions.accessibility)
+  );
+}
 
 // -- agent state ----------------------------------------------------------
 
@@ -180,6 +222,68 @@ export function statusOf(
     policyVersion: config.policy?.version ?? null,
     ...extra,
   };
+}
+
+// -- the always-visible indicator -----------------------------------------
+
+/**
+ * The always-on-top indicator's state machine (non-negotiable #2).
+ *
+ * It lives in the shared contract because *both* processes need the same answer: main
+ * decides whether the window exists at all, and the window decides what it says. Two
+ * copies of that rule would eventually disagree, and a pill reading "Monitoring" over
+ * a stopped agent is the same lie as collecting with no pill at all.
+ *
+ * Keeping it here rather than in `renderer/lib` is also what stops the main-process
+ * bundle from importing renderer modules to get at it — a direction that only holds
+ * for as long as nobody adds a DOM import to the file at the other end.
+ */
+
+/**
+ * How the indicator window tells itself apart from the main agent window.
+ *
+ * Both load the same `index.html` — the renderer has one Vite entry — so the fragment
+ * is what the entry point reads to decide which of the two it is painting.
+ */
+export const INDICATOR_HASH = "#indicator";
+
+export function isIndicatorRoute(hash: string): boolean {
+  return hash === INDICATOR_HASH;
+}
+
+/** Why the indicator is not on screen. Carried so a hidden indicator can be logged. */
+export type IndicatorHiddenReason = "not-enrolled" | "consent-required" | "revoked" | "on-break";
+
+export type IndicatorTone = "recording" | "limited";
+
+export type IndicatorState =
+  | { visible: false; reason: IndicatorHiddenReason }
+  | { visible: true; tone: IndicatorTone; label: string };
+
+/**
+ * When the indicator is on screen, and what it says while it is.
+ *
+ * One rule, in one direction: the pill appears if and only if the agent is actually
+ * recording. Anything else — no sign-in, a revoked device, an open consent gate, a
+ * declared break — leaves the screen clear, because an indicator over an agent that
+ * is collecting nothing tells the employee something untrue.
+ *
+ * The reasons are ordered most-terminal first, so a revoked device is never described
+ * as merely needing consent.
+ */
+export function indicatorStateFor(status: AgentStatus): IndicatorState {
+  if (!status.enrolled) return { visible: false, reason: "not-enrolled" };
+  if (status.revoked) return { visible: false, reason: "revoked" };
+  // Ranked above the consent gate because a break is the employee's own decision and
+  // `collecting` stays true through one — it describes the consent record, not the loop.
+  if (status.onBreak) return { visible: false, reason: "on-break" };
+  if (!status.collecting) return { visible: false, reason: "consent-required" };
+
+  if (hasPermissionGap(status.permissions)) {
+    return { visible: true, tone: "limited", label: "Monitoring — limited" };
+  }
+
+  return { visible: true, tone: "recording", label: "Monitoring" };
 }
 
 // -- channel payloads -----------------------------------------------------

@@ -1,6 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { macosBrowserUrlReader, windowsBrowserUrlReader } from "./browser-url.js";
 import { extractDomain, sampleFocus, Tracker, type FocusSample } from "./tracker.js";
+
+// Which platform is being described is part of every website-tracking assertion:
+// macOS gets the real address out of the browser, Windows only ever sees the title.
+// Naming it here keeps the suite honest on whichever machine it runs.
+function macTracker(): Tracker {
+  return new Tracker(undefined, macosBrowserUrlReader);
+}
+
+function windowsTracker(): Tracker {
+  return new Tracker(undefined, windowsBrowserUrlReader);
+}
 
 // The only impure edge of this module. Stubbed so the suite never loads the native
 // binding — the domain logic below must stay runnable on a machine without it.
@@ -196,7 +208,7 @@ describe("extractDomain normalisation", () => {
 
 describe("Tracker domain attribution", () => {
   it("puts the browsed domain on the emitted event", () => {
-    const tracker = new Tracker();
+    const tracker = macTracker();
     tracker.observeFocus(focus("chrome", "AEMS", "https://github.com/aems/repo"), at(0));
 
     const event = tracker.observeFocus(focus("code"), at(60));
@@ -207,7 +219,7 @@ describe("Tracker domain attribution", () => {
 
   it("falls back to the window title when no URL was readable", () => {
     // Windows has no maintained way to read the tab URL, so the title is all there is.
-    const tracker = new Tracker();
+    const tracker = windowsTracker();
     tracker.observeFocus(focus("chrome", "stackoverflow.com/questions/1", null), at(0));
 
     expect(tracker.flush(at(60))?.domain).toBe("stackoverflow.com");
@@ -219,13 +231,23 @@ describe("Tracker domain attribution", () => {
 
     expect(tracker.flush(at(60))?.domain).toBeNull();
   });
+
+  it("never turns a non-browser window title into a website", () => {
+    // "README.md" parses as a host — .md is Moldova. An editor, a mail client and a
+    // file manager all put names like it in the title bar, and every one of them
+    // would land in a report as a site the employee visited.
+    const tracker = new Tracker();
+    tracker.observeFocus(focus("Notepad", "README.md"), at(0));
+
+    expect(tracker.flush(at(60))?.domain).toBeNull();
+  });
 });
 
 describe("Tracker website intervals", () => {
   it("splits the interval when the browser moves to another site", () => {
     // Without this the whole browser session collapses into one row and scope 2.5
     // ("time spent per domain") has nothing to report.
-    const tracker = new Tracker();
+    const tracker = macTracker();
     tracker.observeFocus(focus("chrome", null, "https://github.com/aems"), at(0));
 
     const event = tracker.observeFocus(focus("chrome", null, "https://youtube.com/watch"), at(120));
@@ -237,7 +259,7 @@ describe("Tracker website intervals", () => {
   });
 
   it("keeps one interval while the same site is browsed", () => {
-    const tracker = new Tracker();
+    const tracker = macTracker();
     tracker.observeFocus(focus("chrome", "Issues", "https://github.com/aems/issues"), at(0));
 
     // Another page on the same host is the same website visit, not a new one.
@@ -245,6 +267,35 @@ describe("Tracker website intervals", () => {
       tracker.observeFocus(focus("chrome", "Pulls", "https://github.com/aems/pulls"), at(30)),
     ).toBeNull();
     expect(tracker.flush(at(90))?.startedAt).toBe(at(0).toISOString());
+  });
+
+  it("keeps a whole Windows browsing session as one interval when no title names a site", () => {
+    // The honest consequence of title-only reading: with no host in any title there is
+    // no way to tell one site from the next, so the browser reads as a single stretch
+    // of "Google Chrome" with no domain rather than as invented visits.
+    const tracker = windowsTracker();
+    tracker.observeFocus(focus("Google Chrome", "AEMS Agent - Google Chrome"), at(0));
+
+    // The second title is a PDF opened in the browser. If the reader ever started
+    // trusting bare dotted words, "Q3-report.pdf" would split this into two visits and
+    // put a file name in the website report.
+    expect(
+      tracker.observeFocus(focus("Google Chrome", "Q3-report.pdf - Google Chrome"), at(600)),
+    ).toBeNull();
+
+    const event = tracker.flush(at(1200));
+    expect(event?.appName).toBe("Google Chrome");
+    expect(event?.domain).toBeNull();
+    expect(event?.startedAt).toBe(at(0).toISOString());
+  });
+
+  it("reports no domain for an intranet tool reached by IP address", () => {
+    // An address, but not a domain — website reporting groups by host name, and
+    // "192.168.1.10" is not one. Recorded as application time with no site.
+    const tracker = windowsTracker();
+    tracker.observeFocus(focus("Google Chrome", "192.168.1.10:3000/dashboard - Google Chrome"), at(0));
+
+    expect(tracker.flush(at(60))?.domain).toBeNull();
   });
 
   it("does not split a non-browser app when its window title changes", () => {
@@ -315,5 +366,63 @@ describe("extractDomain length ceiling", () => {
     const exact = `${"a".repeat(249)}.com`;
     expect(exact.length).toBe(253);
     expect(extractDomain(`https://${exact}/x`)).toBe(exact);
+  });
+});
+
+/**
+ * The interval in progress when the agent died is the one nothing else can recover:
+ * it was never emitted, so it exists only in the store. Reopening it at `now` instead
+ * would silently shorten it by however long the machine was down.
+ */
+describe("Tracker.resume", () => {
+  const startedAt = "2026-08-05T09:00:00.000Z";
+  const now = new Date("2026-08-05T09:07:00.000Z");
+
+  it("closes a resumed interval at the start it was persisted with", () => {
+    const tracker = new Tracker(() => "resumed-id");
+    tracker.resume({
+      appName: "Code",
+      windowTitle: "collector.ts",
+      url: null,
+      domain: null,
+      startedAt,
+    });
+
+    expect(tracker.flush(now)).toEqual({
+      clientEventId: "resumed-id",
+      appName: "Code",
+      windowTitle: "collector.ts",
+      url: null,
+      domain: null,
+      startedAt,
+      endedAt: now.toISOString(),
+    });
+  });
+
+  it("hands the open interval back in the shape the store keeps it in", () => {
+    const tracker = new Tracker(() => "id", {
+      fidelity: "browser-url",
+      read: (window) => window.url,
+    });
+    tracker.observeFocus(
+      { appName: "Google Chrome", windowTitle: "AEMS", url: "https://www.github.com/a" },
+      new Date(startedAt),
+    );
+
+    expect(tracker.openFocus).toEqual({
+      appName: "Google Chrome",
+      windowTitle: "AEMS",
+      url: "https://www.github.com/a",
+      domain: "github.com",
+      startedAt,
+    });
+  });
+
+  it("has no open focus once the interval is flushed", () => {
+    const tracker = new Tracker(() => "id");
+    tracker.resume({ appName: "Code", windowTitle: null, url: null, domain: null, startedAt });
+    tracker.flush(now);
+
+    expect(tracker.openFocus).toBeNull();
   });
 });

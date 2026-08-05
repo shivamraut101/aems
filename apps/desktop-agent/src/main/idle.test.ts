@@ -259,3 +259,37 @@ describe("system idle source", () => {
     expect(readIdleState(120)).toBe("unknown");
   });
 });
+
+/**
+ * A crash at 11:20 during a stretch that began at 11:00 must not report the twenty
+ * minutes as worked. Without this the loss is unbounded — the longer the absence, the
+ * more of it is credited as active.
+ */
+describe("IdleWatcher.resume", () => {
+  const start = new Date("2026-08-05T11:00:00.000Z");
+  const later = new Date("2026-08-05T11:20:00.000Z");
+
+  it("reopens an idle stretch at the moment it actually began", () => {
+    const watcher = new IdleWatcher();
+    watcher.resume({ idleSince: start, breakSince: null });
+
+    expect(watcher.openIdleSince).toEqual(start);
+    expect(watcher.flush(later)?.idleStartAt).toBe(start.toISOString());
+  });
+
+  it("reopens a break, so a relaunch mid-lunch is still on a break", () => {
+    const watcher = new IdleWatcher();
+    watcher.resume({ idleSince: null, breakSince: start });
+
+    expect(watcher.onBreak).toBe(true);
+    expect(watcher.endBreak(later)?.breakStartAt).toBe(start.toISOString());
+  });
+
+  it("leaves a watcher that already has a stretch open alone", () => {
+    const watcher = new IdleWatcher();
+    watcher.observeIdle(600, 120, later);
+    watcher.resume({ idleSince: start, breakSince: null });
+
+    expect(watcher.openIdleSince).not.toEqual(start);
+  });
+});

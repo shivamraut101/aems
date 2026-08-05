@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "AEMS workforce intelligence agent for Windows and macOS",
+  "author": "AEMS",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -19,7 +21,8 @@
     "@aems/sdk": "workspace:*",
     "@aems/types": "workspace:*",
     "electron-updater": "^6.8.9",
-    "get-windows": "^9.3.0"
+    "get-windows": "^9.3.0",
+    "@mapbox/node-pre-gyp": "^1.0.11"
   },
   "devDependencies": {
     "@aems/config": "workspace:*",
@@ -31,6 +34,7 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "eslint": "^8.57.1",
+    "jsdom": "^30.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.0",

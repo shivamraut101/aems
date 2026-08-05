@@ -2,6 +2,7 @@ import type { AgentConfig, DaySpan, DayTotals } from "../shared/types/index.js";
 import { emptyTotals, mayCollect } from "../shared/types/index.js";
 import type { IdleState } from "./idle.js";
 import { IdleWatcher, readIdleSeconds, readIdleState } from "./idle.js";
+import type { DayState } from "./persistence.js";
 import { ScreenshotScheduler } from "./screenshot.js";
 import { SessionManager } from "./session.js";
 import { classifyError, SyncQueue } from "./sync.js";
@@ -49,6 +50,17 @@ export interface CollectorAdapters {
   log: (message: string, error?: unknown) => void;
 }
 
+/**
+ * The slice of `DayStateStore` the loop uses.
+ *
+ * Narrowed for the same reason `SyncJournal` is: a test of "a restart resumes" should
+ * hand over the document the previous process would have left, not build a filesystem.
+ */
+export interface CollectorDayStore {
+  load(): DayState;
+  update(patch: Partial<DayState>): DayState;
+}
+
 export interface CollectorParts {
   config: CollectorConfigStore;
   queue: SyncQueue;
@@ -56,6 +68,14 @@ export interface CollectorParts {
   tracker: Tracker;
   idle: IdleWatcher;
   screenshots: ScreenshotScheduler;
+  /**
+   * Where the parts of today that live only in memory are kept across a restart.
+   *
+   * Optional so a caller that genuinely wants a volatile loop — and every test that
+   * does not care — still constructs one. Absent, the agent behaves as it did: a
+   * mid-day restart under-reports until the server-side report catches up.
+   */
+  dayState?: CollectorDayStore;
 }
 
 const DEFAULT_ADAPTERS: CollectorAdapters = {
@@ -108,6 +128,66 @@ export class Collector {
   constructor(parts: CollectorParts, adapters: Partial<CollectorAdapters> = {}) {
     this.parts = parts;
     this.adapters = { ...DEFAULT_ADAPTERS, ...adapters };
+    this.resume();
+  }
+
+  /**
+   * Re-adopts what the previous process was still timing, before the first tick.
+   *
+   * Every field restored here is one that exists nowhere but memory until it closes:
+   * a focus interval only becomes an event when focus moves away, an idle stretch only
+   * when input returns, a break only when the employee ends it. All three fail in the
+   * same direction if they are dropped — the day reads as more worked than it was.
+   *
+   * Order matters: the watchers are seeded before `start()` is ever called, so nothing
+   * observed by this process can be overwritten by a stale document.
+   */
+  private resume(): void {
+    const store = this.parts.dayState;
+    if (store === undefined) return;
+
+    const restored = store.load();
+
+    if (restored.openFocus !== null) this.parts.tracker.resume(restored.openFocus);
+
+    this.parts.idle.resume({
+      idleSince: parseStamp(restored.openIdleSince),
+      breakSince: parseStamp(restored.openBreakSince),
+    });
+
+    const lastCapture = parseStamp(restored.lastCaptureAt);
+    if (lastCapture !== null) this.parts.screenshots.resume(lastCapture);
+
+    this.idleSpans.push(...restored.idleSpans);
+    this.breakSpans.push(...restored.breakSpans);
+  }
+
+  /**
+   * Writes today's volatile half down.
+   *
+   * Called on every path that can change it rather than on a timer of its own: the
+   * window a crash has to land in is the whole point, and a store written once a minute
+   * would simply move the loss rather than remove it. The document is a few kilobytes
+   * and is published by rename, so this is one small write per five-second tick.
+   */
+  private persistDay(): void {
+    const store = this.parts.dayState;
+    if (store === undefined) return;
+
+    try {
+      store.update({
+        idleSpans: [...this.idleSpans],
+        breakSpans: [...this.breakSpans],
+        openFocus: this.parts.tracker.openFocus,
+        openIdleSince: this.parts.idle.openIdleSince?.toISOString() ?? null,
+        openBreakSince: this.parts.idle.openBreakSince?.toISOString() ?? null,
+        lastCaptureAt: this.parts.screenshots.lastCaptureAt?.toISOString() ?? null,
+      });
+    } catch (error) {
+      // A full disk or a revoked directory ACL must cost the safety net, not the
+      // collection — the same trade `SyncQueue` makes for the event journal.
+      this.adapters.log("Could not persist today's collection state", error);
+    }
   }
 
   get dayTotals(): DayTotals {
@@ -164,6 +244,7 @@ export class Collector {
     await this.maybeHeartbeat(now);
 
     this.recomputeTotals(now);
+    this.persistDay();
     this.adapters.onChanged();
   }
 
@@ -172,8 +253,16 @@ export class Collector {
     const threshold = config.policy?.idleThresholdSeconds ?? DEFAULT_IDLE_THRESHOLD_SECONDS;
     const state = this.readState(threshold);
 
-    await this.observeFocus(now);
-    this.observeIdle(threshold, now);
+    // A declared break gates the WHOLE observation, not just capture. Both visible
+    // signals already say a break collects nothing — the tray reads "on a break,
+    // nothing is being collected" and the indicator hides — so sampling the focused
+    // window through one would make those signals a lie, and would record exactly
+    // the private browsing a break exists for.
+    if (!this.parts.idle.onBreak) {
+      await this.observeFocus(now);
+      this.observeIdle(threshold, now);
+    }
+
     await this.capture(config, now, state === "locked");
   }
 
@@ -383,6 +472,12 @@ export class Collector {
   startBreak(now: Date = this.adapters.now()): void {
     if (!mayCollect(this.parts.config.current)) return;
 
+    // Close the open interval AT the break, not when they come back. Left open it
+    // would be reported as one unbroken stretch of work spanning lunch — the break
+    // billed as the very thing it is meant to exclude.
+    const openInterval = this.parts.tracker.flush(now);
+    if (openInterval !== null) this.parts.queue.enqueueActivity(openInterval);
+
     const truncated = this.parts.idle.startBreak(now);
     if (truncated !== null) {
       this.parts.queue.enqueueIdle(truncated);
@@ -393,6 +488,7 @@ export class Collector {
     }
 
     this.recomputeTotals(now);
+    this.persistDay();
     this.adapters.onChanged();
   }
 
@@ -407,6 +503,7 @@ export class Collector {
     }
 
     this.recomputeTotals(now);
+    this.persistDay();
     this.adapters.onChanged();
   }
 
@@ -429,6 +526,10 @@ export class Collector {
 
     if (this.parts.sessions.current !== null) await this.endSession(now);
     this.recomputeTotals(now);
+    // A clean exit closed every open stretch, so what is written here is a document with
+    // nothing left open — which is exactly what stops the next launch reopening spans
+    // that already became events.
+    this.persistDay();
   }
 
   /**
@@ -457,6 +558,13 @@ export class Collector {
     discardBefore(this.idleSpans, dayStart);
     discardBefore(this.breakSpans, dayStart);
   }
+}
+
+/** A stamp the store could not vouch for costs its own field, never the launch. */
+function parseStamp(value: string | null): Date | null {
+  if (value === null) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function open(since: Date): DaySpan {

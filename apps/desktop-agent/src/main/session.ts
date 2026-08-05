@@ -1,5 +1,6 @@
 import type { WorkSession } from "@aems/types";
 
+import type { SessionSpanStore } from "./persistence.js";
 import type { DaySpan, DayTotals } from "../shared/types/index.js";
 
 /**
@@ -186,9 +187,22 @@ export class SessionManager {
    */
   private readonly recorded: DaySpan[] = [];
 
-  constructor(api: SessionApi, deviceId: string) {
+  /**
+   * Where the recorded pairs are kept across a restart.
+   *
+   * Optional so every existing caller still constructs a volatile manager. Without it
+   * a mid-day crash loses every session but the one the API is still holding open, and
+   * the day's total silently reads short by however long the earlier ones ran — which
+   * looks exactly like an employee who worked less than they did.
+   */
+  private readonly store: SessionSpanStore | null;
+
+  constructor(api: SessionApi, deviceId: string, store: SessionSpanStore | null = null) {
     this.api = api;
     this.deviceId = deviceId;
+    this.store = store;
+
+    if (store !== null) this.recorded.push(...store.loadSessions());
   }
 
   get current(): number | null {
@@ -217,7 +231,7 @@ export class SessionManager {
       .startWorkSession(this.deviceId)
       .then((session) => {
         this.sessionId = session.id;
-        this.recorded.push({
+        this.adopt({
           startedAt: session.clock_in_at,
           endedAt: session.clock_out_at,
         });
@@ -280,10 +294,32 @@ export class SessionManager {
     return summariseDay({ ...observed, sessions: this.recorded });
   }
 
+  /**
+   * Records a clock-in, unless it is the session a previous process already recorded.
+   *
+   * The API hands back the session still running rather than opening a second one, so
+   * a restart mid-session re-adopts a span the store already holds. Pushing it again
+   * would list the same clock-in twice — harmless for the total, which unions the
+   * spans, but wrong in every readout that counts them.
+   */
+  private adopt(span: DaySpan): void {
+    const known = this.recorded.some(
+      (recorded) => recorded.startedAt === span.startedAt && recorded.endedAt === span.endedAt,
+    );
+    if (!known) this.recorded.push(span);
+
+    this.persist();
+  }
+
   /** Only one session is open at a time, so the running span is always the last one. */
   private closeLastSpan(endedAt: string): void {
     const open = this.recorded[this.recorded.length - 1];
     if (open === undefined || open.endedAt !== null) return;
     open.endedAt = endedAt;
+    this.persist();
+  }
+
+  private persist(): void {
+    this.store?.saveSessions(this.recorded);
   }
 }

@@ -7,7 +7,12 @@ import { Shell } from "../components/Shell.js";
 import { useNow } from "../hooks/useNow.js";
 import { agentBridge } from "../lib/bridge.js";
 import { formatDuration, formatRelative } from "../lib/format.js";
-import { connectionLabel, permissionGaps, trackedSecondsToday } from "../lib/view.js";
+import {
+  connectionLabel,
+  permissionGaps,
+  trackedSecondsToday,
+  websiteTrackingNote,
+} from "../lib/view.js";
 
 interface StatusScreenProps {
   status: AgentStatus;
@@ -25,6 +30,7 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
   const now = useNow(1000);
 
   const gaps = permissionGaps(status.permissions);
+  const websiteNote = websiteTrackingNote(status.permissions);
   const connection = connectionLabel(status, gaps);
   const tracked = trackedSecondsToday(status);
   const lastSync = status.lastSyncAt === null ? null : formatRelative(status.lastSyncAt, now);
@@ -128,6 +134,16 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
             </Notice>
           ))}
         </div>
+      )}
+
+      {/* `plain`, not `warn`, and deliberately outside the gap list: this is a platform
+          limit nobody can grant their way out of, so offering no button is the point.
+          Colouring it as a warning would train people to ignore the badge that means a
+          real, fixable block. */}
+      {websiteNote !== null && (
+        <Notice tone="plain" title="Websites are not recorded on this computer">
+          {websiteNote}
+        </Notice>
       )}
     </Shell>
   );

@@ -14,9 +14,26 @@ files:
 # The macOS Swift helper and the Windows N-API binding are loaded from disk by
 # path, so neither can live inside the asar. node-pre-gyp comes along because
 # get-windows imports it statically on every platform, not just Windows.
+#
+# These globs only match if the package is actually LINKED into
+# apps/desktop-agent/node_modules. pnpm keeps transitive dependencies in .pnpm/ and
+# links only direct ones at the top level, so `@mapbox/node-pre-gyp` was silently
+# collected into nothing — the packaged app threw ERR_MODULE_NOT_FOUND on the first
+# window read and reported zero activity while the UI said "monitoring active".
+# It is therefore a DIRECT dependency in package.json despite being get-windows'
+# transitive one. Verify after any packaging change:
+#   npx asar list release/win-unpacked/resources/app.asar | grep -c node-pre-gyp
 asarUnpack:
   - "**/node_modules/get-windows/**"
   - "**/node_modules/@mapbox/node-pre-gyp/**"
+
+# get-windows is the only native dependency and it ships a napi-9 prebuild for
+# win32-x64 — N-API is ABI-stable, so Electron 43 loads it as published. Rebuilding
+# it would demand a full C++ toolchain (Visual Studio on Windows, Xcode on macOS) on
+# every build machine to reproduce a binary that is already in the tarball, and its
+# macOS half is a Swift executable node-gyp cannot produce at all. If a native module
+# that genuinely needs rebuilding is ever added, this has to come back.
+npmRebuild: false
 
 win:
   target:

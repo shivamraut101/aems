@@ -39,7 +39,10 @@ export class ConfigStore {
 
   load(): AgentConfig {
     const persisted = this.readJson();
-    const apiUrl = persisted.apiUrl?.trim();
+    // `readJson` returns whatever JSON.parse produced, so the declared type is a claim,
+    // not a guarantee. Reading a hand-edited `"apiUrl": 8080` as a string threw, which
+    // made a one-character typo in a support-readable file stop the agent from booting.
+    const apiUrl = typeof persisted.apiUrl === "string" ? persisted.apiUrl.trim() : undefined;
 
     this.config = {
       ...emptyConfig(resolveApiUrl()),

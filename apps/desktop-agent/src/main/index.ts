@@ -12,8 +12,6 @@ import {
   ipcMain,
   nativeImage,
   powerMonitor,
-  shell,
-  systemPreferences,
 } from "electron";
 import type { AppUpdater } from "electron-updater";
 
@@ -26,8 +24,14 @@ import type {
 } from "../shared/types/index.js";
 import { Collector } from "./collector.js";
 import { ConfigStore } from "./config.js";
+import { DeadLetterFile } from "./dead-letter.js";
 import { collectDeviceFacts, collectInstalledApplications } from "./device.js";
 import { IdleWatcher, setSystemIdleSource } from "./idle.js";
+import { ElectronIndicatorSurface, IndicatorController, loadTrayImage } from "./indicator.js";
+import { createPermissionMonitor, PermissionGatedCapturer } from "./permissions.js";
+import type { PermissionMonitor } from "./permissions.js";
+import { agentStateDirectory, createDurableStore, emptyDayState } from "./persistence.js";
+import type { DurableStore } from "./persistence.js";
 import { ElectronCapturer, ScreenshotScheduler } from "./screenshot.js";
 import { SessionManager } from "./session.js";
 import { SyncQueue } from "./sync.js";
@@ -37,12 +41,33 @@ import { Tracker } from "./tracker.js";
 // picking up its getter-style exports, which is not something to bet a release on.
 const requireCjs = createRequire(import.meta.url);
 
+function log(message: string, error?: unknown): void {
+  console.error(`[aems] ${message}`, error ?? "");
+}
+
+/**
+ * How long any one API call may take.
+ *
+ * Deliberately set rather than left to the SDK's 30 s default: `Collector.tick()`
+ * holds its re-entrancy latch across the flush, so a hung POST blinds focus sampling,
+ * idle sampling and capture for the whole deadline. Fifteen seconds is three missed
+ * ticks instead of six — and it is comfortably longer than the shutdown drain window
+ * below, so the final flush is never cut off by its own transport.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+
 interface Runtime {
   store: ConfigStore;
   client: AemsClient;
   tracker: Tracker;
   idle: IdleWatcher;
   screenshots: ScreenshotScheduler;
+  permissions: PermissionMonitor;
+  /** The journal, today's spans and the dead-letter file, as one unit. */
+  durable: DurableStore;
+  deadLetters: DeadLetterFile;
+  /** Which device the queue and session manager below belong to. */
+  deviceId: string | null;
   /** All three need a device id, so they only exist once the machine is enrolled. */
   queue: SyncQueue | null;
   sessions: SessionManager | null;
@@ -52,6 +77,7 @@ interface Runtime {
 let runtime: Runtime | null = null;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let indicator: IndicatorController | null = null;
 
 /** Set only by the tray's Quit item, so every other close path hides instead. */
 let quitting = false;
@@ -71,19 +97,6 @@ function requireRuntime(): Runtime {
 
 // -- status ---------------------------------------------------------------
 
-function readPermissions(): AgentPermissions {
-  if (process.platform !== "darwin") {
-    // Windows gates neither screen capture nor window titles, and has no
-    // accessibility equivalent to ask for.
-    return { screenRecording: "not-required", accessibility: "not-required" };
-  }
-
-  return {
-    screenRecording: systemPreferences.getMediaAccessStatus("screen"),
-    accessibility: systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied",
-  };
-}
-
 function currentStatus(): AgentStatus {
   const rt = requireRuntime();
 
@@ -91,18 +104,38 @@ function currentStatus(): AgentStatus {
     workSessionId: rt.sessions?.current ?? null,
     pendingEvents: rt.queue?.pending ?? 0,
     lastSyncAt: rt.queue?.lastSyncAt ?? null,
-    permissions: readPermissions(),
+    permissions: rt.permissions.read(),
     totals: rt.collector?.dayTotals ?? emptyTotals(),
     onBreak: rt.collector?.onBreak ?? false,
   });
 }
 
-/** Recomputes status, repaints the tray, and pushes it to the renderer. */
+/** Recomputes status, repaints the tray and the indicator, and pushes it to the renderer. */
 function publishStatus(): AgentStatus {
   const status = currentStatus();
+
+  // The two visible signals go first, in that order: the indicator is the one that
+  // actually satisfies non-negotiable #2, and a renderer that is slow to paint must
+  // never be what delays it.
   updateTray(status);
-  mainWindow?.webContents.send(IPC_CHANNELS.STATUS_CHANGED, status);
+  indicator?.apply(status);
+  broadcastStatus(status);
+
   return status;
+}
+
+/**
+ * Pushes to every window, not just the main one.
+ *
+ * The indicator is a second renderer on the same channel, and it reads its own label
+ * off this push — sending only to `mainWindow` would leave the pill saying "Monitoring"
+ * after capture had been blocked, which is the kind of stale claim this product cannot
+ * afford to make.
+ */
+function broadcastStatus(status: AgentStatus): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send(IPC_CHANNELS.STATUS_CHANGED, status);
+  }
 }
 
 // -- tray -----------------------------------------------------------------
@@ -149,9 +182,39 @@ function updateTray(status: AgentStatus): void {
 
 function createTray(): void {
   // Packaged or not, resources/ sits at the app root, and nativeImage reads through
-  // the asar.
-  tray = new Tray(nativeImage.createFromPath(join(app.getAppPath(), "resources", "tray.png")));
+  // the asar. `loadTrayImage` is what turns an unreadable asset into a throw — Electron
+  // answers a missing path with an empty image and `new Tray()` accepts it silently,
+  // which would leave the agent collecting behind a zero-size, invisible status item.
+  tray = new Tray(loadTrayImage(nativeImage, app.getAppPath(), process.platform));
   tray.on("click", showWindow);
+}
+
+// -- the always-visible indicator -----------------------------------------
+
+/** Latched: `apply` runs inside the status publisher, which the collection tick drives. */
+let indicatorFailed = false;
+
+/**
+ * The agent wanted to claim it was collecting and had no indicator to claim it with.
+ *
+ * Monitoring is never silent (non-negotiable #2), so the only defensible response is to
+ * stop — the same decision the tray failure already takes, for the same reason.
+ */
+function onIndicatorUnavailable(error: unknown): void {
+  if (indicatorFailed || quitting) return;
+  indicatorFailed = true;
+
+  log("The monitoring indicator could not be shown; refusing to collect without it", error);
+  runtime?.collector?.stop();
+
+  dialog.showErrorBox(
+    "AEMS Agent has stopped",
+    "The monitoring indicator could not be shown, so monitoring has stopped. " +
+      "Please contact your IT administrator.",
+  );
+
+  quitting = true;
+  app.quit();
 }
 
 // -- window ---------------------------------------------------------------
@@ -172,9 +235,11 @@ function createWindow(): BrowserWindow {
   });
 
   // A login-item launch opens the agent without stealing focus from whatever the
-  // employee is actually doing.
+  // employee is actually doing. `--hidden` is the Windows signal (it is passed in the
+  // Run key); macOS has no such argument under SMAppService and reports it on the
+  // login-item settings instead.
   window.on("ready-to-show", () => {
-    if (!process.argv.includes("--hidden")) window.show();
+    if (!openedAtLogin()) window.show();
   });
 
   // Closing the window must not stop collection or quit the agent — it lives in the
@@ -197,6 +262,15 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+function openedAtLogin(): boolean {
+  if (process.platform === "win32") return process.argv.includes("--hidden");
+
+  // `openAsHidden` is deprecated and `setLoginItemSettings` takes no args on darwin, so
+  // the argv trick never fires there — without this the agent window would appear in the
+  // employee's face on every single login.
+  return app.getLoginItemSettings().wasOpenedAtLogin;
+}
+
 function showWindow(): void {
   if (mainWindow === null || mainWindow.isDestroyed()) {
     mainWindow = createWindow();
@@ -209,12 +283,6 @@ function showWindow(): void {
 
 // -- IPC ------------------------------------------------------------------
 
-const SETTINGS_PANES: Record<PermissionTarget, string> = {
-  "screen-recording":
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-  accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-};
-
 /** Rebuilds the collaborators that need a device id, and swaps the client onto device auth. */
 function attachDevice(deviceId: string, deviceToken: string): void {
   const rt = requireRuntime();
@@ -222,14 +290,46 @@ function attachDevice(deviceId: string, deviceToken: string): void {
   rt.collector?.stop();
   rt.client.setAuth({ kind: "device", token: deviceToken });
 
+  // The durable state outlives the objects that own it, so a re-enrolment onto a
+  // *different* device must throw it away: replaying it would send the previous
+  // device's observations under the new device's identity. Re-enrolling the same id is
+  // the opposite case — replaying is the entire point there.
+  if (rt.deviceId !== null && rt.deviceId !== deviceId) {
+    rt.durable.journal.clear();
+    rt.durable.dayState.update(emptyDayState());
+
+    // The watchers hold the same day in memory that the two files above just lost, so
+    // they are replaced rather than carried across: an interval opened under the old
+    // enrolment would otherwise close and be reported under the new device's identity.
+    // The capture schedule is deliberately kept — it is a consented cadence, not an
+    // observation, and resetting it would fire a frame the moment the swap lands.
+    rt.tracker = new Tracker();
+    rt.idle = new IdleWatcher();
+  }
+  rt.deviceId = deviceId;
+
+  const day = rt.durable.dayState;
+
   const queue = new SyncQueue(rt.client, deviceId, {
+    journal: rt.durable.journal,
+    deadLetters: rt.deadLetters,
+    lastSyncAt: day.load().lastSyncAt,
+    onSynced: (at) => {
+      day.update({ lastSyncAt: at });
+    },
     onOverflow: (dropped, kind) => {
-      console.error(`[aems] dropped ${dropped} buffered ${kind} events to stay within memory`);
+      log(`Dropped ${dropped} buffered ${kind} event(s) to stay within memory`);
+    },
+    onQuarantine: (dropped, kind, reason) => {
+      log(`Quarantined ${dropped} ${kind} event(s) the API rejected (${reason})`);
+    },
+    onDurabilityFault: (error) => {
+      log("Could not write the durable store", error);
     },
   });
 
   rt.queue = queue;
-  rt.sessions = new SessionManager(rt.client, deviceId);
+  rt.sessions = new SessionManager(rt.client, deviceId, day);
   rt.collector = new Collector(
     {
       config: rt.store,
@@ -238,10 +338,12 @@ function attachDevice(deviceId: string, deviceToken: string): void {
       tracker: rt.tracker,
       idle: rt.idle,
       screenshots: rt.screenshots,
+      dayState: day,
     },
     // Every state the loop reaches — a clock-in, a stop signal, a break — has to
-    // reach the tray and the renderer, or the agent would be collecting invisibly.
-    { onChanged: () => void publishStatus() },
+    // reach the tray, the indicator and the renderer, or the agent would be
+    // collecting invisibly.
+    { onChanged: () => void publishStatus(), log },
   );
 
   rt.collector.start();
@@ -269,7 +371,7 @@ function reportInventory(): void {
     .then((applications) => rt.client.reportApplications({ applications }))
     .catch((error: unknown) => {
       // Inventory is not collection-critical; failing it must not stop the agent.
-      console.error("[aems] Could not report the installed-application inventory", error);
+      log("Could not report the installed-application inventory", error);
     });
 }
 
@@ -346,16 +448,23 @@ function registerIpc(): void {
     return publishStatus();
   });
 
-  ipcMain.handle(IPC_CHANNELS.PERMISSIONS_GET, (): AgentPermissions => readPermissions());
+  ipcMain.handle(
+    IPC_CHANNELS.PERMISSIONS_GET,
+    (): AgentPermissions => requireRuntime().permissions.read(),
+  );
 
   ipcMain.handle(
     IPC_CHANNELS.PERMISSIONS_OPEN_SETTINGS,
     async (_event, target: PermissionTarget): Promise<void> => {
-      // Screen Recording cannot be requested programmatically — the TCC dialog only
-      // appears on a real capture attempt — so deep-linking Settings is the whole
-      // remediation path we have.
-      if (process.platform !== "darwin") return;
-      await shell.openExternal(SETTINGS_PANES[target]);
+      // `request()` owns the platform branch, and on macOS it also performs the TCC
+      // registration without which the deep-linked Settings pane lists no AEMS row at
+      // all. It is only ever reached from the employee's own click, because registering
+      // for Screen Recording is itself a capture.
+      await requireRuntime().permissions.request(target);
+
+      // A just-granted permission has to reach the readout now, rather than at whatever
+      // the next collection tick happens to be.
+      publishStatus();
     },
   );
 
@@ -382,6 +491,15 @@ function configureAutoLaunch(): void {
         }
       : { openAtLogin: true, type: "mainAppService" },
   );
+
+  // SMAppService lands in `requires-approval` when the employee has switched the agent
+  // off under System Settings → Login Items, and re-registering does not override that.
+  // Scope §2.1's "auto start with system" is then silently false, so it is logged rather
+  // than assumed.
+  const { status } = app.getLoginItemSettings();
+  if (status === "requires-approval" || status === "not-registered") {
+    log(`Auto-launch is not active (${status}); the agent will not start itself at login`);
+  }
 }
 
 function startAutoUpdates(): void {
@@ -401,9 +519,10 @@ function startAutoUpdates(): void {
 /**
  * How long the final drain is allowed to take.
  *
- * The clock-out and the last flush are network calls, and the SDK has no request
- * timeout — an unreachable API would otherwise leave a quitting agent hanging in the
- * tray, which is the one failure an employee cannot work around.
+ * The clock-out and the last flush are network calls. The SDK now bounds each one at
+ * `REQUEST_TIMEOUT_MS`, but a drain is several of them in sequence — so this is what
+ * stops an unreachable API leaving a quitting agent hanging in the tray, which is the
+ * one failure an employee cannot work around.
  */
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -415,6 +534,10 @@ let shuttingDown = false;
  * Electron's `before-quit` is synchronous, so quitting is deferred once and resumed
  * when the drain settles. Without this the last focus interval, the open idle stretch
  * and the whole work session are lost on every quit.
+ *
+ * `Collector.shutdown()` also writes the day's state down as its last act, so a clean
+ * exit leaves a document with nothing open — which is what stops the next launch
+ * reopening spans that already became events.
  */
 function drainThenQuit(event: Electron.Event): void {
   const collector = runtime?.collector;
@@ -424,7 +547,7 @@ function drainThenQuit(event: Electron.Event): void {
   shuttingDown = true;
 
   const drained = collector.shutdown().catch((error: unknown) => {
-    console.error("[aems] Shutdown drain failed", error);
+    log("Shutdown drain failed", error);
   });
 
   const deadline = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS));
@@ -442,6 +565,14 @@ function bootstrap(): void {
     drainThenQuit(event);
   });
 
+  // Fires once quitting is actually going ahead, so it covers the drain path and the
+  // never-enrolled path alike. Nothing that claims the agent is recording survives the
+  // process that was doing the recording.
+  app.on("will-quit", () => {
+    indicator?.dispose();
+    indicator = null;
+  });
+
   // Deliberately empty: the agent is a tray application, so closing the last window
   // is not a reason to stop collecting.
   app.on("window-all-closed", () => {});
@@ -457,12 +588,32 @@ function bootstrap(): void {
     // rather than imported by the module that uses it.
     setSystemIdleSource(powerMonitor);
 
+    // Built before anything that consumes it: `SyncQueue` replays inside its constructor
+    // and `SessionManager` loads inside its, so either one built ahead of the store would
+    // silently restore nothing at all.
+    const durable = createDurableStore({
+      directory: agentStateDirectory(app.getPath("userData")),
+      log,
+    });
+    const deadLetters = new DeadLetterFile(durable.fs, durable.deadLetterPath, { log });
+
+    const permissions = createPermissionMonitor();
+
     runtime = {
       store,
-      client: new AemsClient({ baseUrl: config.apiUrl }),
+      client: new AemsClient({ baseUrl: config.apiUrl, timeoutMs: REQUEST_TIMEOUT_MS }),
       tracker: new Tracker(),
       idle: new IdleWatcher(),
-      screenshots: new ScreenshotScheduler(new ElectronCapturer()),
+      // The gate sits on the capturer rather than in the scheduler because this is the
+      // last point before the display is actually read: nothing can route around it to
+      // produce a frame, and a grant withdrawn mid-day stops capture on the next attempt.
+      screenshots: new ScreenshotScheduler(
+        new PermissionGatedCapturer(new ElectronCapturer(), () => permissions.read()),
+      ),
+      permissions,
+      durable,
+      deadLetters,
+      deviceId: null,
       queue: null,
       sessions: null,
       collector: null,
@@ -470,16 +621,15 @@ function bootstrap(): void {
 
     registerIpc();
 
-    // The tray comes up BEFORE anything can start collecting. It is the only
-    // always-visible signal that monitoring is running, so an ordering where
-    // attachDevice() -> collector.start() ran first left a window — however
-    // short — in which the agent recorded with no indicator on screen. If the
-    // tray cannot be created we do not collect at all: an invisible monitoring
-    // agent is the one outcome this product must never produce.
+    // Both visible signals come up BEFORE anything can start collecting. An ordering
+    // where attachDevice() -> collector.start() ran first left a window — however
+    // short — in which the agent recorded with nothing on screen saying so. If the
+    // tray cannot be created we do not collect at all: an invisible monitoring agent
+    // is the one outcome this product must never produce.
     try {
       createTray();
     } catch (error) {
-      console.error("tray creation failed - refusing to collect without an indicator", error);
+      log("Tray creation failed - refusing to collect without an indicator", error);
       dialog.showErrorBox(
         "AEMS Agent cannot start",
         "The monitoring indicator could not be created, so monitoring has not started. " +
@@ -488,6 +638,13 @@ function bootstrap(): void {
       app.quit();
       return;
     }
+
+    // The window itself is created lazily, on the first status that says the agent is
+    // recording — but the controller that owns that decision exists from here on, so
+    // the very first `publishStatus()` after a clock-in already raises the pill.
+    indicator = new IndicatorController(() => new ElectronIndicatorSurface(), {
+      onUnavailable: onIndicatorUnavailable,
+    });
 
     if (config.deviceId !== null && config.deviceToken !== null) {
       attachDevice(config.deviceId, config.deviceToken);
