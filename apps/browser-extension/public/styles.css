@@ -1,0 +1,275 @@
+/*
+ * The two pages this extension owns: the popup and the page that replaces a restricted
+ * site.
+ *
+ * The palette, the radius and the type are `docs/design.md`'s, expressed as tokens so a
+ * literal hex never appears in a rule below. Indigo is deliberately absent — it is
+ * reserved for AI surfaces, and nothing here is model output.
+ *
+ * Inter is named first and then falls back to the system UI face. An extension page
+ * cannot load a remote font (the MV3 content security policy refuses it) and bundling a
+ * variable font would add a megabyte to a two-page extension, so a machine without
+ * Inter installed gets the platform's own UI face rather than a blocked request.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --navy: #0f172a;
+  --emerald: #10b981;
+  --amber: #f59e0b;
+
+  --surface: #f8fafc;
+  --card: #ffffff;
+  --ink: #0f172a;
+  --ink-muted: #475569;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --focus: #0f172a;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #020617;
+    --card: #0f172a;
+    --ink: #e2e8f0;
+    --ink-muted: #94a3b8;
+    --line: #1e293b;
+    --line-strong: #334155;
+    --focus: #e2e8f0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2 {
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 15px;
+}
+
+p {
+  margin: 0;
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+/* -- status ------------------------------------------------------------- */
+
+.status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.dot {
+  border-radius: 50%;
+  flex: 0 0 auto;
+  height: 8px;
+  margin-top: 7px;
+  width: 8px;
+}
+
+.dot[data-tone="ok"] {
+  background: var(--emerald);
+}
+
+.dot[data-tone="warn"] {
+  background: var(--amber);
+}
+
+.dot[data-tone="off"] {
+  background: var(--line-strong);
+}
+
+/* Dense key/value rows rather than a card per fact — `docs/design.md` reserves cards
+   for KPIs, and none of these are one. */
+.rows {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 5px 0;
+}
+
+.row dt {
+  color: var(--ink-muted);
+  flex: 0 0 auto;
+  font-weight: 500;
+  margin: 0;
+}
+
+.row dd {
+  margin: 0;
+  text-align: right;
+  word-break: break-word;
+}
+
+/* -- popup -------------------------------------------------------------- */
+
+.popup {
+  /* Chrome sizes a popup to its content up to 800px. A min-width stops a one-line
+     state rendering as a sliver, and a max-width keeps the long "not connected"
+     explanation from stretching into an unreadable line. */
+  min-width: 320px;
+  max-width: 380px;
+  padding: 16px;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.brand span {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/* -- blocked page ------------------------------------------------------- */
+
+.page {
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px 16px;
+}
+
+.panel {
+  max-width: 560px;
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .page {
+    align-items: center;
+    padding: 40px 24px;
+  }
+}
+
+.badge {
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink-muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 500;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 4px 10px;
+}
+
+.domain {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+  font-size: 15px;
+  word-break: break-all;
+}
+
+.reason {
+  border-left: 2px solid var(--amber);
+  margin-top: 14px;
+  padding-left: 12px;
+}
+
+.next {
+  margin-top: 18px;
+}
+
+.next h2 {
+  margin-bottom: 6px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* 36px minimum on every target, so the page is usable on a touch screen and by
+   anyone who does not aim a pointer precisely. */
+.button {
+  background: var(--navy);
+  border: 1px solid var(--navy);
+  border-radius: var(--radius);
+  color: #f8fafc;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+  min-height: 36px;
+  padding: 8px 14px;
+}
+
+.button.secondary {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  .button {
+    background: #e2e8f0;
+    border-color: #e2e8f0;
+    color: #0f172a;
+  }
+
+  .button.secondary {
+    background: transparent;
+    border-color: var(--line-strong);
+    color: var(--ink);
+  }
+}
+
+.button:hover {
+  opacity: 0.9;
+}
+
+/* Never `outline: none`. A keyboard user has to be able to see where they are, and on
+   a page that has just refused a navigation that is the only way out of it. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}

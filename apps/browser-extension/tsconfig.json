@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@aems/config/tsconfig/react.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    // No Node types. This code runs in an MV3 service worker and in two extension
+    // pages; `process`, `Buffer` and `require` must fail to compile here as loudly as
+    // they would fail at runtime.
+    "types": [],
+    "noEmit": false
+  },
+  "include": ["src"]
+}

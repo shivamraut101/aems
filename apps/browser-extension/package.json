@@ -1,0 +1,19 @@
+{
+  "name": "@aems/browser-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AEMS managed browser extension (MV3) — reports visited domains to the desktop agent and applies website restrictions",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@aems/config": "workspace:*",
+    "eslint": "^8.57.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.7"
+  }
+}

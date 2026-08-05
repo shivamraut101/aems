@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AEMS Workforce Companion</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <div class="brand"><span>AEMS</span></div>
+
+      <section class="card">
+        <div class="status">
+          <span class="dot" data-tone="off" id="tone"></span>
+          <div>
+            <h1 id="headline">Checking…</h1>
+            <p class="muted" id="detail">Asking the AEMS agent on this computer.</p>
+          </div>
+        </div>
+
+        <dl class="rows" id="rows"></dl>
+      </section>
+    </main>
+
+    <!-- MV3 forbids inline script, so the page is wired from a module file. -->
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

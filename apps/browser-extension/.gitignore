@@ -1,0 +1,7 @@
+# The CRX signing key. Its public half is committed in `src/manifest.ts` — that is what
+# pins the extension id the agent's native messaging host manifest names. The private
+# half is only needed to pack a CRX for an enterprise force-install, and a signing key
+# in a repository is a signing key everybody has.
+keys/
+
+dist/

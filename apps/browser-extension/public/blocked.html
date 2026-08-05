@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Site restricted by your organisation</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <div class="panel">
+        <span class="badge">Company device policy</span>
+
+        <h1 id="headline">This site is restricted on this device</h1>
+        <p class="muted" id="domain-line">
+          A rule in your organisation's device policy applies to this address.
+        </p>
+
+        <div class="reason" id="reason-block" hidden>
+          <p id="reason"></p>
+        </div>
+
+        <section class="card next">
+          <h2>Who set this</h2>
+          <dl class="rows" id="rows" style="border-top: 0; margin-top: 0; padding-top: 0"></dl>
+          <p class="muted" id="ask">
+            If you need this site for your work, ask the person named above to change the policy.
+          </p>
+        </section>
+
+        <div class="actions">
+          <button class="button" id="back" type="button">Go back</button>
+          <button class="button secondary" id="recheck" type="button">Check the policy again</button>
+        </div>
+      </div>
+    </main>
+
+    <script type="module" src="blocked.js"></script>
+  </body>
+</html>

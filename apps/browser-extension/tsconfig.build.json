@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.json",
+  // The unit tests are typechecked by `tsconfig.json` and must not be shipped inside
+  // the extension an employee's browser loads.
+  "exclude": ["src/**/*.test.ts"]
+}
