@@ -49,3 +49,12 @@ pnpm-debug.log*
 
 # coverage
 coverage/
+
+# Agent scratch space.
+#
+# A verification agent left a 53 MB copy of apps/admin-dashboard at apps/_verify375
+# and a pile of scraped HTML at .tmp-verify — including a cookie.txt holding a live
+# session cookie. Both were untracked, so `git add -A` would have pushed all of it.
+# `apps/_*` rather than the one name: the next agent will pick a different number.
+apps/_*/
+.tmp-*/

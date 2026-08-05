@@ -281,6 +281,44 @@ client's call.
 6. **Location tracking is not implemented.** `docs/scope.md` marks it optional and
    client-dependent. Do not add it without an explicit decision.
 
+## Scope decisions taken after the documents were locked
+
+The source documents are the authority and are not edited without the client saying so.
+Where a decision has since overridden one, it is recorded here and `docs/` is left alone
+until they confirm the edit.
+
+| Date | Decision | What it overrides |
+| --- | --- | --- |
+| 2026-08-05 | **Website restriction is in scope.** The admin panel can set rules that block sites, enforced by a managed browser extension. | `docs/scope.md` §8 lists control features under *Later — not part of MVP* |
+| 2026-08-05 | **The dashboard may go beyond `docs/design.md`** where a change demonstrably improves the product. Asked for by name: "if you can improve the design rather than just docs/design.md and if you have better ideas according to this project please proceed." | `docs/design.md` was previously followed to the letter |
+
+Two parts of the design direction are **not** loosened by that, because neither is a
+style preference:
+
+- **Indigo stays reserved for AI surfaces.** It is how a reader tells a model's
+  inference from a recorded fact, on a screen where that distinction decides whether
+  someone is treated fairly. Spending it on a button would be a legibility regression.
+- **The compliance surfaces keep their wording and prominence** — consent, the visible
+  indicator, what-is-collected. Those answer to the *Non-negotiables* above, not to
+  taste.
+
+Two things that decision does **not** do, and must not be allowed to drift into:
+
+- **Nothing else from §8 is in scope.** Not remote control, USB control, file
+  monitoring, software deployment, MDM or endpoint protection. Website restriction was
+  asked for by name; the rest was not.
+- **It does not change the product's framing.** `docs/design.md` positions this as
+  workforce intelligence, not surveillance, and enforcement makes that framing *more*
+  fragile rather than less. An employee must be able to see which policy blocked a page
+  and who to ask about it — a bare "blocked" screen is precisely what the design
+  direction rules out.
+
+The reason it is one piece of work rather than two: on Windows there is no supported way
+to read a browser's address bar, so website *tracking* already needed a managed
+extension. The mechanism that reports a URL is the mechanism that can refuse it.
+
+**`docs/scope.md` §8 still says otherwise.** Confirm the document edit before the demo.
+
 ## Open items
 
 Ask before acting on these.
