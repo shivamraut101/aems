@@ -8,9 +8,9 @@
 import type {
   AgentPermissions,
   AgentStatus,
-  PermissionState,
   PermissionTarget,
 } from "../../shared/types/index.js";
+import { isPermissionBlocked } from "../../shared/types/index.js";
 
 export type Screen = "login" | "consent" | "status";
 
@@ -71,23 +71,60 @@ const GAP_COPY: Record<PermissionTarget, Omit<PermissionGap, "target">> = {
 export function permissionGaps(permissions: AgentPermissions): PermissionGap[] {
   const gaps: PermissionGap[] = [];
 
-  if (isBlocked(permissions.screenRecording)) {
+  if (isPermissionBlocked(permissions.screenRecording)) {
     gaps.push({ target: "screen-recording", ...GAP_COPY["screen-recording"] });
   }
-  if (isBlocked(permissions.accessibility)) {
+  if (isPermissionBlocked(permissions.accessibility)) {
     gaps.push({ target: "accessibility", ...GAP_COPY.accessibility });
   }
 
+  // `websiteTracking` is deliberately absent: it is a platform capability nobody can
+  // grant, and a gap the employee cannot close is a notice, not a warning.
   return gaps;
 }
 
 /**
- * `not-determined` counts as blocked: nothing is captured until the employee answers
- * the OS prompt, so from the readout's point of view it is identical to a refusal.
- * `unknown` does not — reporting a gap we cannot confirm would cry wolf.
+ * What this platform can honestly promise about website tracking, or null when the
+ * full promise holds.
+ *
+ * Windows has no supported way to read a browser tab's address, so the Websites view
+ * there is near-empty by construction. Saying so is the difference between an honest
+ * product and a consent screen that promises something the binary cannot do.
  */
-function isBlocked(state: PermissionState): boolean {
-  return state === "denied" || state === "restricted" || state === "not-determined";
+export function websiteTrackingNote(permissions: AgentPermissions): string | null {
+  if (permissions.websiteTracking === "browser-url") return null;
+
+  return "This computer cannot report the addresses of pages you open, so website activity is not recorded here.";
+}
+
+/**
+ * The sentence every "cannot reach the agent" state has to carry.
+ *
+ * This window is a viewer, not the collector. `main/index.ts` calls `collector.start()`
+ * before `createWindow()`, and the loop runs on its own timer from then on — so a
+ * preload bridge that never attached, or an invoke that rejected, tells us only that
+ * the window cannot see. It is not evidence that recording stopped.
+ *
+ * Of the two ways to be wrong here, a false all-clear is the worse one: it reads as
+ * permission to relax on a machine that is still being recorded. So the window says it
+ * does not know, and hands the employee the signal that does not depend on it.
+ */
+const MONITORING_UNKNOWN =
+  "It cannot tell you whether monitoring is running, and the agent may still be recording. " +
+  "The tray icon is the signal that does not depend on this window — quit from there if you " +
+  "need monitoring to stop.";
+
+const NO_BRIDGE = "This window could not reach the agent.";
+
+/** Prefixes whatever went wrong to the standing "we do not know" sentence. */
+export function unreachableMessage(detail: string | null): string {
+  const lead = (detail ?? "").trim();
+  if (lead.length === 0) return `${NO_BRIDGE} ${MONITORING_UNKNOWN}`;
+
+  // The detail comes from a rejected IPC call and may be a bare clause with no
+  // terminator, which would run straight into the sentence below it.
+  const terminated = /[.!?]$/.test(lead) ? lead : `${lead}.`;
+  return `${terminated} ${MONITORING_UNKNOWN}`;
 }
 
 /**

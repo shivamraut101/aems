@@ -176,9 +176,25 @@ export interface CaptureContext {
  * event. Holds the schedule only — the frames themselves come from the `Capturer`.
  */
 export class ScreenshotScheduler {
-  private lastCaptureAt: Date | null = null;
+  private lastCapture: Date | null = null;
 
   constructor(private readonly capturer: Capturer) {}
+
+  /** When the last frame was taken, so the caller can put it back after a restart. */
+  get lastCaptureAt(): Date | null {
+    return this.lastCapture;
+  }
+
+  /**
+   * Restores the schedule a previous process left behind.
+   *
+   * Without it every launch reads "never captured" and fires immediately, so a crash
+   * loop — or a login item on a machine somebody reboots all morning — captures far
+   * more often than the interval the employee consented to.
+   */
+  resume(at: Date): void {
+    this.lastCapture = at;
+  }
 
   /**
    * Rejects if the capture itself fails. A lapsed macOS Screen Recording grant is
@@ -192,11 +208,11 @@ export class ScreenshotScheduler {
     if (context.sessionLocked === true) return [];
 
     const interval = context.config.policy?.screenshotIntervalSeconds ?? DEFAULT_INTERVAL_SECONDS;
-    if (!isCaptureDue(this.lastCaptureAt, interval, now)) return [];
+    if (!isCaptureDue(this.lastCapture, interval, now)) return [];
 
     // Consume the interval before the attempt, not after it: a capturer that fails
     // every time would otherwise be retried on every tick of the collection loop.
-    this.lastCaptureAt = now;
+    this.lastCapture = now;
 
     const frames = await this.capturer.capture(SCREENSHOT_QUALITY);
     const capturedAt = now.toISOString();

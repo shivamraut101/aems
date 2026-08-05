@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactElement } from "react";
 
-import type { AgentPolicy, AgentStatus } from "../../shared/types/index.js";
+import type { AgentPolicy, AgentStatus, UrlFidelity } from "../../shared/types/index.js";
 import { Shell } from "../components/Shell.js";
 import { agentBridge, bridgeErrorMessage } from "../lib/bridge.js";
 import { formatSpan } from "../lib/format.js";
@@ -28,6 +28,14 @@ interface CollectedItem {
  */
 export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement {
   const [policy, setPolicy] = useState<AgentPolicy | null>(null);
+  /**
+   * What this machine can see of a browser address.
+   *
+   * Seeded pessimistically: the list must never promise website addresses in the window
+   * between mount and the permissions call returning, because a promise withdrawn a
+   * moment later is one the employee may have already read and agreed to.
+   */
+  const [websiteTracking, setWebsiteTracking] = useState<UrlFidelity>("window-title");
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +55,15 @@ export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement 
         // The list below reads correctly without the intervals; losing them is worth
         // less than blocking the gate on a call that failed.
         if (live) setPolicy(null);
+      });
+
+    bridge
+      .getPermissions()
+      .then((value) => {
+        if (live) setWebsiteTracking(value.websiteTracking);
+      })
+      .catch(() => {
+        // Failing towards the narrower promise, for the same reason as the seed above.
       });
 
     return () => {
@@ -120,7 +137,9 @@ export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement 
               onClick={() => void accept()}
               disabled={!agreed || busy}
             >
-              {busy ? "Recording…" : "Accept and start"}
+              {/* "Recording…" on its own read as monitoring having started — on the
+                  one screen whose entire claim is that nothing has. */}
+              {busy ? "Recording your consent…" : "Accept and start"}
             </button>
           </div>
         </>
@@ -132,7 +151,7 @@ export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement 
       </p>
 
       <ul className="consent-list">
-        {collectedItems(policy).map((item) => (
+        {collectedItems(policy, websiteTracking).map((item) => (
           <li className="consent-list__item" key={item.title}>
             <p className="consent-list__title">{item.title}</p>
             <p className="consent-list__detail">{item.detail}</p>
@@ -168,7 +187,7 @@ export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement 
  * The negatives — keystrokes, page contents — are stated because their absence is
  * the part employees most often assume wrongly.
  */
-function collectedItems(policy: AgentPolicy | null): CollectedItem[] {
+function collectedItems(policy: AgentPolicy | null, websiteTracking: UrlFidelity): CollectedItem[] {
   const screenshotEvery =
     policy === null
       ? "at regular intervals"
@@ -181,11 +200,20 @@ function collectedItems(policy: AgentPolicy | null): CollectedItem[] {
       title: "Applications you use",
       detail: "The name of the application in focus and how long it stays in focus.",
     },
-    {
-      title: "Website domains you visit",
-      detail:
-        "The domain of the page open in your browser — github.com, for example — and the time spent there. Page contents are not read.",
-    },
+    // Windows exposes no supported way to read a browser tab's address, so promising
+    // one there would be a description of a capability this binary does not have —
+    // on the single screen whose validity rests on the description being accurate.
+    websiteTracking === "browser-url"
+      ? {
+          title: "Website domains you visit",
+          detail:
+            "The domain of the page open in your browser — github.com, for example — and the time spent there. Page contents are not read.",
+        }
+      : {
+          title: "Not the websites you visit",
+          detail:
+            "This computer cannot report the addresses of pages you open, so no website activity is recorded from it. Your browser is recorded only as an application, by name and by how long it is in focus.",
+        },
     {
       title: "Idle periods",
       detail: `When there has been no keyboard or mouse activity ${idleAfter}. What you type is never recorded — only whether input happened.`,

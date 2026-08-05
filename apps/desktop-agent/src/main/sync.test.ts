@@ -6,6 +6,9 @@ import type {
 } from "@aems/types";
 import { describe, expect, it } from "vitest";
 
+import { DeadLetterFile } from "./dead-letter.js";
+import type { DurableFs } from "./persistence.js";
+import { EventJournal } from "./persistence.js";
 import type { CapturedScreenshot } from "./screenshot.js";
 import { MAX_EVENTS_PER_BATCH, SyncQueue, classifyError } from "./sync.js";
 
@@ -441,5 +444,188 @@ describe("SyncQueue", () => {
     await expect(queue.flush(null, T0)).resolves.toBe("sent");
 
     expect(queue.pending).toBe(0);
+  });
+});
+
+/** An in-memory disk, so the durability rules are provable without touching a real one. */
+class FakeFs implements DurableFs {
+  readonly files = new Map<string, string>();
+  /** Set to make every write throw, standing in for a full or read-only disk. */
+  broken = false;
+
+  read(path: string): string | null {
+    return this.files.get(path) ?? null;
+  }
+
+  write(path: string, contents: string): void {
+    if (this.broken) throw new Error("ENOSPC");
+    this.files.set(path, contents);
+  }
+
+  append(path: string, contents: string): void {
+    if (this.broken) throw new Error("ENOSPC");
+    this.files.set(path, (this.files.get(path) ?? "") + contents);
+  }
+
+  rename(from: string, to: string): void {
+    const contents = this.files.get(from);
+    if (contents === undefined) throw new Error(`ENOENT: ${from}`);
+    this.files.delete(from);
+    this.files.set(to, contents);
+  }
+
+  remove(path: string): void {
+    this.files.delete(path);
+  }
+}
+
+const JOURNAL_FILE = "/state/pending.ndjson";
+const DEAD_LETTER_FILE = "/state/dead-letters.json";
+
+describe("SyncQueue durability", () => {
+  it("replays an event whose flush never happened, because it reached disk before the request", async () => {
+    const fs = new FakeFs();
+    const doomed = new SyncQueue(new FakeApi(), DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+    });
+    doomed.enqueueActivity(activity("a1"));
+    doomed.enqueueIdle(idle("i1"));
+
+    // SIGKILL. The next launch builds a fresh queue over the same journal.
+    const api = new FakeApi();
+    const restored = new SyncQueue(api, DEVICE, { journal: new EventJournal(fs, JOURNAL_FILE) });
+
+    expect(restored.pending).toBe(2);
+    await expect(restored.flush(7, T0)).resolves.toBe("sent");
+    expect(api.batches[0]?.activity).toEqual([activity("a1")]);
+    expect(api.batches[0]?.idle).toEqual([idle("i1")]);
+  });
+
+  it("does not replay an event the API already confirmed, which would double the day", async () => {
+    const fs = new FakeFs();
+    const queue = new SyncQueue(new FakeApi(), DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+    });
+    queue.enqueueActivity(activity("a1"));
+    queue.enqueueActivity(activity("a2"));
+
+    await queue.flush(null, T0);
+
+    const restored = new SyncQueue(new FakeApi(), DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+    });
+    expect(restored.pending).toBe(0);
+  });
+
+  it("quarantines the batch the API called invalid, with its reason, rather than vanishing it", async () => {
+    const fs = new FakeFs();
+    const api = new FakeApi();
+    api.ingestError = new ApiError("Invalid body", 400, "invalid_body");
+    const deadLetters = new DeadLetterFile(fs, DEAD_LETTER_FILE);
+    const reported: unknown[] = [];
+
+    const queue = new SyncQueue(api, DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+      deadLetters,
+      onQuarantine: (dropped, kind, reason) => reported.push({ dropped, kind, reason }),
+    });
+    queue.enqueueActivity(activity("a1"));
+
+    await expect(queue.flush(null, T0)).resolves.toBe("dropped");
+
+    expect(queue.pending).toBe(0);
+    expect(deadLetters.read()).toEqual([
+      {
+        quarantinedAt: T0.toISOString(),
+        kind: "activity",
+        reason: "invalid_body",
+        events: [activity("a1")],
+      },
+    ]);
+    expect(reported).toEqual([{ dropped: 1, kind: "activity", reason: "invalid_body" }]);
+
+    // And it must not come back on the next launch, or the same 400 repeats forever.
+    const restored = new SyncQueue(new FakeApi(), DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+    });
+    expect(restored.pending).toBe(0);
+  });
+
+  it("records a refused frame in the dead letter, but never its megabytes of pixels", async () => {
+    const fs = new FakeFs();
+    const api = new FakeApi();
+    api.uploadError = new ApiError("Unsupported media type", 415, "unsupported_media_type");
+    const deadLetters = new DeadLetterFile(fs, DEAD_LETTER_FILE);
+
+    const queue = new SyncQueue(api, DEVICE, { deadLetters });
+    queue.enqueueScreenshot(screenshot("s1"));
+
+    await expect(queue.flush(null, T0)).resolves.toBe("dropped");
+
+    // The metadata is what explains the gap; the frame itself is the one thing that
+    // must not be copied into a plaintext file on the employee's own disk.
+    expect(deadLetters.read()).toEqual([
+      {
+        quarantinedAt: T0.toISOString(),
+        kind: "screenshots",
+        reason: "unsupported_media_type",
+        events: [
+          {
+            clientEventId: "s1",
+            capturedAt: "2026-08-05T09:05:00.000Z",
+            displayId: "1",
+            workSessionId: 12,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("wipes the journal on discard, so revoked observations do not survive to the next launch", () => {
+    const fs = new FakeFs();
+    const queue = new SyncQueue(new FakeApi(), DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+    });
+    queue.enqueueActivity(activity("a1"));
+
+    queue.discard();
+
+    const restored = new SyncQueue(new FakeApi(), DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+    });
+    expect(restored.pending).toBe(0);
+  });
+
+  it("keeps collecting when the disk refuses the write, and reports the lost durability", async () => {
+    const fs = new FakeFs();
+    fs.broken = true;
+    const faults: unknown[] = [];
+    const api = new FakeApi();
+
+    const queue = new SyncQueue(api, DEVICE, {
+      journal: new EventJournal(fs, JOURNAL_FILE),
+      onDurabilityFault: (error) => faults.push(error),
+    });
+
+    // A full disk degrades the agent to the volatile queue it was before; it must not
+    // stop it observing, or one ENOSPC becomes a day with no data at all.
+    queue.enqueueActivity(activity("a1"));
+
+    expect(queue.pending).toBe(1);
+    expect(faults).toHaveLength(1);
+    await expect(queue.flush(null, T0)).resolves.toBe("sent");
+  });
+
+  it("remembers the last confirmed sync across a restart instead of reading 'No sync yet'", async () => {
+    const stamps: string[] = [];
+    const queue = new SyncQueue(new FakeApi(), DEVICE, { onSynced: (at) => stamps.push(at) });
+    queue.enqueueActivity(activity("a1"));
+
+    await queue.flush(null, T0);
+
+    expect(stamps).toEqual([T0.toISOString()]);
+
+    const restored = new SyncQueue(new FakeApi(), DEVICE, { lastSyncAt: stamps[0] ?? null });
+    expect(restored.lastSyncAt).toBe(T0.toISOString());
   });
 });

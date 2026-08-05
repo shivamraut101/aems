@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 
 import type { ActivityEventInput } from "@aems/types";
 
+import type { BrowserUrlReader, FocusedWindow } from "./browser-url.js";
+import { createBrowserUrlReader } from "./browser-url.js";
+// Type-only, and deliberately the store's shape rather than a second declaration of
+// it: the two would drift, and the one that drifted would silently stop restoring.
+import type { PersistedFocus } from "./persistence.js";
+
 /** One observation of the frontmost window. */
-export interface FocusSample {
-  appName: string;
-  windowTitle: string | null;
-  /** Browser tab URL. macOS only — no maintained package reads this on Windows. */
-  url: string | null;
-}
+export type FocusSample = FocusedWindow;
 
 /**
  * Reads the frontmost window through `get-windows`.
@@ -136,8 +137,15 @@ interface OpenInterval {
 export class Tracker {
   private current: OpenInterval | null = null;
 
-  /** Injectable so tests can assert on ids without matching a random string. */
-  constructor(private readonly newEventId: () => string = randomUUID) {}
+  /**
+   * Both dependencies are injectable: ids so tests can assert on them without
+   * matching a random string, and the URL reader so the Windows and macOS halves of
+   * website tracking are both exercisable from either machine.
+   */
+  constructor(
+    private readonly newEventId: () => string = randomUUID,
+    private readonly urlReader: BrowserUrlReader = createBrowserUrlReader(process.platform),
+  ) {}
 
   /**
    * A new focus does not become an event until focus moves away from it, so every
@@ -162,7 +170,10 @@ export class Tracker {
       return previous === null ? null : this.close(previous, now);
     }
 
-    const domain = extractDomain(sample.url ?? sample.windowTitle);
+    // The reader, not the raw sample, decides what may be called an address: only it
+    // knows whether this platform can see a URL at all, and whether a window title is
+    // a browser's or an editor's.
+    const domain = extractDomain(this.urlReader.read(sample));
     if (
       previous !== null &&
       previous.sample.appName === sample.appName &&
@@ -197,6 +208,48 @@ export class Tracker {
     const open = this.current;
     this.current = null;
     return open === null ? null : this.close(open, now);
+  }
+
+  /**
+   * The open interval in the shape the durable store keeps it in, or null.
+   *
+   * Exposed rather than persisted from inside because the store belongs to the loop:
+   * a tracker that wrote its own file would be a second component inventing a path,
+   * which is how two halves of the same state end up disagreeing after a crash.
+   */
+  get openFocus(): PersistedFocus | null {
+    const open = this.current;
+    if (open === null) return null;
+
+    return {
+      appName: open.sample.appName,
+      windowTitle: open.sample.windowTitle,
+      url: open.sample.url,
+      domain: open.domain,
+      startedAt: open.startedAt.toISOString(),
+    };
+  }
+
+  /**
+   * Reopens the interval a crash interrupted, at the moment it actually began.
+   *
+   * Reopening at `now` instead would silently shorten it by however long the machine
+   * was down, and dropping it would lose it entirely — an interval only becomes an
+   * event when focus moves away, so the open one exists nowhere but the store.
+   *
+   * The persisted `domain` is trusted rather than re-derived: it was resolved by the
+   * reader for the platform that observed it, and re-reading it here would attribute
+   * the interval to whatever this launch's reader makes of a stale title.
+   */
+  resume(focus: PersistedFocus): void {
+    const startedAt = new Date(focus.startedAt);
+    if (Number.isNaN(startedAt.getTime())) return;
+
+    this.current = {
+      sample: { appName: focus.appName, windowTitle: focus.windowTitle, url: focus.url },
+      domain: focus.domain,
+      startedAt,
+    };
   }
 
   /**

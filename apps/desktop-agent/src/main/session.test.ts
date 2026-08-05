@@ -361,6 +361,74 @@ describe("SessionManager.totalsToday", () => {
   });
 });
 
+/**
+ * Stands in for `DayStateStore`, which is the real implementation.
+ *
+ * Copies on the way in and out: `SessionManager` closes the running span by mutating
+ * it, and a store that handed back its own array would make the "restored" manager
+ * share state with the dead one instead of reloading it.
+ */
+class FakeSpanStore {
+  saved: DaySpan[] = [];
+  writes = 0;
+
+  loadSessions(): readonly DaySpan[] {
+    return this.saved.map((span) => ({ ...span }));
+  }
+
+  saveSessions(spans: readonly DaySpan[]): void {
+    this.writes += 1;
+    this.saved = spans.map((span) => ({ ...span }));
+  }
+}
+
+describe("SessionManager durability", () => {
+  it("re-adopts the sessions already recorded today, so a restart does not shorten the day", async () => {
+    const store = new FakeSpanStore();
+    const api = new FakeSessionApi(7);
+    api.clockInAt = "2026-08-05T09:00:00.000Z";
+    api.clockOutAt = "2026-08-05T12:00:00.000Z";
+
+    const morning = new SessionManager(api, DEVICE, store);
+    await morning.start();
+    await morning.end();
+
+    // SIGKILL over lunch. Only the *open* session is re-adopted from the API, so
+    // without the store the morning simply disappears from the day's total.
+    api.clockInAt = "2026-08-05T13:00:00.000Z";
+    const afternoon = new SessionManager(api, DEVICE, store);
+    await afternoon.start();
+
+    expect(afternoon.spans).toEqual([
+      { startedAt: "2026-08-05T09:00:00.000Z", endedAt: "2026-08-05T12:00:00.000Z" },
+      { startedAt: "2026-08-05T13:00:00.000Z", endedAt: null },
+    ]);
+    expect(
+      afternoon.totalsToday({
+        idle: [],
+        breaks: [],
+        dayStart: DAY_START,
+        now: new Date("2026-08-05T14:00:00.000Z"),
+      }).totalSeconds,
+    ).toBe(4 * 3600);
+  });
+
+  it("does not list the still-open session twice when the API hands the same one back", async () => {
+    const store = new FakeSpanStore();
+    const api = new FakeSessionApi(7);
+    api.seedOpen(workSession(42, "2026-08-05T09:00:00.000Z"));
+
+    const before = new SessionManager(api, DEVICE, store);
+    await before.start();
+
+    // The relaunch restores the span from the store *and* re-adopts it from the API.
+    const after = new SessionManager(api, DEVICE, store);
+    await after.start();
+
+    expect(after.spans).toEqual([{ startedAt: "2026-08-05T09:00:00.000Z", endedAt: null }]);
+  });
+});
+
 describe("summariseDay boundaries", () => {
   it("counts a still-open session up to now and no further", () => {
     const totals = summariseDay({

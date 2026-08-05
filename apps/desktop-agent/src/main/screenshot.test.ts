@@ -215,3 +215,33 @@ describe("captureSize", () => {
     expect(captureSize(displays, 1920)).toEqual({ width: 1920, height: 1080 });
   });
 });
+
+/**
+ * A restart loop — a crashing agent relaunched by the login item — would otherwise
+ * capture on every launch, because an unrestored schedule always reads "never
+ * captured". That is more frequent capture than the employee consented to.
+ */
+describe("ScreenshotScheduler.resume", () => {
+  const config = consented();
+
+  it("keeps the restored interval rather than capturing on the first tick", async () => {
+    const capturer = new FakeCapturer([frame("1")]);
+    const scheduler = new ScreenshotScheduler(capturer);
+    scheduler.resume(new Date("2026-08-05T09:00:00.000Z"));
+
+    await scheduler.tick({ config }, new Date("2026-08-05T09:01:00.000Z"));
+    expect(capturer.calls).toBe(0);
+
+    await scheduler.tick({ config }, new Date("2026-08-05T09:06:00.000Z"));
+    expect(capturer.calls).toBe(1);
+  });
+
+  it("reports when it last captured, so the caller can persist it", async () => {
+    const scheduler = new ScreenshotScheduler(new FakeCapturer([frame("1")]));
+    expect(scheduler.lastCaptureAt).toBeNull();
+
+    const now = new Date("2026-08-05T09:06:00.000Z");
+    await scheduler.tick({ config }, now);
+    expect(scheduler.lastCaptureAt).toEqual(now);
+  });
+});

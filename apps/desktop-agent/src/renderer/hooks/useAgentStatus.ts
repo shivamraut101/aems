@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { AgentStatus } from "../../shared/types/index.js";
 import { agentBridge, bridgeErrorMessage } from "../lib/bridge.js";
+import { unreachableMessage } from "../lib/view.js";
 
 export type AgentState =
   | { phase: "loading" }
@@ -31,11 +32,7 @@ export function useAgentStatus(): AgentStatusHandle {
   useEffect(() => {
     const bridge = agentBridge();
     if (bridge === null) {
-      setState({
-        phase: "unavailable",
-        message:
-          "This window could not reach the agent. Nothing is being recorded until it can — quit from the tray icon and start the agent again.",
-      });
+      setState({ phase: "unavailable", message: unreachableMessage(null) });
       return;
     }
 
@@ -54,7 +51,9 @@ export function useAgentStatus(): AgentStatusHandle {
         if (!live) return;
         setState({
           phase: "unavailable",
-          message: bridgeErrorMessage(error, "The agent did not report its status."),
+          message: unreachableMessage(
+            bridgeErrorMessage(error, "The agent did not report its status."),
+          ),
         });
       });
 

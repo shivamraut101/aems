@@ -92,6 +92,22 @@ export class IdleWatcher {
   }
 
   /**
+   * Reopens the stretches a previous process was still timing.
+   *
+   * Both are unbounded losses otherwise, and both fail in the direction that flatters
+   * the employee's numbers: an absence killed at minute 44 reports as active, and a
+   * crash during lunch credits the whole hour as worked.
+   *
+   * A stretch already open here wins — this is only ever called at construction, and
+   * silently discarding live observations in favour of a stale file would be worse than
+   * not restoring at all.
+   */
+  resume(state: { idleSince: Date | null; breakSince: Date | null }): void {
+    this.idleStart ??= state.idleSince;
+    this.breakStart ??= state.breakSince;
+  }
+
+  /**
    * Threshold is inclusive.
    *
    * The start is backdated to `now - idleSeconds`: to when input actually stopped,

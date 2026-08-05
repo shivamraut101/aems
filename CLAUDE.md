@@ -13,12 +13,18 @@ wins and this file gets corrected.
 | `docs/scope.md` | The locked MVP feature set and priorities — *what* is built |
 | `docs/design.md` | The design direction for every user-facing surface |
 
-All three are imported below, so they load with this file rather than being fetched
+`docs/inspiration.md` is **reference, not authority** — projects worth studying for
+architecture and UX. Take ideas, never code: Kimai is AGPL-3.0 and ActivityWatch is
+MPL-2.0, and copying either into a white-label commercial product is a licensing
+problem, not a style one.
+
+All four are imported below, so they load with this file rather than being fetched
 on demand:
 
 @docs/stack.md
 @docs/scope.md
 @docs/design.md
+@docs/inspiration.md
 
 All three are **locked for the MVP**. Do not substitute a technology for a "better"
 one, do not add a library that duplicates something already listed, do not reintroduce
@@ -274,32 +280,49 @@ Ask before acting on these.
    RLS suite in `supabase/tests/rls_isolation.sql` passes. **Re-run that suite after
    any policy change or any new column on `profiles`** — it already caught one
    privilege-escalation hole (migration `...0005`).
-3. **The desktop agent buffers nothing to disk.** The Tauri + Rust implementation is
-   gone and the Electron agent is implemented end to end: the main-process modules
-   (`tracker`, `idle`, `screenshot`, `device`, `sync`, `session`) are real, and
-   `main/collector.ts` is the loop that drives them — consent re-checked every tick,
-   work session opened on clock-in and closed on shutdown, stop signals obeyed. What is
-   still missing is durability: the sync queue, the open focus interval and the day's
-   idle/break spans live in memory only, so a crash loses them and a mid-day restart
-   under-reports the totals until the server-side report catches up. There is also no
-   request timeout in the SDK and no dead-letter file for a 400-quarantined batch.
-4. **Untested surfaces in the desktop agent.** `main/index.ts`, `preload/index.ts`,
-   `main/config.ts` and every renderer file have no tests — which is where the
-   compliance surface physically lives (tray, consent wiring, the `safeStorage`
-   allowlist that keeps the device token out of plaintext). The collector's
-   `start()`/`stop()` timer is also undriven: every test calls `tick()` by hand, so
-   nothing proves the agent collects on its own.
-5. **The visible-indicator guarantee is weaker than it reads on both platforms.**
-   On Windows 11 22H2+ third-party tray icons default into the overflow flyout and
-   no API pins them out; on macOS the tray image is not a template image, so it can
-   render unreadably in some menu-bar themes. Non-negotiable #2 is not fully
-   satisfied by the tray alone — an always-on-top indicator window is the piece that
-   makes the claim true.
-6. **Website tracking has no Windows implementation.** `get-windows` reads browser
-   URLs via AppleScript, macOS only. Scope §2.5 needs a client decision: a managed
-   browser extension, a UIAutomation native module, or accepting window-title-derived
-   data on Windows.
-7. **Android toolchain unverified.** The Android SDK has not been confirmed present,
+3. ~~The desktop agent buffers nothing to disk.~~ **Resolved 2026-08-05.** Observed
+   events are journalled to `state/pending-events.ndjson` before any network call and
+   removed only on API confirmation; today's spans, the open focus interval, the open
+   idle stretch, the open break and the capture schedule live in `state/day-state.json`
+   and are restored by `Collector` before its first tick; a 400-quarantined batch lands
+   in `state/dead-letters.json`; and `AemsClient` now takes a per-request deadline
+   (15 s in the agent). **One gap remains:** buffered screenshot *bytes* are still
+   in-memory only — a crash loses unsent frames, because a JPEG does not belong in an
+   NDJSON log. Frames need a blob directory keyed by `clientEventId` before that closes.
+4. **`main/index.ts` and `preload/index.ts` still have no tests.** Everything else the
+   old wording named is now covered: `main/config.ts` (26 tests), every renderer file
+   under test, and the collector's own `start()`/`stop()` timer driven by fake timers
+   rather than by hand. What is left is Electron glue that needs a real runtime —
+   `ElectronIndicatorSurface`, `ElectronCapturer`, `createPermissionMonitor` and the
+   wiring in `index.ts` itself. Those need a manual smoke test on **both** platforms
+   before the demo, not a unit test.
+5. ~~The visible-indicator guarantee is weaker than it reads.~~ **Resolved 2026-08-05.**
+   An always-on-top, click-through, all-workspaces indicator window is created before
+   collection can begin and shown for exactly as long as the loop is recording; failing
+   to show it stops the agent, as a failed tray already did. The tray image is now
+   template-marked on macOS and an unreadable asset throws instead of yielding the empty
+   image Electron hands back. **Still owed:** `resources/` holds one 32x32 non-template
+   PNG. macOS wants a designed `trayTemplate.png` + `@2x` at 16/32, and Windows wants a
+   multi-size `.ico`; the current asset is marked as a template rather than drawn as one.
+6. **Website tracking on Windows is honest but near-empty, and still needs a client
+   decision.** `get-windows` reads a tab URL only on macOS, over AppleScript. The agent
+   now *says so* rather than implying otherwise: `AgentPermissions.websiteTracking`
+   carries the platform's fidelity, the consent gate drops the "Website domains you
+   visit" promise on a machine that cannot keep it, and the status screen states the
+   limit. The Windows reader recovers a domain only from the rare title that carries
+   one. Closing the gap properly is a managed browser extension (Chrome/Edge
+   `ExtensionInstallForcelist`, Firefox `force_installed`) — UIAutomation was evaluated
+   and rejected. Scope §2.5 needs the client's call on the extension.
+7. **The packaged agent has never been launched.** `release/win-unpacked/AEMS Agent.exe`
+   builds and the native chain resolves inside it, but nobody has run it. The Electron
+   glue — indicator window, capturer, permission monitor, tray — has no automated
+   coverage and cannot get any without a real runtime. Smoke-test on **both** platforms
+   before the demo. **macOS has never been built at all**; `electron-builder --mac`
+   refuses on Windows.
+8. **One mutation survives.** `main/indicator.ts:71` — making `show()` unconditional
+   leaves the suite green, so nothing proves the indicator is hidden when it should be.
+   The inverse (failing to show) is covered.
+9. **Android toolchain unverified.** The Android SDK has not been confirmed present,
    so the Expo agent has never been built.
 
 Delete each item once it is resolved.
