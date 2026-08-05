@@ -58,16 +58,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       <nav
         aria-label="Main"
-        className="hidden w-56 shrink-0 flex-col border-r bg-card px-3 py-5 md:flex"
+        className="hidden w-60 shrink-0 flex-col border-r bg-card px-3 py-5 md:flex"
       >
         <Link
           href={session ? landingPathForRole(session.role) : "/"}
-          className="mb-7 flex items-center gap-2 rounded-md px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="mb-7 flex items-center gap-2.5 rounded-md px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <span className="grid h-7 w-7 place-items-center rounded bg-primary text-xs font-semibold text-primary-foreground">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary text-[13px] font-semibold tracking-tight text-primary-foreground">
             A
           </span>
-          <span className="text-sm font-semibold tracking-tight">AEMS</span>
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold leading-tight tracking-tight">AEMS</span>
+            {/* The positioning line, where a product states what it is. docs/design.md
+                forbids surveillance framing in UI copy, so the one permanent piece of
+                self-description had better be the intended one. */}
+            {/* `whitespace-nowrap` without `truncate`: this line is either shown in
+                full or it is a defect. An ellipsis here reads as a broken layout, and
+                the sidebar is sized (w-60) so the full phrase fits. */}
+            <span className="block whitespace-nowrap text-[10px] uppercase tracking-[0.07em] text-muted-foreground">
+              Workforce intelligence
+            </span>
+          </span>
         </Link>
 
         <ul className="flex flex-col gap-0.5">
@@ -87,14 +98,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       href={item.href}
                       aria-current={active ? "page" : undefined}
                       className={cn(
-                        "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
+                        "relative flex items-center gap-2.5 rounded-md py-1.5 pl-3.5 pr-2.5 text-sm transition-colors",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        // A navy rule marks the current section, not indigo: indigo is
+                        // reserved product-wide for model output, and spending it on
+                        // navigation would make "this came from AI" ambiguous everywhere.
                         active
-                          ? "bg-secondary font-medium text-foreground"
+                          ? "bg-secondary font-medium text-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-primary"
                           : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
                       )}
                     >
-                      <Icon className="h-4 w-4 shrink-0" aria-hidden />
+                      <Icon
+                        className={cn("h-4 w-4 shrink-0", active ? "text-foreground" : "text-muted-foreground/80")}
+                        aria-hidden
+                      />
                       {item.label}
                     </Link>
                   </li>

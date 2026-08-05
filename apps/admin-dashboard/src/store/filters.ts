@@ -323,3 +323,30 @@ export const useFilters = create<FilterState>((set) => ({
   setColumnVisibility: (table, visibility) =>
     set((state) => ({ columnVisibility: { ...state.columnVisibility, [table]: visibility } })),
 }));
+
+/**
+ * One shared empty map for every table that has never hidden a column.
+ *
+ * Not a detail. Zustand reads through `useSyncExternalStore`, which compares each
+ * snapshot to the last with `Object.is` and re-renders when they differ. A selector
+ * written the obvious way —
+ *
+ *     useFilters((state) => state.columnVisibility[table] ?? {})
+ *
+ * — builds a NEW object every time it runs, so no two snapshots are ever equal, and
+ * the component re-renders until React gives up with "Maximum update depth exceeded".
+ * It crashed /people and /devices, and it only shows once a table has no saved
+ * preferences, which is exactly the first-run state a demo starts in.
+ */
+const NO_HIDDEN_COLUMNS: ColumnVisibility = {};
+
+/**
+ * Column preferences for one table.
+ *
+ * A hook rather than a documented convention, because the trap has no visible symptom
+ * at the call site: the naive line reads correctly and typechecks. Selecting through
+ * here makes the stable reference the only way to ask.
+ */
+export function useColumnVisibility(table: string): ColumnVisibility {
+  return useFilters((state) => state.columnVisibility[table] ?? NO_HIDDEN_COLUMNS);
+}

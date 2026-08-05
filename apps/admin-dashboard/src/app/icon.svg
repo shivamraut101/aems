@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="AEMS">
+  <!-- Navy #0F172A: docs/design.md's primary. The mark is the wordmark's initial on
+       the brand square, matching the sidebar lockup rather than inventing a second
+       identity for the browser tab. -->
+  <rect width="32" height="32" rx="7" fill="#0F172A" />
+  <path
+    d="M9.4 22.5 15 9.5h2l5.6 13h-2.6l-1.32-3.2h-5.36L11.99 22.5H9.4Zm4.72-5.32h3.76L16 12.6l-1.88 4.58Z"
+    fill="#F8FAFC"
+  />
+</svg>

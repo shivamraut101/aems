@@ -26,7 +26,7 @@ import {
   platformOptions,
   type DeviceFilters,
 } from "@/lib/queries/roster-view";
-import { mergeQuery, useFilters } from "@/store/filters";
+import { mergeQuery, useColumnVisibility, useFilters } from "@/store/filters";
 
 /**
  * Device inventory, `docs/scope.md` §7.
@@ -68,7 +68,7 @@ function DevicesScreen() {
   const searchParams = useSearchParams();
   const search = searchParams.toString();
 
-  const columnVisibility = useFilters((state) => state.columnVisibility["devices"] ?? {});
+  const columnVisibility = useColumnVisibility("devices");
   const setColumnVisibility = useFilters((state) => state.setColumnVisibility);
   const [sorting, setSorting] = useState<SortingState>([{ id: "lastSeen", desc: true }]);
 

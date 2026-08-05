@@ -29,7 +29,7 @@ import {
   type PeopleFilters,
 } from "@/lib/queries/roster-view";
 import { roleLabel } from "@/lib/session";
-import { mergeQuery, useFilters } from "@/store/filters";
+import { mergeQuery, useColumnVisibility, useFilters } from "@/store/filters";
 
 /**
  * The roster, `docs/scope.md` §4.2.
@@ -71,7 +71,7 @@ function PeopleScreen() {
   const searchParams = useSearchParams();
   const search = searchParams.toString();
 
-  const columnVisibility = useFilters((state) => state.columnVisibility["people"] ?? {});
+  const columnVisibility = useColumnVisibility("people");
   const setColumnVisibility = useFilters((state) => state.setColumnVisibility);
 
   const [sorting, setSorting] = useState<SortingState>([{ id: "name", desc: false }]);
