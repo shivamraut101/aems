@@ -11,6 +11,7 @@ import { deviceRoutes } from "./routes/devices.js";
 import { employeeRoutes } from "./routes/employees.js";
 import { policyRoutes } from "./routes/policies.js";
 import { reportRoutes } from "./routes/reports.js";
+import { restrictionRoutes } from "./routes/restrictions.js";
 import { screenshotRoutes } from "./routes/screenshots.js";
 
 export async function buildServer(env: Env): Promise<FastifyInstance> {
@@ -45,6 +46,7 @@ export async function buildServer(env: Env): Promise<FastifyInstance> {
   await app.register(reportRoutes, { prefix: "/api/reports" });
   await app.register(analyticsRoutes, { prefix: "/api/analytics" });
   await app.register(policyRoutes, { prefix: "/api/policies" });
+  await app.register(restrictionRoutes, { prefix: "/api/restrictions" });
 
   app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
     request.log.error({ err: error }, "unhandled request error");

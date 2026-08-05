@@ -32,6 +32,12 @@ export type AiProvider = "openai" | "claude" | "gemini";
 export type NetworkType = "wifi" | "cellular" | "ethernet" | "offline";
 /** `category_rules.productivity` — tri-state, because "in use but not productive" is real. */
 export type Productivity = "productive" | "neutral" | "unproductive";
+/** What happens to a URL no restriction rule claims. */
+export type RestrictionMode = "blocklist" | "allowlist";
+/** Both actions exist in both modes — an `allow` rule is a carve-out from a block-list. */
+export type RestrictionAction = "block" | "allow";
+/** `domain` is a suffix-matched hostname; `url_pattern` is a `*`-globbed URL. */
+export type RestrictionMatchKind = "domain" | "url_pattern";
 
 export interface Database {
   public: {
@@ -820,6 +826,152 @@ export interface Database {
             columns: ["actor_id"];
             isOneToOne: false;
             referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      website_restriction_settings: {
+        Row: {
+          company_id: string;
+          enabled: boolean;
+          mode: RestrictionMode;
+          notice: string | null;
+          /** Bumped by a trigger on any settings OR rule change; the agent polls it. */
+          revision: number;
+          updated_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          company_id: string;
+          enabled?: boolean;
+          mode?: RestrictionMode;
+          notice?: string | null;
+          updated_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["website_restriction_settings"]["Insert"]>;
+        Relationships: [
+          {
+            foreignKeyName: "website_restriction_settings_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: true;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "website_restriction_settings_updated_by_fkey";
+            columns: ["updated_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      website_restriction_rules: {
+        Row: {
+          id: string;
+          company_id: string;
+          priority: number;
+          action: RestrictionAction;
+          match_kind: RestrictionMatchKind;
+          pattern: string;
+          note: string | null;
+          enabled: boolean;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          priority?: number;
+          action: RestrictionAction;
+          match_kind: RestrictionMatchKind;
+          pattern: string;
+          note?: string | null;
+          enabled?: boolean;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["website_restriction_rules"]["Insert"]>;
+        Relationships: [
+          {
+            foreignKeyName: "website_restriction_rules_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "website_restriction_rules_created_by_fkey";
+            columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      website_block_events: {
+        Row: {
+          id: number;
+          company_id: string;
+          profile_id: string;
+          device_id: string;
+          /** `on delete set null` — deleting a rule must not erase what it stopped. */
+          rule_id: string | null;
+          matched_pattern: string | null;
+          mode: RestrictionMode;
+          domain: string;
+          /** Scheme, host, port and path. The query string is never stored. */
+          url: string;
+          blocked_at: string;
+          client_event_id: string;
+          created_at: string;
+        };
+        Insert: {
+          company_id: string;
+          profile_id: string;
+          device_id: string;
+          rule_id?: string | null;
+          matched_pattern?: string | null;
+          mode: RestrictionMode;
+          domain: string;
+          url: string;
+          blocked_at: string;
+          client_event_id: string;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["website_block_events"]["Insert"]>;
+        Relationships: [
+          {
+            foreignKeyName: "website_block_events_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "website_block_events_profile_id_fkey";
+            columns: ["profile_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "website_block_events_device_id_fkey";
+            columns: ["device_id"];
+            isOneToOne: false;
+            referencedRelation: "devices";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "website_block_events_rule_id_fkey";
+            columns: ["rule_id"];
+            isOneToOne: false;
+            referencedRelation: "website_restriction_rules";
             referencedColumns: ["id"];
           },
         ];

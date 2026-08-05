@@ -32,8 +32,9 @@ if (process.argv.includes('--print-schema')) {
 
 // Snapshot of the live schema. Last refreshed 2026-08-05 against project
 // dayyrqcfktwwnkttlres after migrations 20260805000007 (categories),
-// 20260805000008 (ai_summaries uniqueness), 20260805000010 (report specs) and
-// 20260805000011 (profiles.deactivated_at).
+// 20260805000008 (ai_summaries uniqueness), 20260805000010 (report specs),
+// 20260805000011 (profiles.deactivated_at), 20260805000012 (device enrolment codes)
+// and 20260805000013 (website restrictions).
 const SCHEMA = {
   activity_events: 'id,company_id,profile_id,device_id,work_session_id,app_name,window_title,url,category,started_at,ended_at,client_event_id,created_at,domain',
   ai_summaries: 'id,company_id,profile_id,kind,period_start,period_end,provider,model,content,created_at',
@@ -51,6 +52,9 @@ const SCHEMA = {
   profiles: 'id,company_id,email,full_name,role,department,created_at,updated_at,manager_id,monitoring_enabled,deactivated_at',
   reports: 'id,company_id,profile_id,kind,period_start,period_end,status,storage_path,created_at,updated_at,format,grouping,params,requested_by,row_count,failure_reason',
   screenshots: 'id,company_id,profile_id,device_id,work_session_id,captured_at,storage_path,thumbnail_path,blurred,client_event_id,created_at',
+  website_block_events: 'id,company_id,profile_id,device_id,rule_id,matched_pattern,mode,domain,url,blocked_at,client_event_id,created_at',
+  website_restriction_rules: 'id,company_id,priority,action,match_kind,pattern,note,enabled,created_by,created_at,updated_at',
+  website_restriction_settings: 'company_id,enabled,mode,notice,revision,updated_by,created_at,updated_at',
   work_sessions: 'id,company_id,profile_id,device_id,clock_in_at,clock_out_at,created_at',
 }
 
