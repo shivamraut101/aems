@@ -4,33 +4,67 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, type EmployeeRow } from "@/lib/api";
 
-import type { PolicyRecord } from "./settings-view";
+import type {
+  CategoryRuleDto,
+  CategoryRuleInput,
+  CategoryRulesResponse,
+  PolicyPublishInput,
+  PolicyRecord,
+} from "./settings-view";
 
 /**
  * Data hooks for /settings.
  *
- * Both endpoints go through the Fastify API. The policy is company configuration and
- * the monitoring toggle is the highest-privilege write in the product; neither may
- * take the Supabase shortcut, because the API is where the audit log is written.
+ * Every one of these goes through the Fastify API. The policy and the classification
+ * rules are company configuration and the monitoring toggle is the highest-privilege
+ * write in the product; none may take the Supabase shortcut, because the API is where
+ * the audit log is written.
  */
 
 /**
  * The policy version currently in force.
  *
- * `retry: false` because every way this fails is settled: 404 means the company has
- * not published a policy yet, 403 means this role may not read one. Retrying a
- * settled fact three times only delays the answer.
+ * `GET /api/policies/current` is `requireUser`, not manager-gated — everyone signed in
+ * may read the terms they are monitored under — and it deliberately answers `200 null`
+ * for a company that has not published yet. `policyState` maps both that and a 404 onto
+ * "missing", so the screen shows the publish form either way rather than a red box.
  *
- * NOTE: `GET /api/policies/current` is not implemented yet — see the gap reported
- * with this work. Until it exists the request 404s, which is deliberately the same
- * answer as "no policy published", so the screen already renders the right thing:
- * the setup prompt, not a failure box.
+ * `retry: false` because every way this fails is settled: an expired session and a
+ * missing profile are both facts a second attempt cannot change.
  */
 export function useCompanyPolicy() {
   return useQuery<PolicyRecord | null>({
     queryKey: ["policy", "current"],
     queryFn: () => apiFetch<PolicyRecord | null>("/api/policies/current"),
     staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+/**
+ * Publishes a new policy version.
+ *
+ * A publish, never an edit. Consent is recorded against a policy version
+ * (non-negotiable #1), so mutating the row an employee consented to would rewrite
+ * what they agreed to after the fact. `POST /api/policies` inserts; the newest row by
+ * `created_at` is what `/current` and device enrolment both read.
+ */
+export function usePublishPolicy() {
+  const queryClient = useQueryClient();
+
+  return useMutation<PolicyRecord, unknown, PolicyPublishInput>({
+    mutationFn: (input) =>
+      apiFetch<PolicyRecord>("/api/policies", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (policy) => {
+      // Seed the cache with what the server stored, then refetch. Writing the
+      // response in means the panel shows the *stored* row — including any value the
+      // server normalised — rather than the draft that was typed.
+      queryClient.setQueryData(["policy", "current"], policy);
+      void queryClient.invalidateQueries({ queryKey: ["policy"] });
+    },
     retry: false,
   });
 }
@@ -57,11 +91,105 @@ export function useSetMonitoring() {
         method: "PATCH",
         body: JSON.stringify({ monitoringEnabled: enabled }),
       }),
-    onSuccess: () => {
+    onSuccess: (_row, variables) => {
       // The roster feeds People, Settings and the employee header; refetch it rather
       // than patching three caches by hand and letting one of them drift.
       void queryClient.invalidateQueries({ queryKey: ["employees"] });
+      // The employee header states "Monitoring: on" from its own query, and the live
+      // strip counts who is being collected from. Both are now wrong for this person.
+      void queryClient.invalidateQueries({ queryKey: ["employee", variables.profileId] });
+      void queryClient.invalidateQueries({ queryKey: ["analytics"] });
     },
+    retry: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Category rules
+// ---------------------------------------------------------------------------
+
+const RULES_KEY = ["categories", "rules"] as const;
+
+/**
+ * The company's classification rules, in evaluation order, with the engine's refusals.
+ *
+ * Readable by every role — the API says so, and an employee is entitled to see the
+ * rules being applied to their own activity.
+ */
+export function useCategoryRules() {
+  return useQuery<CategoryRulesResponse>({
+    queryKey: RULES_KEY,
+    queryFn: () => apiFetch<CategoryRulesResponse>("/api/activity/categories"),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/**
+ * Everything a rule change invalidates.
+ *
+ * Categorisation is recomputed on read from the rules in force, so editing one rule
+ * changes what every activity screen, usage table, report and AI insight says about
+ * history that was already recorded. Invalidating only the rule list would leave the
+ * rest of the product showing the previous classification until a reload.
+ */
+function invalidateEverythingCategorised(queryClient: ReturnType<typeof useQueryClient>): void {
+  void queryClient.invalidateQueries({ queryKey: ["categories"] });
+  void queryClient.invalidateQueries({ queryKey: ["usage"] });
+  void queryClient.invalidateQueries({ queryKey: ["timeline"] });
+  void queryClient.invalidateQueries({ queryKey: ["insights"] });
+  void queryClient.invalidateQueries({ queryKey: ["analytics"] });
+}
+
+export function useCreateCategoryRule() {
+  const queryClient = useQueryClient();
+
+  return useMutation<CategoryRuleDto, unknown, CategoryRuleInput>({
+    mutationFn: (input) =>
+      apiFetch<CategoryRuleDto>("/api/activity/categories", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => invalidateEverythingCategorised(queryClient),
+    retry: false,
+  });
+}
+
+export interface CategoryRuleEdit {
+  id: string;
+  input: CategoryRuleInput;
+}
+
+export function useUpdateCategoryRule() {
+  const queryClient = useQueryClient();
+
+  return useMutation<CategoryRuleDto, unknown, CategoryRuleEdit>({
+    mutationFn: ({ id, input }) =>
+      apiFetch<CategoryRuleDto>(`/api/activity/categories/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => invalidateEverythingCategorised(queryClient),
+    retry: false,
+  });
+}
+
+/**
+ * Deletes a rule.
+ *
+ * History keeps the label stored on each row until something recategorises it, so
+ * this is not a retroactive erasure — it is a change to what happens from now on, and
+ * to what a recomputing read decides.
+ */
+export function useDeleteCategoryRule() {
+  const queryClient = useQueryClient();
+
+  return useMutation<void, unknown, string>({
+    mutationFn: (id) =>
+      apiFetch<void>(`/api/activity/categories/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => invalidateEverythingCategorised(queryClient),
     retry: false,
   });
 }

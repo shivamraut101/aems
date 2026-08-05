@@ -8,12 +8,21 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { PageHeader } from "@/components/page-header";
+import {
+  EmptyState,
+  ErrorState,
+  ListSkeleton,
+  PanelSkeleton,
+  SkeletonBar,
+  StaleNotice,
+} from "@/components/states";
 import { StatusDot } from "@/components/status-dot";
 import { describeError, useEmployees, useLiveWorkforce } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import {
+  DEFAULT_SLOT_SECONDS,
+  alignedDayWindow,
   dateKeyOf,
-  dayWindow,
   isFutureDateKey,
   rosterRows,
   shiftDateKey,
@@ -57,6 +66,26 @@ function ActivityScreen() {
     [employees.data, live.data, sort],
   );
 
+  /**
+   * Presence is unreachable, and the roster must say so rather than imply it.
+   *
+   * `rosterRows` defaults a person with no presence row to `offline`, which is right
+   * when the API answered and wrong when it did not: with `live` failing, every
+   * single name renders "Offline" — a monitoring product asserting that nobody is
+   * working, on the strength of a request that never landed. `live.data` survives a
+   * failed refetch, so this is only true when there is genuinely nothing to show.
+   */
+  const presenceUnavailable = live.isError && live.data === undefined;
+  const presenceNotice: PresenceNotice | null = live.isError
+    ? {
+        unavailable: presenceUnavailable,
+        message: presenceUnavailable
+          ? "Live presence could not be loaded, so no status is shown below. This is not a report that everyone is offline."
+          : "Live presence stopped updating. The statuses below are the last ones received.",
+        onRetry: () => void live.refetch(),
+      }
+    : null;
+
   function select(next: Partial<{ profileId: string; date: string }>) {
     const query = new URLSearchParams(params.toString());
     for (const [key, value] of Object.entries(next)) query.set(key, value);
@@ -83,11 +112,18 @@ function ActivityScreen() {
           onSort={setSort}
           loading={employees.isLoading}
           error={employees.isError ? describeError(employees.error) : null}
+          onRetry={() => void employees.refetch()}
+          presence={presenceNotice}
           onSelect={(profileId) => select({ profileId })}
         />
 
         {selectedId ? (
-          <Detail profileId={selectedId} person={selected} dateKey={dateKey} />
+          <Detail
+            profileId={selectedId}
+            person={selected}
+            dateKey={dateKey}
+            presenceUnavailable={presenceUnavailable}
+          />
         ) : (
           <NothingSelected hasPeople={rows.length > 0} />
         )}
@@ -153,6 +189,14 @@ const stepClass =
 /* Master pane                                                                 */
 /* -------------------------------------------------------------------------- */
 
+/** What to say about live presence, when there is something to say. */
+interface PresenceNotice {
+  /** Nothing landed at all — statuses must be withheld, not defaulted to offline. */
+  unavailable: boolean;
+  message: string;
+  onRetry: () => void;
+}
+
 function Roster({
   rows,
   selectedId,
@@ -160,6 +204,8 @@ function Roster({
   onSort,
   loading,
   error,
+  onRetry,
+  presence,
   onSelect,
 }: {
   rows: RosterRow[];
@@ -168,6 +214,8 @@ function Roster({
   onSort: (sort: RosterSort) => void;
   loading: boolean;
   error: string | null;
+  onRetry: () => void;
+  presence: PresenceNotice | null;
   onSelect: (profileId: string) => void;
 }) {
   return (
@@ -198,23 +246,32 @@ function Roster({
         </div>
       </div>
 
+      {/* Presence is a second, independent request. It failing must not blank the
+          roster — the names, departments and enrolled devices are still true. */}
+      {presence && !error && !loading ? (
+        <StaleNotice message={presence.message} onRetry={presence.onRetry} />
+      ) : null}
+
       {error ? (
-        <p className="px-3 py-6 text-sm text-muted-foreground">{error}</p>
+        <ErrorState
+          title="The roster could not be loaded"
+          message={error}
+          onRetry={onRetry}
+          className="m-3"
+        />
       ) : loading ? (
-        <ul className="divide-y">
-          {[0, 1, 2, 3, 4].map((i) => (
-            <li key={i} className="px-3 py-2.5">
-              <span className="block h-4 w-32 animate-pulse rounded bg-muted" />
-            </li>
-          ))}
-        </ul>
+        <>
+          <span className="sr-only" role="status">
+            Loading the roster
+          </span>
+          <ListSkeleton rows={6} />
+        </>
       ) : rows.length === 0 ? (
-        <div className="px-3 py-8 text-center">
-          <p className="text-sm font-medium">No one to show yet</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            People appear here once they are added to your company.
-          </p>
-        </div>
+        <EmptyState
+          bordered={false}
+          title="No one to show yet"
+          body="People appear here once they are added to your company."
+        />
       ) : (
         <ul className="max-h-[70vh] divide-y overflow-y-auto">
           {rows.map((row) => {
@@ -238,7 +295,11 @@ function Roster({
                     </span>
                   </div>
                   <div className="mt-0.5 flex items-center justify-between gap-2">
-                    <StatusDot status={row.status} className="text-xs text-muted-foreground" />
+                    {presence?.unavailable ? (
+                      <span className="text-xs italic text-muted-foreground">Status unknown</span>
+                    ) : (
+                      <StatusDot status={row.status} className="text-xs text-muted-foreground" />
+                    )}
                     <span className="truncate text-xs text-muted-foreground">
                       {row.monitoringEnabled ? (row.deviceLabel ?? row.department ?? "") : "Monitoring paused"}
                     </span>
@@ -261,10 +322,12 @@ function Detail({
   profileId,
   person,
   dateKey,
+  presenceUnavailable,
 }: {
   profileId: string;
   person: RosterRow | null;
   dateKey: string;
+  presenceUnavailable: boolean;
 }) {
   const today = dateKey === dateKeyOf(new Date());
   const [tick, setTick] = useState(0);
@@ -277,9 +340,20 @@ function Detail({
     return () => window.clearInterval(id);
   }, [today]);
 
-  // `tick` is the dependency that matters here: it is the clock, and dropping it
-  // would freeze today's window at the moment the screen first rendered.
-  const range = useMemo(() => dayWindow(dateKey), [dateKey, tick]);
+  /**
+   * `tick` is the dependency that matters here: it is the clock, and dropping it
+   * would freeze today's window at the moment the screen first rendered.
+   *
+   * `alignedDayWindow`, not `dayWindow`: the latter ends at a millisecond-precise
+   * "now", so each of these ticks produced a window — and therefore a query key — that
+   * had never been requested before, and the timeline was thrown away and re-skeletoned
+   * once a minute. Quantised to the slot grid the key changes once per slot, and
+   * `useDayTimeline` keeps the previous day on screen while the next one loads.
+   */
+  const range = useMemo(
+    () => alignedDayWindow(dateKey, DEFAULT_SLOT_SECONDS),
+    [dateKey, tick],
+  );
 
   const { data, isLoading, isError, error, refetch } = useDayTimeline(profileId, range.from, range.to);
 
@@ -291,7 +365,10 @@ function Detail({
             {person?.name ?? "Selected person"}
           </h2>
           <p className="mt-0.5 flex items-center gap-2 text-sm text-muted-foreground">
-            {person ? <StatusDot status={person.status} className="text-sm" /> : null}
+            {person && !presenceUnavailable ? (
+              <StatusDot status={person.status} className="text-sm" />
+            ) : null}
+            {presenceUnavailable ? <span className="italic">Status unknown</span> : null}
             {person?.department ? <span>{person.department}</span> : null}
           </p>
         </div>
@@ -329,31 +406,48 @@ function Detail({
 
 function NothingSelected({ hasPeople }: { hasPeople: boolean }) {
   return (
-    <section
-      aria-label="Day detail"
-      className="grid min-h-[18rem] place-items-center rounded-lg border bg-card px-6 py-10 text-center"
-    >
-      <div className="max-w-sm">
-        <p className="text-sm font-medium">
-          {hasPeople ? "Select someone to read their day" : "Nothing to read yet"}
-        </p>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {hasPeople
+    <section aria-label="Day detail" className="grid min-h-[18rem] place-items-center">
+      <EmptyState
+        className="w-full"
+        title={hasPeople ? "Select someone to read their day" : "Nothing to read yet"}
+        body={
+          hasPeople
             ? "Their timeline opens here — the list stays where it is, and the link in your address bar carries the selection."
-            : "Once an agent reports its first session, the day appears here."}
-        </p>
-      </div>
+            : "Once an agent reports its first session, the day appears here."
+        }
+      />
     </section>
   );
 }
 
+/**
+ * The route-level fallback, shaped like the screen it precedes.
+ *
+ * Two columns at the real widths, a roster of the real row height, and a detail pane
+ * as tall as a timeline — so the page does not reflow when `useSearchParams` resolves
+ * and the real screen takes over.
+ */
 function ActivitySkeleton() {
   return (
     <div className="mx-auto max-w-7xl px-6 py-7">
-      <div className="mb-6 h-7 w-32 animate-pulse rounded bg-muted" />
+      <PageHeader
+        title="Activity"
+        subtitle="Pick someone to read their day without leaving the list."
+      />
       <div className="grid gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
-        <div className="h-72 animate-pulse rounded-lg border bg-card" />
-        <div className="h-72 animate-pulse rounded-lg border bg-card" />
+        <section aria-label="Roster" className="overflow-hidden rounded-lg border bg-card">
+          <div className="border-b px-3 py-2">
+            <span className="block h-3.5 w-20 animate-pulse rounded bg-muted" aria-hidden />
+          </div>
+          <ListSkeleton rows={6} />
+        </section>
+        <section aria-label="Day detail" className="min-w-0 space-y-4">
+          <div className="flex items-center justify-between gap-3" aria-hidden>
+            <SkeletonBar className="h-5 w-44" />
+            <SkeletonBar className="h-8 w-28 rounded-md" />
+          </div>
+          <PanelSkeleton minHeightClass="min-h-[22rem]" lines={6} label="Loading the day" />
+        </section>
       </div>
     </div>
   );

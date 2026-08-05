@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-import { useLiveWorkforce } from "@/lib/api";
+import { describeError, isSessionExpired, useLiveWorkforce } from "@/lib/api";
 import { relativeTime, timeOfDay } from "@/lib/format";
 
 import { StatusDot } from "./status-dot";
@@ -20,13 +20,41 @@ const PLATFORM_LABEL = {
  * top-to-bottom looking for the one name that is wrong.
  */
 export function LiveWorkforce() {
-  const { data, isLoading, isError } = useLiveWorkforce();
+  const { data, isLoading, isError, error, refetch, isFetching } = useLiveWorkforce();
 
   if (isError) {
+    // `/api/analytics/live` is behind `requireManager`, so 401 and 403 are both
+    // reachable here — and "check that the API is running" told a manager whose
+    // session had simply expired to go and inspect a server. `role="alert"` because
+    // this strip polls: it can fail while the reader is looking somewhere else.
+    const expired = isSessionExpired(error);
+
     return (
-      <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">
-        Live status is unavailable. Check that the API is running.
-      </p>
+      <div
+        role="alert"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3"
+      >
+        <p className="text-sm">{describeError(error)}</p>
+
+        {expired ? (
+          // Retrying a 401 just spends another round trip to be refused again.
+          <Link
+            href="/login"
+            className="rounded-md border bg-card px-2.5 py-1 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Sign in
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            disabled={isFetching}
+            className="rounded-md border bg-card px-2.5 py-1 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            {isFetching ? "Retrying" : "Try again"}
+          </button>
+        )}
+      </div>
     );
   }
 
@@ -71,18 +99,14 @@ export function LiveWorkforce() {
                 </tr>
               ))
             : data?.map((row) => (
-                <tr key={row.deviceId} className="border-b transition-colors last:border-0 hover:bg-secondary/40">
+                <tr key={row.profileId} className="border-b transition-colors last:border-0 hover:bg-secondary/40">
                   <td className="px-4 py-2.5">
-                    {row.profileId ? (
-                      <Link
-                        href={`/people/${row.profileId}`}
-                        className="font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {row.fullName || row.email}
-                      </Link>
-                    ) : (
-                      <span className="font-medium">{row.label}</span>
-                    )}
+                    <Link
+                      href={`/people/${row.profileId}`}
+                      className="font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {row.fullName || row.email}
+                    </Link>
                   </td>
                   <td className="px-4 py-2.5">
                     <StatusDot status={row.status} />
@@ -93,7 +117,14 @@ export function LiveWorkforce() {
                     ) : null}
                   </td>
                   <td className="hidden px-4 py-2.5 text-muted-foreground sm:table-cell">
-                    {PLATFORM_LABEL[row.platform]} · {row.label}
+                    {row.platform && row.label ? (
+                      `${PLATFORM_LABEL[row.platform]} · ${row.label}`
+                    ) : (
+                      // Someone on the roster who has not enrolled anything. Saying so
+                      // is the point of listing them: an admin needs to see who is not
+                      // set up yet, which the device-driven version could never show.
+                      <span className="text-muted-foreground/70">No device enrolled</span>
+                    )}
                   </td>
                   <td className="tabular px-4 py-2.5 text-right text-muted-foreground">
                     {relativeTime(row.lastSeenAt)}

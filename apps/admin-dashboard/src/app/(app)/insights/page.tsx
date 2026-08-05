@@ -6,10 +6,16 @@ import { Suspense, useMemo } from "react";
 
 import { AiInsight } from "@/components/ai-insight";
 import { PageHeader } from "@/components/page-header";
+import {
+  EmptyState,
+  ErrorState,
+  SkeletonBar,
+  StatGridSkeleton,
+  TableSkeleton,
+} from "@/components/states";
 import { describeError, useEmployees, useSession } from "@/lib/api";
 import { duration } from "@/lib/format";
 import {
-  isInsightsUnavailable,
   kindOptionsForRole,
   periodLabel,
   readInsight,
@@ -141,6 +147,7 @@ function InsightsScreen() {
       <Body
         loading={insights.isLoading}
         error={insights.isError ? insights.error : null}
+        onRetry={() => void insights.refetch()}
         needsPerson={needsPerson}
         row={selected}
       />
@@ -151,47 +158,52 @@ function InsightsScreen() {
 function Body({
   loading,
   error,
+  onRetry,
   needsPerson,
   row,
 }: {
   loading: boolean;
   error: unknown;
+  onRetry: () => void;
   needsPerson: boolean;
   row: AiSummaryRow | null;
 }) {
   if (needsPerson) {
     return (
-      <Empty
+      <EmptyState
         title="Choose a person"
         body="Daily and weekly summaries are written per employee. Pick someone to read theirs."
       />
     );
   }
 
-  if (loading) return <AiInsight summary="" loading />;
+  // Only a true first load: `useInsights` holds each (kind, person) pair in cache, so
+  // stepping back to one already read never shows this.
+  if (loading) return <InsightBodySkeleton />;
 
   if (error) {
-    // A missing read path is an unfinished backend, not something the reader did —
-    // and an error banner on the AI screen reads like the model failed.
-    if (isInsightsUnavailable(error)) {
-      return (
-        <Empty
-          title="Summaries are not being served yet"
-          body="The summary worker writes them on a schedule; the read path that serves them to this screen is still to be enabled."
-        />
-      );
-    }
-
+    /*
+     * Every failure here is a real failure.
+     *
+     * This branch used to test for a 404 first and answer it with an empty state
+     * reading "the read path is still to be enabled" — scaffolding from before
+     * `GET /api/analytics/insights` existed. It has existed since; the route is
+     * registered in `routes/analytics.ts` behind `requireUser` and can only answer
+     * 200, 400 or 403. The 404 test was unreachable, and the copy told every reader
+     * the backend was unfinished when it was not.
+     */
     return (
-      <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">
-        {describeError(error)}
-      </p>
+      <ErrorState
+        title="This summary could not be loaded"
+        message={describeError(error)}
+        onRetry={onRetry}
+      />
     );
   }
 
   if (!row) {
     return (
-      <Empty
+      <EmptyState
         title="No summary for this period yet"
         body="Summaries are written once per period, after the activity they describe. The first one appears the day after an agent starts reporting."
       />
@@ -206,7 +218,7 @@ function Insight({ row }: { row: AiSummaryRow }) {
 
   if (view.summary.length === 0) {
     return (
-      <Empty
+      <EmptyState
         title="This summary could not be read"
         body="The stored document is in a shape this version of the dashboard does not recognise. The next scheduled run replaces it."
       />
@@ -293,20 +305,81 @@ function Cell({ label, value, tone }: { label: string; value: string; tone?: str
   );
 }
 
-function Empty({ title, body }: { title: string; body: string }) {
+/**
+ * The loaded page's shape, without the content.
+ *
+ * It replaces `<AiInsight summary="" loading />` — a 120px panel standing in for a
+ * ~500px page. That collapsed the screen to a fifth of its height and grew it back
+ * every time the reader stepped to another period, which is not a first-load cost
+ * but a jump on every interaction. Every block below is the same box as its
+ * counterpart in {@link Insight}: the three recorded cells, the applications table,
+ * the indigo panel, the provenance line.
+ *
+ * The indigo panel is drawn in the accent, not in grey. Indigo is reserved for AI
+ * surfaces per `docs/design.md`, and the reader should be able to see *which* block
+ * is about to hold model output before it arrives.
+ */
+function InsightBodySkeleton() {
   return (
-    <div className="rounded-lg border bg-card px-4 py-12 text-center">
-      <p className="text-sm font-medium">{title}</p>
-      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{body}</p>
+    <div className="space-y-5" aria-busy="true">
+      <span className="sr-only" role="status">
+        Loading this summary
+      </span>
+
+      <section aria-hidden>
+        <SkeletonBar className="mb-2 h-3 w-32" />
+        <StatGridSkeleton cells={3} />
+        <TableSkeleton
+          className="mt-3"
+          minWidthClass="min-w-0"
+          caption="Loading applications by time recorded"
+          rows={4}
+          columns={[
+            { key: "app", label: "Application", width: "w-40" },
+            { key: "time", label: "Time", align: "right", width: "w-14" },
+          ]}
+        />
+      </section>
+
+      <section
+        aria-hidden
+        className="min-h-[10rem] rounded-lg border border-accent/25 bg-accent/[0.04] p-5"
+      >
+        <SkeletonBar className="h-3 w-44" />
+        <div className="mt-4 space-y-2">
+          <SkeletonBar className="w-full" />
+          <SkeletonBar className="w-11/12" />
+          <SkeletonBar className="w-3/4" />
+        </div>
+        <div className="mt-5 flex flex-wrap gap-x-8 gap-y-3">
+          {[0, 1, 2].map((index) => (
+            <div key={index}>
+              <SkeletonBar className="h-3 w-20" />
+              <SkeletonBar className="mt-2 h-5 w-12" />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <SkeletonBar className="h-3 w-72" />
     </div>
   );
 }
 
+/** The route-level fallback: header, controls and the body skeleton above. */
 function InsightsSkeleton() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-7">
-      <div className="mb-6 h-7 w-40 animate-pulse rounded bg-muted" />
-      <div className="h-44 animate-pulse rounded-lg border bg-card" />
+      <PageHeader
+        title="AI Insights"
+        subtitle="A model's reading of recorded activity. The measurements beside it are the record itself."
+      />
+      <div className="mb-5 flex flex-wrap items-end gap-3" aria-hidden>
+        <div className="h-10 w-56 animate-pulse rounded-md border bg-muted/50" />
+        <div className="h-9 w-56 animate-pulse rounded-md border bg-muted/50" />
+      </div>
+      <SkeletonBar className="mb-5 h-3 w-64" />
+      <InsightBodySkeleton />
     </div>
   );
 }

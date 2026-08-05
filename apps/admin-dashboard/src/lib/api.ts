@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReportDocument, ReportRow } from "@aems/analytics";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiBaseUrl, joinUrl, parseMeResponse, type Session } from "./session";
@@ -170,6 +171,27 @@ async function safeJson(response: Response): Promise<unknown> {
 }
 
 // ---------------------------------------------------------------------------
+// Retry policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Retry only the failures a second attempt can change.
+ *
+ * An {@link ApiError} is the API's considered answer. A 401 does not become a 200
+ * on a resend, a 403 does not become permission, a 404 does not become a record and
+ * a 429 answered by immediately asking again is the thing 429 exists to stop. React
+ * Query's default retries all three, so every settled refusal cost a doubled round
+ * trip before the screen was allowed to say what had happened — and during it the
+ * UI shows its loading state, which reads as "working" rather than "refused".
+ *
+ * A {@link NetworkError} is the opposite case: nothing answered at all, so trying
+ * again is exactly right. That split is why the two are separate classes.
+ */
+export function retryUnlessRefused(failureCount: number, error: unknown): boolean {
+  return !(error instanceof ApiError) && failureCount < 2;
+}
+
+// ---------------------------------------------------------------------------
 // Query hooks
 // ---------------------------------------------------------------------------
 
@@ -190,11 +212,19 @@ export function useSession() {
   });
 }
 
+/**
+ * One row of `GET /api/analytics/live` — one per PERSON, not per device.
+ *
+ * The three device fields are null for someone who has enrolled nothing. They
+ * used to be non-null because the endpoint was driven by `devices`, which meant
+ * a person without one simply never appeared in the strip; `profileId` is the
+ * stable identity here and is what the table keys on.
+ */
 export interface LiveWorkforceRow {
-  deviceId: string;
-  platform: "windows" | "macos" | "android";
-  label: string;
-  profileId: string | null;
+  deviceId: string | null;
+  platform: "windows" | "macos" | "android" | null;
+  label: string | null;
+  profileId: string;
   fullName: string | null;
   email: string | null;
   lastSeenAt: string | null;
@@ -214,6 +244,7 @@ export function useOverview() {
   return useQuery({
     queryKey: ["analytics", "overview"],
     queryFn: () => apiFetch<OverviewMetrics>("/api/analytics/overview"),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -223,6 +254,7 @@ export function useLiveWorkforce() {
     queryFn: () => apiFetch<LiveWorkforceRow[]>("/api/analytics/live"),
     // The live strip is the one place staleness is actually visible to the user.
     refetchInterval: 20_000,
+    retry: retryUnlessRefused,
   });
 }
 
@@ -230,6 +262,7 @@ export function useEmployees() {
   return useQuery({
     queryKey: ["employees"],
     queryFn: () => apiFetch<EmployeeRow[]>("/api/employees"),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -255,6 +288,7 @@ export function useDevices() {
   return useQuery({
     queryKey: ["devices"],
     queryFn: () => apiFetch<DeviceRow[]>("/api/devices"),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -273,4 +307,256 @@ export interface DeviceRow {
   status: "active" | "offline" | "revoked";
   last_seen_at: string | null;
   enrolled_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Activity intelligence — the dashboard home's charts and its work-pattern KPI
+// ---------------------------------------------------------------------------
+
+/**
+ * These read `POST /api/reports/run` at company scope rather than a bespoke
+ * aggregate, for the same reason the employee Apps and Websites tabs do: that
+ * endpoint is the only place in the product where per-app and per-day time is
+ * merged per person before it is summed. A second aggregation path for the home
+ * page is precisely how the worker and the dashboard came to disagree about the
+ * same day once already.
+ *
+ * No new endpoint was invented for this, and none is needed. `/` is a manager-only
+ * destination (see `session.ts` NAV) and `/api/reports/run` pins an employee to
+ * their own data server-side, so company scope here can only ever be answered for
+ * someone entitled to it.
+ */
+
+const DAY_MS = 86_400_000;
+
+/** A half-open instant window. Empty strings mean "the local clock is not known yet". */
+export interface Period {
+  from: string;
+  to: string;
+}
+
+/**
+ * Local midnight `days - 1` days ago, through now.
+ *
+ * Local rather than UTC because the reader picked neither — they just opened the
+ * page, and "the last seven days" means seven of *their* days. The end is nudged a
+ * second past the start for the one instant a day where they coincide: the API
+ * refuses a zero-width period with a 400, and a dashboard that breaks at midnight
+ * is a dashboard that breaks on the night shift.
+ */
+export function trailingDays(days: number, now: Date): Period {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - Math.max(0, days - 1));
+
+  const end = Math.max(now.getTime(), start.getTime() + 1000);
+  return { from: start.toISOString(), to: new Date(end).toISOString() };
+}
+
+/** Local midnight through now — the window every "today" figure on the page shares. */
+export function todaySoFar(now: Date): Period {
+  return trailingDays(1, now);
+}
+
+/**
+ * The same trailing window, aligned to whole UTC days.
+ *
+ * The per-day report buckets by UTC day (`aggregate.ts` `dayWindows`), and a window
+ * that starts at the reader's midnight starts *inside* one of those buckets for
+ * everyone not on UTC. Asked for seven local days from Delhi, the report answered
+ * eight buckets whose first held five and a half hours — and a five-and-a-half-hour
+ * bucket drawn beside seven full ones reads as a quiet day rather than as a sliver
+ * of one. Aligning the request to the grid the answer uses is what makes the chart's
+ * bars comparable to each other.
+ *
+ * The final bucket is still partial, because it is today and today is not over.
+ */
+export function trailingUtcDays(days: number, now: Date): Period {
+  const end = now.getTime();
+  const start = Math.floor(end / DAY_MS) * DAY_MS - Math.max(0, days - 1) * DAY_MS;
+
+  return {
+    from: new Date(start).toISOString(),
+    to: new Date(Math.max(end, start + 1000)).toISOString(),
+  };
+}
+
+interface CompanyReportSpec {
+  kind: "time_and_activity" | "app_usage";
+  grouping: "date" | "application";
+  scope: "company";
+  decimalDuration: false;
+}
+
+/**
+ * One company-scope report run, cached by its own period.
+ *
+ * `enabled` is off until the period is resolved. The home page derives its window
+ * from the *browser's* clock, which a server-rendered first paint does not have —
+ * firing before then would ask about a window nobody chose and be answered 400.
+ */
+function useCompanyReport(spec: CompanyReportSpec, period: Period | null) {
+  const from = period?.from ?? "";
+  const to = period?.to ?? "";
+
+  return useQuery({
+    queryKey: ["company-report", spec.kind, spec.grouping, from, to],
+    queryFn: () =>
+      apiFetch<ReportDocument>("/api/reports/run", {
+        method: "POST",
+        body: JSON.stringify({ ...spec, periodStart: from, periodEnd: to }),
+      }),
+    enabled: from !== "" && to !== "",
+    // An aggregate over a week does not change meaningfully between two glances at
+    // the same screen, and this is the most expensive call the page makes.
+    staleTime: 5 * 60_000,
+    retry: retryUnlessRefused,
+  });
+}
+
+/** Time in each application across the company — scope §2.4, aggregated. */
+export function useCompanyAppUsage(period: Period | null) {
+  return useCompanyReport(
+    { kind: "app_usage", grouping: "application", scope: "company", decimalDuration: false },
+    period,
+  );
+}
+
+/** Focused / idle / break per day across the company — the work pattern, over time. */
+export function useCompanyWorkPattern(period: Period | null) {
+  return useCompanyReport(
+    { kind: "time_and_activity", grouping: "date", scope: "company", decimalDuration: false },
+    period,
+  );
+}
+
+function cellNumber(row: ReportRow | null | undefined, id: string): number {
+  const value = row?.cells[id];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function cellText(row: ReportRow | null | undefined, id: string): string {
+  const value = row?.cells[id];
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * A column from the document's totals row.
+ *
+ * The totals row is the *merged* figure, not the sum of the rows above it — two
+ * devices reporting the same hour count once. That distinction is the whole reason
+ * the aggregator emits a totals row separately, so a caller wanting a headline
+ * number must read it rather than adding up the table.
+ */
+export function reportTotal(document: ReportDocument | undefined, columnId: string): number {
+  return cellNumber(document?.sections[0]?.totals, columnId);
+}
+
+export interface AppUsageBar {
+  label: string;
+  seconds: number;
+  /** 0..1 of the company's merged tracked time. */
+  share: number;
+}
+
+/**
+ * The busiest applications, with the tail folded into one row.
+ *
+ * Folding rather than truncating: a chart that silently drops the eleventh app
+ * implies the ten shown are the whole day. `limit` counts the folded row, so the
+ * chart never renders more bars than it was asked for.
+ */
+export function appUsageBars(document: ReportDocument | undefined, limit = 6): AppUsageBar[] {
+  const bars: AppUsageBar[] = [];
+
+  for (const row of document?.sections[0]?.rows ?? []) {
+    const label = cellText(row, "application");
+    const seconds = cellNumber(row, "duration");
+    if (label === "" || seconds <= 0) continue;
+    bars.push({ label, seconds, share: cellNumber(row, "share") });
+  }
+
+  // The API already sorts busiest-first; sorting again makes this function correct
+  // on its own rather than correct only downstream of one particular caller.
+  bars.sort((a, b) => b.seconds - a.seconds);
+
+  if (limit < 1 || bars.length <= limit) return bars;
+
+  const head = bars.slice(0, limit - 1);
+  const tail = bars.slice(limit - 1);
+
+  head.push({
+    label: `${tail.length} other apps`,
+    seconds: tail.reduce((sum, bar) => sum + bar.seconds, 0),
+    share: tail.reduce((sum, bar) => sum + bar.share, 0),
+  });
+
+  return head;
+}
+
+export interface WorkPatternDay {
+  /** The UTC day key the aggregator bucketed by, e.g. "2026-08-05". */
+  key: string;
+  /** Short axis label — "Wed 5". Derived from UTC parts, never re-read locally. */
+  label: string;
+  focusedSeconds: number;
+  idleSeconds: number;
+  breakSeconds: number;
+  trackedSeconds: number;
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+/** Labelled from UTC parts: the keys are UTC days, and re-reading one locally shifts it. */
+function utcDayLabel(instant: number): string {
+  const date = new Date(instant);
+  return `${WEEKDAYS[date.getUTCDay()] ?? ""} ${date.getUTCDate()}`;
+}
+
+/**
+ * One entry per day in the window, including the days nobody worked.
+ *
+ * The aggregator drops a day whose tracked time is zero, which is right for a table
+ * and wrong for a trend: a chart built straight from those rows puts Monday next to
+ * Friday and draws a continuous week out of two working days. The gaps are the
+ * finding, so they are rendered as gaps.
+ *
+ * The day grid is rebuilt with the same UTC floor the aggregator uses
+ * (`aggregate.ts` `dayWindows`), so the keys line up exactly rather than nearly.
+ */
+export function workPatternDays(document: ReportDocument | undefined): WorkPatternDay[] {
+  if (!document) return [];
+
+  const start = Date.parse(document.periodStart);
+  const end = Date.parse(document.periodEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+
+  const byDate = new Map<string, ReportRow>();
+  for (const row of document.sections[0]?.rows ?? []) {
+    const key = cellText(row, "date");
+    if (key !== "") byDate.set(key, row);
+  }
+
+  const days: WorkPatternDay[] = [];
+  let cursor = Math.floor(start / DAY_MS) * DAY_MS;
+
+  // Bounded so a malformed period cannot spin here, and so an accidental year-long
+  // window cannot try to render 365 bars.
+  for (let guard = 0; cursor < end && guard < 92; guard += 1) {
+    const key = new Date(cursor).toISOString().slice(0, 10);
+    const row = byDate.get(key) ?? null;
+
+    days.push({
+      key,
+      label: utcDayLabel(cursor),
+      focusedSeconds: cellNumber(row, "active"),
+      idleSeconds: cellNumber(row, "idle"),
+      breakSeconds: cellNumber(row, "break"),
+      trackedSeconds: cellNumber(row, "tracked"),
+    });
+
+    cursor += DAY_MS;
+  }
+
+  return days;
 }

@@ -32,7 +32,8 @@ if (process.argv.includes('--print-schema')) {
 
 // Snapshot of the live schema. Last refreshed 2026-08-05 against project
 // dayyrqcfktwwnkttlres after migrations 20260805000007 (categories),
-// 20260805000008 (ai_summaries uniqueness) and 20260805000010 (report specs).
+// 20260805000008 (ai_summaries uniqueness), 20260805000010 (report specs) and
+// 20260805000011 (profiles.deactivated_at).
 const SCHEMA = {
   activity_events: 'id,company_id,profile_id,device_id,work_session_id,app_name,window_title,url,category,started_at,ended_at,client_event_id,created_at,domain',
   ai_summaries: 'id,company_id,profile_id,kind,period_start,period_end,provider,model,content,created_at',
@@ -46,7 +47,7 @@ const SCHEMA = {
   devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb',
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',
   policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at',
-  profiles: 'id,company_id,email,full_name,role,department,created_at,updated_at,manager_id,monitoring_enabled',
+  profiles: 'id,company_id,email,full_name,role,department,created_at,updated_at,manager_id,monitoring_enabled,deactivated_at',
   reports: 'id,company_id,profile_id,kind,period_start,period_end,status,storage_path,created_at,updated_at,format,grouping,params,requested_by,row_count,failure_reason',
   screenshots: 'id,company_id,profile_id,device_id,work_session_id,captured_at,storage_path,thumbnail_path,blurred,client_event_id,created_at',
   work_sessions: 'id,company_id,profile_id,device_id,clock_in_at,clock_out_at,created_at',

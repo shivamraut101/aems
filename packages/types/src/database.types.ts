@@ -62,6 +62,11 @@ export interface Database {
           department: string | null;
           manager_id: string | null;
           monitoring_enabled: boolean;
+          // Off-boarding tombstone (migration 20260805000011). Non-null means: no
+          // sign-in, no collection, hidden from the roster. Profiles are never
+          // hard-deleted — the cascade from auth.users would take the consent
+          // records proving collection was lawful with them.
+          deactivated_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -74,6 +79,7 @@ export interface Database {
           department?: string | null;
           manager_id?: string | null;
           monitoring_enabled?: boolean;
+          deactivated_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };

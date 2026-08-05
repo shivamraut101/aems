@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/page-header";
 import { describeError, useDevices, useEmployees, useSession } from "@/lib/api";
 import { roleLabel } from "@/lib/session";
 
+import { CategoriesSection } from "./categories-section";
 import { MonitoringSection } from "./monitoring-section";
 import { PolicySection } from "./policy-section";
 import { DefinitionList, DefinitionRow, Notice, Section, ValueSkeleton } from "./section";
@@ -11,23 +12,26 @@ import { DefinitionList, DefinitionRow, Notice, Section, ValueSkeleton } from ".
 /**
  * Company configuration, `docs/scope.md` §4.2.
  *
- * Three sections, in the order an admin needs them: what this tenant is, what the
- * agents are told to collect, and who is being monitored. The last of those is the
- * only control on the page that writes, and it is the one scope §4.2 named and the
- * product did not have.
+ * Four sections, in the order an admin needs them: what this tenant is, what the
+ * agents are told to collect, how that collection is classified, and who is being
+ * monitored. Three of the four write, and every write goes through the Fastify API
+ * so the audit log records it.
  *
  * Route access is `NAV` in lib/session.ts — /settings is super-admin only, and
  * AppShell renders the refusal panel for anyone else, so there is no guard here.
+ * Each section still checks the role before offering an action, because the screen
+ * must not offer what the API's preHandler will refuse.
  */
 export default function SettingsPage() {
   return (
     <div className="mx-auto max-w-4xl px-6 py-7">
       <PageHeader
         title="Settings"
-        subtitle="Company, monitoring policy and who is being monitored."
+        subtitle="Company, monitoring policy, activity classification and who is being monitored."
       />
       <CompanySection />
       <PolicySection />
+      <CategoriesSection />
       <MonitoringSection />
     </div>
   );
@@ -54,11 +58,18 @@ function CompanySection() {
         <DefinitionRow term="Company">
           {isLoading ? (
             <ValueSkeleton />
-          ) : (
+          ) : session?.companyName ? (
             // Never a UUID: an identifier is not an answer to "which company is this".
-            <span className="font-medium">
-              {session?.companyName ?? session?.department ?? "Your company"}
-            </span>
+            <span className="font-medium">{session.companyName}</span>
+          ) : (
+            // There is deliberately no fallback to `session.department`. It used to
+            // sit here and it was worse than nothing: on the page whose stated job is
+            // naming the tenant, it printed the signed-in admin's *department*
+            // ("Engineering") where the company name ("Acme Corp") belongs — a
+            // confident wrong answer, which is the one failure mode a settings screen
+            // cannot afford. `parseMeResponse` already reads `companies(name)` the
+            // moment `GET /api/auth/me` selects it; see the reported gap.
+            <span className="text-muted-foreground">Not set</span>
           )}
         </DefinitionRow>
 

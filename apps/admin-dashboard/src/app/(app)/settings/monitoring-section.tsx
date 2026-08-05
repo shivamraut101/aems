@@ -1,7 +1,8 @@
 "use client";
 
 import { Badge, Button } from "@aems/ui";
-import { AlertTriangle, Loader2, Search } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Search, UserPlus } from "lucide-react";
+import Link from "next/link";
 import { useId, useState } from "react";
 
 import { describeError, useEmployees, useSession, type EmployeeRow } from "@/lib/api";
@@ -11,7 +12,10 @@ import {
   monitoringSummary,
 } from "@/lib/queries/roster-view";
 import { useSetMonitoring } from "@/lib/queries/settings";
-import { monitoringConsequence } from "@/lib/queries/settings-view";
+import {
+  monitoringChangeConfirmation,
+  monitoringConsequence,
+} from "@/lib/queries/settings-view";
 
 import { Notice, Section } from "./section";
 
@@ -33,6 +37,7 @@ export function MonitoringSection() {
   const searchId = useId();
   const [search, setSearch] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState<string | null>(null);
 
   const { data: session } = useSession();
   const { data, isLoading, isError, error } = useEmployees();
@@ -73,6 +78,16 @@ export function MonitoringSection() {
         </Notice>
       ) : (
         <>
+          {confirmed ? (
+            <div
+              role="status"
+              className="mb-3 flex items-start gap-2.5 rounded-lg border border-success/40 bg-success/5 px-4 py-3"
+            >
+              <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
+              <p className="min-w-0 text-sm">{confirmed}</p>
+            </div>
+          ) : null}
+
           {!isLoading && rows.length > 0 ? (
             <p className="mb-2 text-sm text-muted-foreground">
               <span className="tabular font-medium text-foreground">{summary.enabled}</span> of{" "}
@@ -113,24 +128,32 @@ export function MonitoringSection() {
               </thead>
               <tbody>
                 {isLoading ? (
-                  Array.from({ length: 4 }, (_, index) => (
-                    <tr key={index} className="border-b last:border-0">
-                      <td colSpan={5} className="px-4 py-2.5">
-                        <span className="block h-4 w-full animate-pulse rounded bg-muted" />
-                      </td>
-                    </tr>
-                  ))
+                  <RosterSkeleton />
                 ) : filtered.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-10 text-center">
                       <p className="text-sm font-medium">
                         {rows.length === 0 ? "No employees yet" : "No one matches that search"}
                       </p>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        {rows.length === 0
-                          ? "Invite an employee through Supabase Auth and assign them to this company; they appear here immediately."
-                          : "Try a different name, email or department."}
-                      </p>
+                      {rows.length === 0 ? (
+                        <>
+                          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+                            Nobody is being monitored, because nobody has been added. Add a person
+                            on the People page and they appear here straight away.
+                          </p>
+                          <Link
+                            href="/people"
+                            className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-secondary"
+                          >
+                            <UserPlus className="h-3.5 w-3.5" aria-hidden />
+                            Add someone on People
+                          </Link>
+                        </>
+                      ) : (
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Try a different name, email or department.
+                        </p>
+                      )}
                     </td>
                   </tr>
                 ) : (
@@ -148,13 +171,25 @@ export function MonitoringSection() {
                       }
                       onAsk={() => {
                         mutation.reset();
+                        setConfirmed(null);
                         setConfirming(person.id);
                       }}
                       onCancel={() => setConfirming(null)}
                       onConfirm={() => {
+                        const enabled = !person.monitoring_enabled;
                         mutation.mutate(
-                          { profileId: person.id, enabled: !person.monitoring_enabled },
-                          { onSuccess: () => setConfirming(null) },
+                          { profileId: person.id, enabled },
+                          {
+                            onSuccess: () => {
+                              setConfirming(null);
+                              setConfirmed(
+                                monitoringChangeConfirmation(
+                                  person.full_name || person.email,
+                                  enabled,
+                                ),
+                              );
+                            },
+                          },
                         );
                       }}
                     />
@@ -166,6 +201,41 @@ export function MonitoringSection() {
         </>
       )}
     </Section>
+  );
+}
+
+/**
+ * The loading state, shaped like the rows it stands in for.
+ *
+ * A single `colSpan={5}` bar was quicker to write and lied about the layout: the
+ * real Employee cell is two lines (name over email) and the other four are short, so
+ * the table visibly jumped and re-flowed the moment the data landed. A skeleton whose
+ * job is to stop the page moving has to occupy the space the content will.
+ */
+function RosterSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 4 }, (_, index) => (
+        <tr key={index} className="border-b last:border-0">
+          <td className="px-4 py-2.5">
+            <span className="block h-4 w-36 animate-pulse rounded bg-muted" />
+            <span className="mt-1 block h-3 w-48 animate-pulse rounded bg-muted" />
+          </td>
+          <td className="px-4 py-2.5">
+            <span className="block h-4 w-24 animate-pulse rounded bg-muted" />
+          </td>
+          <td className="px-4 py-2.5">
+            <span className="block h-4 w-6 animate-pulse rounded bg-muted" />
+          </td>
+          <td className="px-4 py-2.5">
+            <span className="block h-5 w-14 animate-pulse rounded-md bg-muted" />
+          </td>
+          <td className="px-4 py-2.5">
+            <span className="ml-auto block h-8 w-28 animate-pulse rounded-md bg-muted" />
+          </td>
+        </tr>
+      ))}
+    </>
   );
 }
 

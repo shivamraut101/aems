@@ -16,7 +16,12 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
     const { data: profile } = await app.supabase
       .from("profiles")
-      .select("id, company_id, email, full_name, role, department, monitoring_enabled")
+      // `companies(name)` is what the Settings screen prints as the tenant name.
+      // Without it `parseMeResponse` resolves `companyName` to null and the row
+      // that exists to answer "which company is this" rendered "Not set".
+      .select(
+        "id, company_id, email, full_name, role, department, monitoring_enabled, companies(name)",
+      )
       .eq("id", session.profileId)
       .single();
 
@@ -107,10 +112,17 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const { deviceId } = request.params as { deviceId: string };
     const session = request.session!;
 
+    // Scoped by company because the API holds the service-role key and therefore
+    // bypasses RLS: without this filter the only ownership test below is
+    // `profile_id !== session.profileId`, which a super admin is explicitly
+    // allowed to skip. That combination let a super admin of ANY tenant revoke
+    // another tenant's consent by supplying that device's uuid, and filed the
+    // resulting `consent.revoked` audit entry under the wrong company.
     const { data: consent } = await app.supabase
       .from("consent_records")
       .select("id, profile_id")
       .eq("device_id", deviceId)
+      .eq("company_id", session.companyId)
       .is("revoked_at", null)
       .maybeSingle();
 

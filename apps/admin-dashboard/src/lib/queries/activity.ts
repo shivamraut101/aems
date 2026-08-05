@@ -1,7 +1,7 @@
 "use client";
 
 import type { DayTimeline } from "@aems/types";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { apiFetch, type EmployeeRow, type LiveWorkforceRow } from "@/lib/api";
 import type { PresenceStatus } from "@/components/status-dot";
@@ -65,6 +65,45 @@ export function dayWindow(key: DateKey, now = new Date()): { from: string; to: s
 
   const clipped = now.getTime() < end.getTime() ? now.getTime() : end.getTime();
   const to = Math.max(clipped, start.getTime() + MIN_WINDOW_MS);
+
+  return { from: start.toISOString(), to: new Date(to).toISOString() };
+}
+
+/**
+ * {@link dayWindow}, quantised to the slot grid — and the window the screen uses.
+ *
+ * `dayWindow` clips at `now`, which is millisecond-precise, so a clock tick produces
+ * a window nobody has ever asked for before. That window is part of the TanStack
+ * query key, so every tick was a cache miss: the Activity screen replaced the
+ * selected person's whole timeline with a skeleton once a minute, forever, while
+ * they sat and watched it.
+ *
+ * Rounding up to the end of the *current* slot fixes it at the source. The key then
+ * changes once per slot rather than once per tick, and — because
+ * `queries/screenshots.ts` already builds its window the same way with the same
+ * 600s unit — the two screens land on the same key and share one cache entry instead
+ * of fetching the same day twice.
+ *
+ * Rounding *up* rather than down, deliberately: the timeline paints unreported time
+ * as offline, and flooring would drop the minutes since the slot opened — the most
+ * recent thing on the screen, and the part a manager is actually looking at.
+ */
+export function alignedDayWindow(
+  key: DateKey,
+  slotSeconds: number = DEFAULT_SLOT_SECONDS,
+  now = new Date(),
+): { from: string; to: string } {
+  const { year, month, day } = partsOf(key);
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const dayEnd = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
+
+  const slotMs = Math.max(1, Math.floor(slotSeconds)) * 1000;
+  const currentSlotEnd = Math.ceil(now.getTime() / slotMs) * slotMs;
+
+  let to = Math.min(dayEnd.getTime(), currentSlotEnd);
+  // A future day still has to ask a well-formed question and be told there is
+  // nothing; `to <= from` is a 400.
+  if (to <= start.getTime()) to = start.getTime() + slotMs;
 
   return { from: start.toISOString(), to: new Date(to).toISOString() };
 }
@@ -198,5 +237,11 @@ export function useDayTimeline(
       ),
     enabled: Boolean(profileId),
     retry: false,
+    // Keep the previous person's — or the previous window's — day on screen while the
+    // next one loads. Without it every key change empties `data`, `isPending` flips
+    // back to true, and the timeline is replaced by a skeleton: once per slot as the
+    // clock advances, and once per click as a manager walks the roster. The screen
+    // must not go blank to tell you it is fetching.
+    placeholderData: keepPreviousData,
   });
 }
