@@ -7,12 +7,27 @@ export interface InsightBreakdown {
   percentage: number;
 }
 
+/**
+ * Something true about the panel that is not a summary.
+ *
+ * Distinct from `summary` on purpose. A summary is the model's sentence; a notice is
+ * ours, about why there is no sentence — "no run has happened yet", "this period is
+ * empty". Passing our copy through `summary` is exactly the defect this page had:
+ * a developer note rendered in the model's voice, indistinguishable from output.
+ */
+export interface AiInsightNotice {
+  title: string;
+  body: string;
+}
+
 export interface AiInsightProps {
   summary: string;
   breakdown?: InsightBreakdown[];
   observation?: string | null;
   recommendation?: string | null;
   loading?: boolean;
+  /** Replaces the summary when there is nothing written for this period. */
+  notice?: AiInsightNotice | null;
 }
 
 /**
@@ -28,6 +43,7 @@ export function AiInsight({
   observation,
   recommendation,
   loading,
+  notice,
 }: AiInsightProps) {
   return (
     <section
@@ -46,6 +62,13 @@ export function AiInsight({
         <div className="mt-3 space-y-2" aria-live="polite">
           <span className="block h-4 w-full animate-pulse rounded bg-muted" />
           <span className="block h-4 w-3/4 animate-pulse rounded bg-muted" />
+        </div>
+      ) : notice ? (
+        // Deliberately in the ordinary text colours, not the model's voice: this is
+        // the product explaining itself, and it must not read as a generated finding.
+        <div className="mt-3">
+          <p className="text-sm font-medium">{notice.title}</p>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{notice.body}</p>
         </div>
       ) : (
         <>

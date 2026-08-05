@@ -1,3 +1,4 @@
+import { canViewOthers } from "@aems/auth";
 import {
   REPORT_KINDS,
   buildReportDocument,
@@ -157,7 +158,7 @@ export const reportRoutes: FastifyPluginAsync = async (app) => {
       .order("created_at", { ascending: false })
       .limit(200);
 
-    if (session.role === "employee") {
+    if (!canViewOthers(session.role)) {
       query = query.eq("profile_id", session.profileId);
     }
 
@@ -235,7 +236,7 @@ export const reportRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(404).send({ error: "not_found", message: "No such report", statusCode: 404 });
     }
 
-    if (session.role === "employee" && report.profile_id !== session.profileId) {
+    if (!canViewOthers(session.role) && report.profile_id !== session.profileId) {
       return reply.code(403).send({ error: "forbidden", message: "Not your report", statusCode: 403 });
     }
 
@@ -399,7 +400,7 @@ async function resolveSpec<TBody extends ReportSpec>(
   }
 
   const type = getReportType(spec.kind);
-  if (session.role === "employee" && type.minRole !== "employee") {
+  if (!canViewOthers(session.role) && type.minRole !== "employee") {
     reply.code(403).send({
       error: "forbidden",
       message: `${type.label} is a manager report`,
@@ -408,7 +409,7 @@ async function resolveSpec<TBody extends ReportSpec>(
     return null;
   }
 
-  const scope: ReportScope = session.role === "employee" ? "self" : spec.scope;
+  const scope: ReportScope = !canViewOthers(session.role) ? "self" : spec.scope;
   const profileIds = await resolveProfileIds(
     app,
     session.companyId,

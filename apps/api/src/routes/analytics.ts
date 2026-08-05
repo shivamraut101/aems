@@ -140,7 +140,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to } = parsed.data;
 
-    if (profileId !== session.profileId && session.role === "employee") {
+    if (profileId !== session.profileId && !canViewOthers(session.role)) {
       return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
     }
 
@@ -192,7 +192,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to, bucketSeconds } = parsed.data;
 
-    if (profileId !== session.profileId && session.role === "employee") {
+    if (profileId !== session.profileId && !canViewOthers(session.role)) {
       return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
     }
 
@@ -296,7 +296,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to } = parsed.data;
 
-    if (profileId !== session.profileId && session.role === "employee") {
+    if (profileId !== session.profileId && !canViewOthers(session.role)) {
       return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
     }
 
@@ -331,11 +331,18 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const now = Date.now();
     const dayStart = new Date(new Date(now).setHours(0, 0, 0, 0)).toISOString();
 
-    const [{ data: employees }, { data: devices }, { data: sessions }] = await Promise.all([
+    const [{ count: employeeCount }, { data: devices }, { data: sessions }] = await Promise.all([
+      // `head: true` asks Postgres for the count and no rows. The previous version
+      // requested `{ count: "exact" }` and then returned `employees?.length`, which
+      // throws the count away and reports however many rows PostgREST was willing
+      // to return — capped at its max-rows setting. It also counted off-boarded
+      // people, so the moment an admin deactivated someone the home KPI said 4
+      // while the People page said 3, on the same screen at the same moment.
       app.supabase
         .from("profiles")
-        .select("id", { count: "exact" })
-        .eq("company_id", session.companyId),
+        .select("id", { count: "exact", head: true })
+        .eq("company_id", session.companyId)
+        .is("deactivated_at", null),
       app.supabase
         .from("devices")
         .select("id, profile_id, last_seen_at, status")
@@ -361,25 +368,37 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     }, 0);
 
     return {
-      totalEmployees: employees?.length ?? 0,
+      totalEmployees: employeeCount ?? 0,
       activeNow: activeProfiles.size,
       workingToday: new Set((sessions ?? []).map((s) => s.profile_id)).size,
       totalHoursToday: Number((trackedSeconds / 3600).toFixed(1)),
     };
   });
 
-  /** Live workforce strip: who is active, idle, or offline right now. */
+  /**
+   * Live workforce strip: who is active, idle, or offline right now.
+   *
+   * One row per PERSON, not per device. This used to select from `devices` with
+   * `profiles!inner`, which answered a subtly different question and got both
+   * ends wrong: an employee who had not enrolled anything was missing from the
+   * strip entirely (a company of three with one laptop rendered a single row),
+   * and anyone with a laptop and a phone was listed twice as if they were two
+   * people. `docs/scope.md` §4.3 asks for the workforce, so the workforce —
+   * `profiles` — is what this is driven by, with devices joined on.
+   *
+   * Deactivated people are excluded so this agrees with the roster.
+   */
   app.get("/live", { preHandler: app.requireManager }, async (request) => {
     const session = request.session!;
     const now = Date.now();
 
-    const [{ data }, { data: openIdle }] = await Promise.all([
+    const [{ data: people }, { data: openIdle }] = await Promise.all([
       app.supabase
-        .from("devices")
-        .select("id, platform, label, last_seen_at, status, profiles!inner(id, full_name, email)")
+        .from("profiles")
+        .select("id, full_name, email, devices(id, platform, label, last_seen_at, status)")
         .eq("company_id", session.companyId)
-        .neq("status", "revoked")
-        .order("last_seen_at", { ascending: false, nullsFirst: false }),
+        .is("deactivated_at", null)
+        .order("full_name", { ascending: true }),
       // An idle stretch with no end is one still running. This is the only source
       // for the amber row scope 4.3 shows literally — without it `StatusDot` can
       // render three states but `/live` can only ever produce two, so "Sarah, Idle"
@@ -396,24 +415,45 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       (openIdle ?? []).map((row) => [row.device_id, row.idle_start_at] as const),
     );
 
-    return (data ?? []).map((device) => {
-      const profile = Array.isArray(device.profiles) ? device.profiles[0] : device.profiles;
-      const lastSeen = device.last_seen_at ? Date.parse(device.last_seen_at) : null;
-      const online = lastSeen !== null && now - lastSeen < OFFLINE_AFTER_MS;
-      const idleAt = idleSince.get(device.id) ?? null;
+    const seenAt = (value: string | null): number => {
+      const parsed = value ? Date.parse(value) : NaN;
+      return Number.isFinite(parsed) ? parsed : -Infinity;
+    };
+
+    return (people ?? []).map((person) => {
+      // A revoked device is not evidence: its token no longer works, so whatever
+      // it last reported says nothing about where the person is now.
+      const usable = (person.devices ?? []).filter((d) => d.status !== "revoked");
+
+      // The most recently heard-from device speaks for the person — a laptop and
+      // a phone both enrolled is normal, and the quiet one is not the interesting
+      // answer. Mirrors `resolvePresence` in the dashboard so the strip and the
+      // employee header cannot disagree about the same person.
+      const device =
+        usable.length === 0
+          ? null
+          : usable.reduce((newest, candidate) =>
+              seenAt(candidate.last_seen_at) > seenAt(newest.last_seen_at) ? candidate : newest,
+            );
+
+      const lastSeen = device ? seenAt(device.last_seen_at) : -Infinity;
+      const online = Number.isFinite(lastSeen) && now - lastSeen < OFFLINE_AFTER_MS;
+      const idleAt = device ? (idleSince.get(device.id) ?? null) : null;
 
       // Offline wins over idle: a laptop that stopped reporting mid-idle-stretch is
       // not "idle", it is gone, and leaving it amber would imply we still know.
       const status = !online ? ("offline" as const) : idleAt ? ("idle" as const) : ("active" as const);
 
       return {
-        deviceId: device.id,
-        platform: device.platform,
-        label: device.label,
-        profileId: profile?.id ?? null,
-        fullName: profile?.full_name ?? null,
-        email: profile?.email ?? null,
-        lastSeenAt: device.last_seen_at,
+        // Null for someone who has enrolled nothing. The dashboard keys the strip
+        // on `profileId` for exactly that reason.
+        deviceId: device?.id ?? null,
+        platform: device?.platform ?? null,
+        label: device?.label ?? null,
+        profileId: person.id,
+        fullName: person.full_name,
+        email: person.email,
+        lastSeenAt: device?.last_seen_at ?? null,
         idleSince: status === "idle" ? idleAt : null,
         status,
       };

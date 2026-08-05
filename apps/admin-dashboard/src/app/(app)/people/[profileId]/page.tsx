@@ -2,6 +2,8 @@ import { Suspense } from "react";
 
 import { OverviewTab } from "@/components/employee/overview-tab";
 
+import { OverviewFallback } from "./overview-fallback";
+
 /**
  * The Overview tab — scope §4.4's first section, and the default landing for
  * `/people/:id`.
@@ -19,7 +21,9 @@ export default async function EmployeeOverviewPage({
   const { profileId } = await params;
 
   return (
-    <Suspense fallback={null}>
+    // Never `null`. An empty tab body in the prerendered HTML reads as a route that
+    // failed, and it is the first thing anyone opening a person sees.
+    <Suspense fallback={<OverviewFallback />}>
       <OverviewTab profileId={profileId} />
     </Suspense>
   );

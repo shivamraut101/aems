@@ -10,13 +10,27 @@ import {
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Search, SlidersHorizontal } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronsUpDown,
+  Plus,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useId, useMemo, useState } from "react";
 
 import { PageHeader } from "@/components/page-header";
-import { describeError, useEmployees, type EmployeeRow } from "@/lib/api";
+import {
+  ErrorState,
+  FilterBarSkeleton,
+  TableSkeleton,
+  TableSkeletonRows,
+  type SkeletonColumn,
+} from "@/components/states";
+import { describeError, useSession, type EmployeeRow } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import {
   UNASSIGNED_DEPARTMENT,
@@ -28,8 +42,13 @@ import {
   peopleLastSeen,
   type PeopleFilters,
 } from "@/lib/queries/roster-view";
+import { isDeactivated } from "@/lib/queries/employees-form";
+import { useRoster } from "@/lib/queries/employees";
 import { roleLabel } from "@/lib/session";
 import { mergeQuery, useColumnVisibility, useFilters } from "@/store/filters";
+
+import { AddPersonDialog } from "./add-person-dialog";
+import { primaryButtonClass } from "./dialog";
 
 /**
  * The roster, `docs/scope.md` §4.2.
@@ -56,14 +75,29 @@ export default function PeoplePage() {
 
 const columnHelper = createColumnHelper<EmployeeRow>();
 
-const COLUMN_LABELS: Record<string, string> = {
-  name: "Name",
-  department: "Department",
-  role: "Role",
-  devices: "Devices",
-  monitoring: "Monitoring",
-  lastSeen: "Last seen",
-};
+/**
+ * Column order, labels and placeholder shapes, in one place.
+ *
+ * Both skeletons on this screen are built from this, which is the point. A bordered
+ * empty box is pixel-identical to a roster with nobody in it, and that box ships
+ * inside the prerendered HTML — so the first thing a manager saw on a cold load was
+ * indistinguishable from "this company has no employees". And `lines: 2` on the name
+ * column is not decoration: a real name cell is a link over an email address, so a
+ * one-line placeholder makes every loading row 20px short and the header columns snap
+ * sideways the moment data lands.
+ */
+const PEOPLE_COLUMNS: readonly SkeletonColumn[] = [
+  { key: "name", label: "Name", lines: 2, width: "w-32" },
+  { key: "department", label: "Department", width: "w-24" },
+  { key: "role", label: "Role", width: "w-20" },
+  { key: "devices", label: "Devices", width: "w-6" },
+  { key: "monitoring", label: "Monitoring", width: "w-14" },
+  { key: "lastSeen", label: "Last seen", align: "right", width: "w-24" },
+];
+
+const COLUMN_LABELS: Record<string, string> = Object.fromEntries(
+  PEOPLE_COLUMNS.map((column) => [column.key, column.label] as const),
+);
 
 function PeopleScreen() {
   const router = useRouter();
@@ -75,9 +109,25 @@ function PeopleScreen() {
   const setColumnVisibility = useFilters((state) => state.setColumnVisibility);
 
   const [sorting, setSorting] = useState<SortingState>([{ id: "name", desc: false }]);
+  const [addOpen, setAddOpen] = useState(false);
 
-  const { data, isLoading, isError, error } = useEmployees();
+  /**
+   * Off-boarded people are hidden by the API unless asked for, and the state lives in
+   * the URL like every other filter on this page.
+   *
+   * Without it a deactivated person is unreachable: the only screen that can bring
+   * them back is their own, and the roster is the only route to it.
+   */
+  const showDeactivated = searchParams.get("deactivated") === "1";
+
+  const { data, isLoading, isError, error, refetch } = useRoster(showDeactivated);
   const rows = useMemo(() => data ?? [], [data]);
+
+  // Not a security boundary — `PATCH /api/employees/:id` is `requireSuperAdmin` and
+  // the create route is its sibling, so a manager who saw this button would meet a
+  // 403 at the end of a filled-in form. The API is what enforces it.
+  const { data: session } = useSession();
+  const canManage = session?.role === "super_admin";
 
   const filters = useMemo(
     () =>
@@ -96,6 +146,11 @@ function PeopleScreen() {
    */
   function setFilters(next: PeopleFilters) {
     const query = mergeQuery(search, peopleFilterParams(next));
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  function setShowDeactivated(next: boolean) {
+    const query = mergeQuery(search, { deactivated: next ? "1" : null });
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
@@ -142,11 +197,17 @@ function PeopleScreen() {
       columnHelper.accessor((row) => row.monitoring_enabled, {
         id: "monitoring",
         header: "Monitoring",
-        cell: (context) => (
-          <Badge variant={context.getValue() ? "online" : "offline"}>
-            {context.getValue() ? "On" : "Paused"}
-          </Badge>
-        ),
+        // A deactivated person is always paused, so "Paused" would be true and
+        // uninformative — it reads as a choice somebody made this morning rather than
+        // as an account that has been off-boarded.
+        cell: (context) =>
+          isDeactivated(context.row.original) ? (
+            <Badge variant="revoked">Deactivated</Badge>
+          ) : (
+            <Badge variant={context.getValue() ? "online" : "offline"}>
+              {context.getValue() ? "On" : "Paused"}
+            </Badge>
+          ),
       }),
       columnHelper.accessor((row) => peopleLastSeen(row), {
         id: "lastSeen",
@@ -179,12 +240,27 @@ function PeopleScreen() {
   const filtersActive =
     filters.search !== "" || filters.department !== null || filters.monitoring !== "all";
 
+  const visibleSkeletonColumns = useMemo(() => {
+    const visible = new Set(table.getVisibleFlatColumns().map((column) => column.id));
+    return PEOPLE_COLUMNS.filter((column) => visible.has(column.key));
+  }, [table, columnVisibility]);
+
   return (
     <div className="mx-auto max-w-6xl px-6 py-7">
       <PageHeader
         title="People"
         subtitle="Everyone in your company, with the devices assigned to them."
+        actions={
+          canManage ? (
+            <button type="button" onClick={() => setAddOpen(true)} className={primaryButtonClass}>
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+              Add person
+            </button>
+          ) : null
+        }
       />
+
+      {addOpen ? <AddPersonDialog onClose={() => setAddOpen(false)} /> : null}
 
       <FilterBar
         filters={filters}
@@ -192,12 +268,19 @@ function PeopleScreen() {
         onChange={setFilters}
         table={table}
         disabled={isLoading || isError}
+        showDeactivated={showDeactivated}
+        onShowDeactivatedChange={setShowDeactivated}
       />
 
       {isError ? (
-        <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">
-          {describeError(error)}
-        </p>
+        // The shared surface, with a retry. The bare paragraph this replaces stated a
+        // failure and offered no way out of it except reloading the whole browser tab,
+        // and carried no `role="alert"`, so a screen reader was never told at all.
+        <ErrorState
+          title="The roster could not be loaded"
+          message={describeError(error)}
+          onRetry={() => void refetch()}
+        />
       ) : (
         <>
           {!isLoading && rows.length > 0 ? (
@@ -232,7 +315,9 @@ function PeopleScreen() {
               </thead>
               <tbody>
                 {isLoading ? (
-                  <SkeletonRows columns={table.getVisibleFlatColumns().length} />
+                  // Shaped to the columns actually on screen, so hiding one does not
+                  // leave a placeholder standing where its cell no longer is.
+                  <TableSkeletonRows columns={visibleSkeletonColumns} rows={6} />
                 ) : filtered.length === 0 ? (
                   <tr>
                     <td
@@ -243,10 +328,22 @@ function PeopleScreen() {
                         {rows.length === 0 ? "No employees yet" : "No one matches these filters"}
                       </p>
                       <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-                        {rows.length === 0
-                          ? "Invite an employee through Supabase Auth and assign them to this company. They appear here as soon as the profile exists — before any device enrols."
-                          : "Try a different name, department or monitoring state."}
+                        {rows.length > 0
+                          ? "Try a different name, department or monitoring state."
+                          : canManage
+                            ? "Add the first person and their account is created from here. Nothing is collected until they sign in on a device and accept the monitoring policy."
+                            : "Nobody has been added to this company yet. A super admin can add people from this screen; they appear here as soon as the account exists, before any device enrols."}
                       </p>
+                      {rows.length === 0 && canManage ? (
+                        <button
+                          type="button"
+                          onClick={() => setAddOpen(true)}
+                          className={cn(primaryButtonClass, "mt-4")}
+                        >
+                          <Plus className="h-3.5 w-3.5" aria-hidden />
+                          Add person
+                        </button>
+                      ) : null}
                       {filtersActive && rows.length > 0 ? (
                         <button
                           type="button"
@@ -299,16 +396,21 @@ function FilterBar({
   onChange,
   table,
   disabled,
+  showDeactivated,
+  onShowDeactivatedChange,
 }: {
   filters: PeopleFilters;
   departments: string[];
   onChange: (next: PeopleFilters) => void;
   table: ReturnType<typeof useReactTable<EmployeeRow>>;
   disabled: boolean;
+  showDeactivated: boolean;
+  onShowDeactivatedChange: (next: boolean) => void;
 }) {
   const searchId = useId();
   const departmentId = useId();
   const monitoringId = useId();
+  const deactivatedId = useId();
 
   return (
     <div className="mb-4 flex flex-wrap items-end gap-2">
@@ -367,6 +469,24 @@ function FilterBar({
           <option value="paused">Monitoring paused</option>
         </select>
       </div>
+
+      {/* Not part of `PeopleFilters`: this one changes the *request*, not which of the
+          rows already fetched are shown, so it belongs beside them rather than in
+          them. It is still in the query string, so "the people who have left" stays a
+          link somebody can send. */}
+      <label
+        htmlFor={deactivatedId}
+        className="flex h-9 cursor-pointer items-center gap-2 rounded-md border border-input bg-card px-3 text-sm shadow-sm"
+      >
+        <input
+          id={deactivatedId}
+          type="checkbox"
+          checked={showDeactivated}
+          onChange={(event) => onShowDeactivatedChange(event.target.checked)}
+          className="h-3.5 w-3.5 rounded border-input focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        Include deactivated
+      </label>
 
       <ColumnsMenu table={table} />
     </div>
@@ -445,20 +565,16 @@ function SortableHeader({ header, align }: { header: HeaderContext; align: "left
   );
 }
 
-function SkeletonRows({ columns }: { columns: number }) {
-  return (
-    <>
-      {Array.from({ length: 6 }, (_, index) => (
-        <tr key={index} className="border-b last:border-0">
-          <td colSpan={columns} className="px-4 py-2.5">
-            <span className="block h-4 w-full animate-pulse rounded bg-muted" />
-          </td>
-        </tr>
-      ))}
-    </>
-  );
-}
-
+/**
+ * The prerendered fallback — what the browser paints before any JavaScript runs.
+ *
+ * It has to be a *table*, headers and all. This markup ships inside the static HTML
+ * for `/people`, and the bordered empty card it replaces was pixel-identical to a
+ * company with nobody in it: the screen said "you have no employees" for as long as
+ * the roster took to arrive, which on a cold connection is the first thing a new
+ * customer ever sees. The filter row is drawn for the same reason — three controls
+ * appearing from nowhere is a 44px shove of everything below them.
+ */
 function PeopleSkeleton() {
   return (
     <div className="mx-auto max-w-6xl px-6 py-7">
@@ -466,8 +582,13 @@ function PeopleSkeleton() {
         title="People"
         subtitle="Everyone in your company, with the devices assigned to them."
       />
-      <div className="h-9 w-72 rounded-md border border-input bg-card" />
-      <div className="mt-4 h-64 rounded-lg border bg-card" />
+      <FilterBarSkeleton fields={4} />
+      <TableSkeleton
+        columns={PEOPLE_COLUMNS}
+        rows={6}
+        caption="Employees, loading"
+        minWidthClass="min-w-[44rem]"
+      />
     </div>
   );
 }

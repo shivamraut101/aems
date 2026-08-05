@@ -39,7 +39,7 @@ export async function resolveSession(
 
   const { data: profile, error: profileError } = await admin
     .from("profiles")
-    .select("id, company_id, email, role")
+    .select("id, company_id, email, role, deactivated_at")
     .eq("id", userData.user.id)
     .single();
 
@@ -47,6 +47,19 @@ export async function resolveSession(
     // Authenticated with Supabase but never assigned to a company — cannot be
     // authorised for anything, so this is a 403 rather than a 401.
     throw new AuthError("No profile is linked to this account", 403);
+  }
+
+  // Off-boarded. Deactivating an employee does NOT invalidate their Supabase
+  // session — GoTrue knows nothing about `profiles` — so without this check a
+  // person who was removed keeps signing in, keeps reading the dashboard, and
+  // (worse) keeps enrolling fresh devices through POST /api/devices/enroll,
+  // which is `requireUser`. That re-issues a device token and re-opens
+  // collection for someone the company has off-boarded, defeating the whole
+  // point of the DELETE. Non-negotiable #4 says revocation is immediate, so the
+  // check belongs here, at the one place every guard resolves a session
+  // through, rather than in each route that might remember to ask.
+  if (profile.deactivated_at !== null) {
+    throw new AuthError("This account has been deactivated", 403);
   }
 
   return {

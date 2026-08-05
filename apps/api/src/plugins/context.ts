@@ -104,7 +104,7 @@ const plugin: FastifyPluginAsync<{ env: Env }> = async (app, opts) => {
 
     const { data: device, error } = await supabase
       .from("devices")
-      .select("id, company_id, profile_id, status, profiles!inner(monitoring_enabled)")
+      .select("id, company_id, profile_id, status, profiles!inner(monitoring_enabled, deactivated_at)")
       .eq("id", payload.deviceId)
       .single();
 
@@ -123,6 +123,21 @@ const plugin: FastifyPluginAsync<{ env: Env }> = async (app, opts) => {
     // Supabase types an !inner join as an array or an object depending on the
     // relationship it infers; normalise before reading.
     const profile = Array.isArray(device.profiles) ? device.profiles[0] : device.profiles;
+
+    // Off-boarded people stop being collected from, whatever the monitoring flag
+    // says. Deactivating an employee happens to set `monitoring_enabled = false`
+    // as well, which made this look covered — but that flag is independently
+    // writable through PATCH /api/employees/:id, so a single unrelated toggle
+    // silently resumed collection on an off-boarded person's device. Checked
+    // before the monitoring flag so the 403 names the real reason.
+    if (profile && profile.deactivated_at !== null) {
+      return reply.code(403).send({
+        error: "employee_deactivated",
+        message: "This employee has been deactivated",
+        statusCode: 403,
+      });
+    }
+
     if (profile && profile.monitoring_enabled === false) {
       return reply.code(403).send({
         error: "monitoring_disabled",

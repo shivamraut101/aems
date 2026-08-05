@@ -22,9 +22,15 @@ export interface PresenceDevice {
   last_seen_at: string | null;
 }
 
-/** One row of `GET /api/analytics/live`, narrowed to what presence reads. */
+/**
+ * One row of `GET /api/analytics/live`, narrowed to what presence reads.
+ *
+ * `deviceId` is null for a person who has enrolled nothing — the endpoint is one
+ * row per person. Such a row never matches the lookup below, which is correct:
+ * `resolvePresence` has already returned "offline" before it gets that far.
+ */
 export interface PresenceLiveRow {
-  deviceId: string;
+  deviceId: string | null;
   status: PresenceStatus;
   idleSince: string | null;
 }

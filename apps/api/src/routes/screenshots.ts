@@ -1,3 +1,4 @@
+import { canViewOthers } from "@aems/auth";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -192,7 +193,7 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to, limit } = parsed.data;
 
-    if (profileId !== session.profileId && session.role === "employee") {
+    if (profileId !== session.profileId && !canViewOthers(session.role)) {
       return reply
         .code(403)
         .send({ error: "forbidden", message: "Not your data", statusCode: 403 });
@@ -261,7 +262,7 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
     // Identical to the gate on the list route above: an employee reads their own
     // record and nobody else's, and every query is scoped to the caller's company.
     // RLS is the boundary; this is the UI-facing half of the same rule.
-    if (profileId !== session.profileId && session.role === "employee") {
+    if (profileId !== session.profileId && !canViewOthers(session.role)) {
       return reply
         .code(403)
         .send({ error: "forbidden", message: "Not your data", statusCode: 403 });
