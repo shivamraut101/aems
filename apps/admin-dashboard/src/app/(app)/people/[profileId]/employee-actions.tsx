@@ -5,7 +5,8 @@ import { AlertTriangle, Pencil, UserMinus, UserPlus } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 
-import { describeError, useEmployees, useSession } from "@/lib/api";
+import { employeeQuery, rosterQuery } from "@/components/employee/employee-queries";
+import { describeError, useApiQuery, useSession } from "@/lib/api";
 import {
   editDefaults,
   editEmployeeSchema,
@@ -21,7 +22,7 @@ import {
   useReactivateEmployee,
   useUpdateEmployee,
 } from "@/lib/queries/employees";
-import { useEmployee, type EmployeeDetail } from "@/lib/queries/employee";
+import type { EmployeeDetail } from "@/lib/queries/employee";
 import { roleLabel } from "@/lib/session";
 
 import {
@@ -49,9 +50,13 @@ import {
  * the Overview tab.
  */
 export function EmployeeActions({ profileId }: { profileId: string }) {
-  const { data: employee } = useEmployee(profileId);
+  // Both reads are warmed by the route layout's PrefetchBoundary, so this block
+  // draws with the header rather than a beat after it.
+  const { data: employee } = useApiQuery(employeeQuery(profileId), {
+    enabled: Boolean(profileId),
+  });
   const { data: session } = useSession();
-  const { data: roster } = useEmployees();
+  const { data: roster } = useApiQuery(rosterQuery);
 
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState<"deactivate" | "reactivate" | null>(null);
@@ -68,7 +73,7 @@ export function EmployeeActions({ profileId }: { profileId: string }) {
   const reportsTo = managerName(roster ?? [], employee.manager_id);
 
   return (
-    <div className="px-6 pb-4">
+    <div className="px-4 pb-4 sm:px-6">
       {deactivated ? (
         <p className="mb-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
           <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-warning" aria-hidden />
@@ -169,7 +174,7 @@ function EditEmployeeDialog({
 
   const [serverError, setServerError] = useState<string | null>(null);
 
-  const { data: roster } = useEmployees();
+  const { data: roster } = useApiQuery(rosterQuery);
   const managers = useMemo(() => managerOptions(roster ?? [], employee.id), [roster, employee.id]);
 
   const update = useUpdateEmployee();

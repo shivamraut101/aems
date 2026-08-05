@@ -1,10 +1,10 @@
 "use client";
 
-import { cn } from "@aems/ui";
+import { Popover, PopoverContent, PopoverTrigger, cn } from "@aems/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { CalendarDays, ChevronLeft, ChevronRight, Check } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -113,14 +113,23 @@ function absoluteSchema(today: string) {
 
 type AbsoluteValues = z.infer<ReturnType<typeof absoluteSchema>>;
 
+/**
+ * The window control: two steppers and a panel.
+ *
+ * The panel is a `Popover` from `packages/ui` rather than the hand-rolled `role="dialog"`
+ * div this used to carry. That version owned four behaviours it had to keep correct by
+ * itself — an Escape listener, outside-click detection through `panelRef.contains`, a
+ * matching pair of `document.addEventListener` calls with cleanup, and focus returning
+ * to the trigger — and it still missed the fifth: anchored `right-0` at a fixed 304px
+ * with no collision handling, it ran off the edge of a narrow viewport. Radix's
+ * `collisionPadding` and available-width variables are the reason to adopt the
+ * primitive; the four it already had are the reason not to keep two copies.
+ */
 export function RangePicker({ className }: { className?: string }) {
   const { selection, setSelection } = useRangeSelection();
   const setDefaultRange = useFilters((state) => state.setDefaultRange);
 
   const [open, setOpen] = useState(false);
-  const panelId = useId();
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
 
   /**
    * The clock is read after mount, never during render.
@@ -137,37 +146,12 @@ export function RangePicker({ className }: { className?: string }) {
   const label = rangeLabel(selection, now ?? new Date(0));
   const forward = now ? canShiftForward(selection, now) : false;
 
-  useEffect(() => {
-    if (!open) return;
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      setOpen(false);
-      // Escape without this leaves focus on a node that has just been unmounted,
-      // which drops a keyboard user back to the top of the document.
-      triggerRef.current?.focus();
-    }
-
-    function onPointerDown(event: PointerEvent) {
-      const target = event.target as Node;
-      if (panelRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
-      setOpen(false);
-    }
-
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("pointerdown", onPointerDown);
-    };
-  }, [open]);
-
   function choosePreset(preset: DateRangePreset) {
     setSelection({ kind: "preset", preset });
     // The last preset chosen becomes the default the next screen opens with.
     setDefaultRange(preset);
+    // Radix returns focus to the trigger on close, so nothing here has to.
     setOpen(false);
-    triggerRef.current?.focus();
   }
 
   function step(delta: -1 | 1) {
@@ -177,7 +161,7 @@ export function RangePicker({ className }: { className?: string }) {
   }
 
   return (
-    <div className={cn("relative flex items-center gap-1", className)}>
+    <div className={cn("flex items-center gap-1", className)}>
       <button
         type="button"
         onClick={() => step(-1)}
@@ -187,37 +171,18 @@ export function RangePicker({ className }: { className?: string }) {
         <ChevronLeft className="h-4 w-4" aria-hidden />
       </button>
 
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? panelId : undefined}
-        className="flex h-9 min-w-[9.5rem] items-center gap-2 rounded-md border border-input bg-card px-3 text-sm font-medium shadow-sm transition-colors hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-      >
-        <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-        <span className="truncate">{label}</span>
-      </button>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="flex h-9 min-w-[8.5rem] max-w-full items-center gap-2 rounded-md border border-input bg-card px-3 text-sm font-medium shadow-sm transition-colors hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background sm:min-w-[9.5rem]"
+          >
+            <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="truncate">{label}</span>
+          </button>
+        </PopoverTrigger>
 
-      <button
-        type="button"
-        onClick={() => step(1)}
-        disabled={!forward}
-        aria-label="Next period"
-        className={arrowClass}
-      >
-        <ChevronRight className="h-4 w-4" aria-hidden />
-      </button>
-
-      {open ? (
-        <div
-          ref={panelRef}
-          id={panelId}
-          role="dialog"
-          aria-label="Choose a date range"
-          className="absolute right-0 top-11 z-20 w-[19rem] rounded-lg border bg-popover p-3 shadow-lg"
-        >
+        <PopoverContent aria-label="Choose a date range" className="w-[19rem]">
           <p className="px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Quick ranges
           </p>
@@ -231,7 +196,7 @@ export function RangePicker({ className }: { className?: string }) {
                     onClick={() => choosePreset(preset)}
                     aria-current={active ? "true" : undefined}
                     className={cn(
-                      "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                      "flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       active
                         ? "bg-secondary font-medium"
@@ -252,11 +217,20 @@ export function RangePicker({ className }: { className?: string }) {
             onApply={(next) => {
               setSelection(next);
               setOpen(false);
-              triggerRef.current?.focus();
             }}
           />
-        </div>
-      ) : null}
+        </PopoverContent>
+      </Popover>
+
+      <button
+        type="button"
+        onClick={() => step(1)}
+        disabled={!forward}
+        aria-label="Next period"
+        className={arrowClass}
+      >
+        <ChevronRight className="h-4 w-4" aria-hidden />
+      </button>
     </div>
   );
 }
@@ -297,31 +271,35 @@ function AbsoluteRangeForm({
       <p className="px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Absolute range
       </p>
-      <div className="mt-1.5 flex items-end gap-2">
-        <div className="min-w-0 flex-1 space-y-1">
+      {/* Two fields on one row and the button beneath, rather than all three abreast.
+          A `type="date"` control has a native picker button inside it and stops being
+          operable below roughly 120px — three items across a popover that Radix shrinks
+          to the available width on a 375px screen is exactly that. */}
+      <div className="mt-1.5 grid grid-cols-2 gap-2">
+        <div className="min-w-0 space-y-1">
           <label htmlFor={fromId} className="block text-xs text-muted-foreground">
             From
           </label>
           <input id={fromId} type="date" max={today || undefined} className={dateFieldClass} {...register("from")} />
         </div>
-        <div className="min-w-0 flex-1 space-y-1">
+        <div className="min-w-0 space-y-1">
           <label htmlFor={toId} className="block text-xs text-muted-foreground">
             To
           </label>
           <input id={toId} type="date" max={today || undefined} className={dateFieldClass} {...register("to")} />
         </div>
-        <button
-          type="submit"
-          className="h-9 shrink-0 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-        >
-          Apply
-        </button>
       </div>
       {errors.from ?? errors.to ? (
         <p role="alert" className="mt-1.5 px-1 text-xs text-destructive">
           {errors.to?.message ?? errors.from?.message}
         </p>
       ) : null}
+      <button
+        type="submit"
+        className="mt-2 h-9 w-full rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+      >
+        Apply
+      </button>
     </form>
   );
 }
@@ -329,7 +307,13 @@ function AbsoluteRangeForm({
 const dateFieldClass =
   "h-9 w-full rounded-md border border-input bg-card px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background";
 
-/** Placeholder for the Suspense boundary `useSearchParams` requires. */
+/**
+ * Placeholder for the Suspense boundary `useSearchParams` requires.
+ *
+ * Sized to the control it stands in for — two 36px steppers, the trigger and the two
+ * 4px gaps — so the header does not jump sideways when the real picker mounts.
+ * `max-w-full` because a fixed width is the one thing that makes a phone scroll.
+ */
 export function RangePickerFallback() {
-  return <span className="block h-9 w-[15rem] rounded-md border border-input bg-card" />;
+  return <span className="block h-9 w-[14.5rem] max-w-full rounded-md border border-input bg-card" />;
 }

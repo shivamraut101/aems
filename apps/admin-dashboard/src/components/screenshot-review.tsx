@@ -1,11 +1,20 @@
 "use client";
 
-import { cn } from "@aems/ui";
-import { ChevronLeft, ChevronRight, ImageOff, Monitor, X } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  cn,
+} from "@aems/ui";
+import { ChevronLeft, ChevronRight, ImageOff, Monitor } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { describeError } from "@/lib/api";
+import { employeeQuery } from "@/components/employee/employee-queries";
+import { displayName } from "@/components/employee/identity";
+import { describeError, useApiQuery } from "@/lib/api";
 import {
   buildReviewRows,
   dayWindow,
@@ -40,7 +49,6 @@ export function ScreenshotReview({
   date: initialDate,
   today: initialToday,
   dateWasExplicit = false,
-  personName,
 }: {
   profileId: string;
   /** `YYYY-MM-DD`, resolved on the server so the first paint has a window. */
@@ -49,9 +57,16 @@ export function ScreenshotReview({
   today: string;
   /** True when the day came from the URL, so the browser must not second-guess it. */
   dateWasExplicit?: boolean;
-  personName?: string | null;
 }) {
   const router = useRouter();
+
+  // The name for the lightbox caption, read from the entry the route layout already
+  // prefetched. This page used to fetch `/api/employees/:id` a second time, server
+  // side, purely for one string — the same record the header above it was already
+  // holding. Reading the cache also means the caption and the header can never
+  // disagree about who is being reviewed.
+  const person = useApiQuery(employeeQuery(profileId), { enabled: Boolean(profileId) });
+  const personName = person.data ? displayName(person.data) : null;
   const [date, setDate] = useState(initialDate);
   const [today, setToday] = useState(initialToday);
 
@@ -214,76 +229,90 @@ function ReviewTable({
   let cursor = 0;
 
   return (
+    // Two boxes, and the inner one is the fix. The outer `overflow-hidden` exists only
+    // to clip the table's corners to the panel's radius — on its own it *cropped* this
+    // table, because three columns of block time, activity and capture tiles do not
+    // fit in 375px and clipping is not scrolling. The inner scroller gives the table a
+    // width of its own; the page body keeps its.
     <div className="overflow-hidden rounded-lg border bg-card">
-      <table className="w-full text-sm">
-        <caption className="sr-only">
-          Screen captures grouped into ten-minute blocks, with the activity recorded in each block.
-        </caption>
-        <thead>
-          <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-            <th scope="col" className="w-40 px-4 py-2 font-medium">
-              Block
-            </th>
-            <th scope="col" className="w-72 px-4 py-2 font-medium">
-              Activity
-            </th>
-            <th scope="col" className="px-4 py-2 font-medium">
-              Captures
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const start = cursor;
-            cursor += row.captures.length;
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[40rem] text-sm">
+          <caption className="sr-only">
+            Screen captures grouped into ten-minute blocks, with the activity recorded in each block.
+          </caption>
+          <thead>
+            <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+              {/* Proportions, not pixels: the two narrow columns take a share of
+                  whatever width the scroller settles on rather than pinning 448px of
+                  it and leaving the captures whatever is left. */}
+              <th scope="col" className="w-[22%] px-4 py-2 font-medium">
+                Block
+              </th>
+              <th scope="col" className="w-[34%] px-4 py-2 font-medium">
+                Activity
+              </th>
+              <th scope="col" className="px-4 py-2 font-medium">
+                Captures
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const start = cursor;
+              cursor += row.captures.length;
 
-            return (
-              <tr key={row.key} className="border-b align-top last:border-0">
-                <th scope="row" className="px-4 py-3 text-left font-normal">
-                  <span className="tabular text-sm font-medium">{row.timeLabel}</span>
-                  {row.monitorCount > 1 ? (
-                    <span
-                      className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"
-                      title={`${row.monitorCount} displays captured`}
-                    >
-                      <Monitor className="h-3.5 w-3.5" aria-hidden />
-                      {row.monitorCount} displays
-                    </span>
-                  ) : null}
-                </th>
+              return (
+                <tr key={row.key} className="border-b align-top last:border-0">
+                  <th scope="row" className="px-4 py-3 text-left font-normal">
+                    <span className="tabular text-sm font-medium">{row.timeLabel}</span>
+                    {row.monitorCount > 1 ? (
+                      <span
+                        className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"
+                        title={`${row.monitorCount} displays captured`}
+                      >
+                        <Monitor className="h-3.5 w-3.5" aria-hidden />
+                        {row.monitorCount} displays
+                      </span>
+                    ) : null}
+                  </th>
 
-                <td className="px-4 py-3">
-                  <p className="truncate font-medium">{row.activity.headline}</p>
-                  {/* Words, never a percentage — docs/design.md: a bare score beside
-                      a person's name is the framing this product refuses. */}
-                  <p className="mt-0.5 text-xs text-muted-foreground">{row.activity.split}</p>
-                  <ActivityBar bar={row.activity.bar} />
-                </td>
+                  <td className="px-4 py-3">
+                    <p className="truncate font-medium">{row.activity.headline}</p>
+                    {/* Words, never a percentage — docs/design.md: a bare score beside
+                        a person's name is the framing this product refuses. */}
+                    <p className="mt-0.5 text-xs text-muted-foreground">{row.activity.split}</p>
+                    <ActivityBar bar={row.activity.bar} />
+                  </td>
 
-                <td className="px-4 py-3">
-                  {row.hasCapture ? (
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                      {row.captures.map((capture, offset) => (
-                        <CaptureTile
-                          key={capture.id}
-                          capture={capture}
-                          failed={(failures[capture.id] ?? 0) > 1}
-                          onError={() => onImageError(capture.id)}
-                          onOpen={() => onOpen(start + offset)}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="rounded-md border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
-                      No capture in this block
-                    </p>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                  <td className="px-4 py-3">
+                    {row.hasCapture ? (
+                      // Wraps rather than scrolling. A strip with its own horizontal
+                      // scrollbar inside a table that now has one too is two nested
+                      // scroll gestures on the same axis, and on a phone neither is
+                      // discoverable. Height is the axis this screen can spare.
+                      <div className="flex flex-wrap gap-2 pb-1">
+                        {row.captures.map((capture, offset) => (
+                          <CaptureTile
+                            key={capture.id}
+                            capture={capture}
+                            failed={(failures[capture.id] ?? 0) > 1}
+                            onError={() => onImageError(capture.id)}
+                            onOpen={() => onOpen(start + offset)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="rounded-md border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
+                        No capture in this block
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -367,12 +396,21 @@ function CaptureTile({
 // ---------------------------------------------------------------------------
 
 /**
- * Full-resolution view with keyboard navigation and a focus trap.
+ * Full-resolution view of one capture.
  *
- * The reference implementations reviewed for this screen have prev/next buttons and
- * no keyboard handling at all, which makes reviewing forty captures a mouse marathon.
- * Arrows step, Escape closes, Tab cycles inside the dialog, and focus returns to the
- * tile that opened it.
+ * On the shared `@aems/ui` Dialog — Radix under Tailwind, which is what `docs/stack.md`
+ * means by shadcn/ui. It replaced a hand-written modal that was the fifth independent
+ * implementation of one in this app and reimplemented, by hand, the focus trap, the
+ * Escape key, the scrim, the scroll lock and the focus restore. Four of those five had
+ * already drifted apart; this one also asked every focusable child to carry a
+ * `data-focusable` attribute so its Tab cycle could find them, which meant a control
+ * added later was silently outside the trap.
+ *
+ * What is still written here is the part Radix does not own: Left and Right step
+ * through the day. The reference implementations reviewed for this screen have prev
+ * and next buttons and no keyboard handling at all, which makes reviewing forty
+ * captures a mouse marathon. `composeEventHandlers` inside Radix runs its own key
+ * handling first, so Escape still closes.
  */
 function Lightbox({
   captures,
@@ -387,102 +425,41 @@ function Lightbox({
   onStep: (delta: number) => void;
   onClose: () => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
   const capture = captures[index];
-
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
-
-    const bodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-
-    return () => {
-      document.body.style.overflow = bodyOverflow;
-      previouslyFocused?.focus();
-    };
-  }, []);
-
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        onStep(-1);
-        return;
-      }
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
-        onStep(1);
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      // Trap: without this, Tab walks out of the dialog into the page behind it,
-      // which for a screen-reader user means the dialog silently stops existing.
-      const focusable = panelRef.current?.querySelectorAll<HTMLElement>("[data-focusable]");
-      if (!focusable || focusable.length === 0) return;
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, onStep]);
-
   if (!capture) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/85 p-4 backdrop-blur-sm"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Capture from ${capture.timeLabel}`}
-        tabIndex={-1}
-        className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-lg border bg-card shadow-lg focus-visible:outline-none"
+      <DialogContent
+        // `w-[calc(100vw-2rem)]` comes from the primitive, so this is already a
+        // 343px-wide panel on a 375px phone; only the ceiling is raised here.
+        className="max-w-5xl gap-0 p-0"
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            onStep(-1);
+          } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            onStep(1);
+          }
+        }}
       >
-        <div className="flex items-center justify-between gap-3 border-b px-4 py-2.5">
-          <div className="min-w-0">
-            <p className="tabular truncate text-sm font-medium">
-              {capture.timeLabel}
-              {personName ? ` · ${personName}` : ""}
-            </p>
-            <p className="tabular truncate text-xs text-muted-foreground">
-              Block {capture.blockLabel} · capture {index + 1} of {captures.length}
-            </p>
-          </div>
-          <button
-            type="button"
-            data-focusable
-            onClick={onClose}
-            aria-label="Close"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md border hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <X className="h-4 w-4" aria-hidden />
-          </button>
-        </div>
+        <DialogHeader className="gap-0.5 border-b px-4 py-2.5">
+          <DialogTitle className="tabular truncate text-sm">
+            {capture.timeLabel}
+            {personName ? ` · ${personName}` : ""}
+          </DialogTitle>
+          <DialogDescription className="tabular truncate text-xs">
+            Block {capture.blockLabel} · capture {index + 1} of {captures.length}
+          </DialogDescription>
+        </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-secondary/40 p-3">
+        <div className="flex min-h-0 items-center justify-center bg-secondary/40 p-3">
           {capture.fullUrl ? (
             <img
               src={capture.fullUrl}
@@ -490,14 +467,14 @@ function Lightbox({
               className="max-h-[65vh] w-auto max-w-full rounded-md object-contain"
             />
           ) : (
-            <p className="px-6 py-16 text-sm text-muted-foreground">
+            <p className="px-6 py-16 text-center text-sm text-muted-foreground">
               This capture is unavailable — the stored image could not be read.
             </p>
           )}
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{capture.activity.headline}</p>
             <p className="truncate text-xs text-muted-foreground">{capture.activity.split}</p>
             {capture.activity.apps.length > 1 ? (
@@ -510,28 +487,26 @@ function Lightbox({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              data-focusable
               onClick={() => onStep(-1)}
               disabled={index === 0}
-              className="inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs font-medium hover:bg-secondary disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex h-9 items-center gap-1 rounded-md border px-2.5 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
               Previous
             </button>
             <button
               type="button"
-              data-focusable
               onClick={() => onStep(1)}
               disabled={index === captures.length - 1}
-              className="inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs font-medium hover:bg-secondary disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex h-9 items-center gap-1 rounded-md border px-2.5 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Next
               <ChevronRight className="h-3.5 w-3.5" aria-hidden />
             </button>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -576,15 +551,23 @@ function Panel({ children, tone }: { children: React.ReactNode; tone?: "error" }
   );
 }
 
+/**
+ * The shape of the table before it has one.
+ *
+ * Sized in fractions rather than in the pixels the real columns happen to occupy: the
+ * old version laid out 32 + 48 + 28 + 28 rem of fixed bars inside an `overflow-hidden`
+ * box, so on a phone the loading state was itself cropped — the first thing a reader
+ * saw was already broken.
+ */
 function SkeletonTable() {
   return (
     <div className="overflow-hidden rounded-lg border bg-card" aria-busy="true">
       {Array.from({ length: 6 }, (_, i) => (
         <div key={i} className="flex items-center gap-4 border-b px-4 py-3.5 last:border-0">
-          <span className="h-4 w-32 shrink-0 animate-pulse rounded bg-muted" />
-          <span className="h-4 w-48 shrink-0 animate-pulse rounded bg-muted" />
-          <span className="h-[4.5rem] w-28 animate-pulse rounded-md bg-muted" />
-          <span className="h-[4.5rem] w-28 animate-pulse rounded-md bg-muted" />
+          <span className="h-4 w-16 shrink-0 animate-pulse rounded bg-muted sm:w-32" />
+          <span className="h-4 min-w-0 flex-1 animate-pulse rounded bg-muted" />
+          <span className="h-[4.5rem] w-28 shrink-0 animate-pulse rounded-md bg-muted" />
+          <span className="hidden h-[4.5rem] w-28 shrink-0 animate-pulse rounded-md bg-muted sm:block" />
         </div>
       ))}
       <span className="sr-only">Loading screen captures</span>

@@ -28,7 +28,10 @@ import {
   ruleConditions,
   ruleDraftFrom,
   ruleDraftToInput,
+  ruleFormSchema,
   rulesWithRejections,
+  policyFormSchema,
+  RULE_CONDITIONS_ERROR_PATH,
   screenshotIntervalChoices,
   screenshotsPerDay,
   validatePolicyDraft,
@@ -664,5 +667,84 @@ describe("hasErrors", () => {
   it("is false only for an empty error object", () => {
     expect(hasErrors({})).toBe(false);
     expect(hasErrors({ version: "nope" })).toBe(true);
+  });
+});
+
+/**
+ * The two React Hook Form resolvers.
+ *
+ * They exist so `CLAUDE.md`'s "all forms: React Hook Form + Zod" holds on this screen
+ * without the validation rules being written out a second time — each schema delegates
+ * to the validator directly above it, which is what every assertion in this file
+ * already covers. What is asserted here is only the *wiring*: that a refusal reaches
+ * the field it is about, because a message that lands on the wrong path is a message
+ * the form never renders.
+ */
+describe("policyFormSchema", () => {
+  it("accepts the draft a published policy seeds", () => {
+    const parsed = policyFormSchema().safeParse(policyDraftFrom(null));
+    expect(parsed.success).toBe(true);
+  });
+
+  it("reports each refusal on the field it belongs to", () => {
+    const parsed = policyFormSchema().safeParse({
+      ...policyDraftFrom(null),
+      name: "",
+      screenshotIntervalSeconds: 45,
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const paths = parsed.error.issues.map((issue) => issue.path.join("."));
+      expect(paths).toContain("name");
+      expect(paths).toContain("screenshotIntervalSeconds");
+    }
+  });
+
+  it("carries the duplicate-version check, which needs data the schema does not hold", () => {
+    const parsed = policyFormSchema(["2026.08.1"]).safeParse({
+      ...policyDraftFrom(null),
+      version: "2026.08.1",
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues[0]?.path).toEqual(["version"]);
+      expect(parsed.error.issues[0]?.message).toMatch(/already exists/);
+    }
+  });
+});
+
+describe("ruleFormSchema", () => {
+  it("accepts a rule the engine can run", () => {
+    const parsed = ruleFormSchema.safeParse({
+      ...EMPTY_RULE_DRAFT,
+      path: "Work > Development",
+      matchApp: "^Code$",
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("reports a field-level refusal on that field", () => {
+    const parsed = ruleFormSchema.safeParse({
+      ...EMPTY_RULE_DRAFT,
+      path: "Work",
+      matchDomain: "(unclosed",
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((issue) => issue.path.join("."))).toContain("matchDomain");
+    }
+  });
+
+  it("reports a rule-level refusal at root.conditions, not on one arbitrary field", () => {
+    const parsed = ruleFormSchema.safeParse({ ...EMPTY_RULE_DRAFT, path: "Work" });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const issue = parsed.error.issues.find((candidate) => candidate.message.includes("condition"));
+      expect(issue?.path).toEqual([...RULE_CONDITIONS_ERROR_PATH]);
+    }
   });
 });

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 
 import { ScreenshotReview } from "@/components/screenshot-review";
-import { serverApiFetch } from "@/lib/supabase-server";
 
 export const metadata: Metadata = {
   title: "Screenshots — AEMS",
@@ -31,7 +30,16 @@ function today(): string {
  * A thin server shell: it resolves which person and which day, and hands both to a
  * client component that owns the fetching. The signed URLs on this screen live ten
  * minutes, so the data has to be able to re-sign itself while the page is open;
- * server-rendering the tiles would hand the reviewer a page that quietly rots.
+ * server-rendering the tiles would hand the reviewer a page that quietly rots. For
+ * the same reason the blocks are not prefetched — their window is the viewer's local
+ * midnight clamped to the current ten-minute block, which is a key the server cannot
+ * predict (rule 2 in `lib/server-query.tsx`).
+ *
+ * **No `serverApiFetch` here any more.** This file used to call
+ * `/api/employees/:profileId` itself, on the server, for one string — the lightbox
+ * caption — while the route's layout was already prefetching that exact record for
+ * the header above it. Two identical requests per page view, and two places a name
+ * could come from. `ScreenshotReview` reads it out of the hydrated cache instead.
  *
  * No auth guard here on purpose. Middleware owns the redirect and AppShell renders
  * the refusal panel for a role that cannot reach /people — and the API refuses
@@ -47,12 +55,6 @@ export default async function ScreenshotsPage({
   const { profileId } = await params;
   const requestedDate = readDate((await searchParams)["date"]);
 
-  // Name only, for the lightbox caption. Null when the API refuses or the person is
-  // not in this company — the review still renders, just without the label.
-  const person = await serverApiFetch<{ full_name: string | null; email: string | null }>(
-    `/api/employees/${profileId}`,
-  );
-
   const serverToday = today();
 
   return (
@@ -61,7 +63,6 @@ export default async function ScreenshotsPage({
       date={requestedDate ?? serverToday}
       today={serverToday}
       dateWasExplicit={requestedDate !== null}
-      personName={person?.full_name || person?.email || null}
     />
   );
 }

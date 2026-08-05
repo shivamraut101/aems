@@ -228,18 +228,55 @@ export function ListSkeleton({ rows = 6, className }: { rows?: number; className
   );
 }
 
-/** A row of KPI cells, matching the bordered grid the loaded page draws. */
+/**
+ * Written out rather than interpolated, and matching `KpiRow` line for line: Tailwind
+ * reads this file as text, so a `lg:grid-cols-${n}` generates no class at all.
+ */
+const WIDE_COLUMNS: Record<number, string> = {
+  1: "lg:grid-cols-1",
+  2: "lg:grid-cols-2",
+  3: "lg:grid-cols-3",
+  4: "lg:grid-cols-4",
+  5: "lg:grid-cols-5",
+  6: "lg:grid-cols-6",
+};
+
+/**
+ * A row of KPI cells, matching the bordered grid `KpiRow` draws.
+ *
+ * Two columns until `lg`, exactly as the real row does. The previous version set
+ * `gridTemplateColumns: repeat(cells, …)` inline, which has no breakpoint: four KPIs
+ * on a 375px phone became four 85px columns holding an 80px bar inside 32px of
+ * padding. `overflow-hidden` stopped that from scrolling the page sideways, so it
+ * clipped instead — and then the real row landed as a 2×2 grid twice the height,
+ * which is the layout shift a skeleton exists to prevent.
+ */
 export function StatGridSkeleton({ cells = 3, className }: { cells?: number; className?: string }) {
+  // The block's background IS the hairline, so an unfilled cell in the last row shows
+  // as a bar of border colour. `KpiRow` spans the odd tile; so does this.
+  const spanLast = cells % 2 === 1;
+
   return (
     <div
-      className={cn("grid gap-px overflow-hidden rounded-lg border bg-border", className)}
-      style={{ gridTemplateColumns: `repeat(${cells}, minmax(0, 1fr))` }}
+      className={cn(
+        "grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border",
+        WIDE_COLUMNS[cells] ?? "lg:grid-cols-4",
+        className,
+      )}
       aria-hidden
     >
       {Array.from({ length: cells }, (_, index) => (
-        <div key={index} className="bg-card px-4 py-3">
+        <div
+          key={index}
+          className={cn(
+            "bg-card px-5 py-4",
+            spanLast && index === cells - 1 && "col-span-2 lg:col-span-1",
+          )}
+        >
           <span className="block h-3 w-16 animate-pulse rounded bg-muted/60" />
-          <span className="mt-2 block h-6 w-20 animate-pulse rounded bg-muted" />
+          {/* 30px: `KpiRow`'s figure is text-[27px] at leading-[1.1]. A 24px bar here
+              is a row that grows by six pixels the moment the numbers arrive. */}
+          <span className="mt-2 block h-[30px] w-20 animate-pulse rounded bg-muted" />
         </div>
       ))}
     </div>

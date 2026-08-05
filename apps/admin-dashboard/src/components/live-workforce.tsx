@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 
+import { RelativeTime } from "@/components/relative-time";
 import { describeError, isSessionExpired, useLiveWorkforce } from "@/lib/api";
-import { relativeTime, timeOfDay } from "@/lib/format";
+import { timeOfDay } from "@/lib/format";
 
 import { StatusDot } from "./status-dot";
 
@@ -127,7 +128,7 @@ export function LiveWorkforce() {
                     )}
                   </td>
                   <td className="tabular px-4 py-2.5 text-right text-muted-foreground">
-                    {relativeTime(row.lastSeenAt)}
+                    <RelativeTime iso={row.lastSeenAt} />
                   </td>
                 </tr>
               ))}

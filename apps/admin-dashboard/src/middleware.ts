@@ -1,10 +1,25 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { isPublicPath, loginRedirectPath, safeNextPath } from "@/lib/session";
+import { PATHNAME_HEADER, isPublicPath, loginRedirectPath, safeNextPath } from "@/lib/session";
 
 /** See the note in `lib/supabase-server.ts` — the library's union defeats inference. */
 type CookieToSet = { name: string; value: string; options: CookieOptions };
+
+/**
+ * Passes the request through, carrying the pathname to the server components.
+ *
+ * The headers are re-read from `request` on every call rather than snapshotted once,
+ * because `request.cookies.set` below rewrites the Cookie header in place — a
+ * snapshot taken before the session refresh would forward the *old* tokens to the
+ * render and undo the refresh it just performed.
+ */
+function passThrough(request: NextRequest): NextResponse {
+  const headers = new Headers(request.headers);
+  headers.set(PATHNAME_HEADER, request.nextUrl.pathname);
+
+  return NextResponse.next({ request: { headers } });
+}
 
 /**
  * The gate in front of every page.
@@ -21,7 +36,7 @@ export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
   // `response` is reassigned by `setAll` below so that rotated cookies survive.
-  let response = NextResponse.next({ request });
+  let response = passThrough(request);
 
   const url = process.env["NEXT_PUBLIC_SUPABASE_URL"];
   const anonKey = process.env["NEXT_PUBLIC_SUPABASE_ANON_KEY"];
@@ -39,7 +54,7 @@ export async function middleware(request: NextRequest) {
         for (const { name, value } of cookiesToSet) {
           request.cookies.set(name, value);
         }
-        response = NextResponse.next({ request });
+        response = passThrough(request);
         for (const { name, value, options } of cookiesToSet) {
           response.cookies.set(name, value, options);
         }

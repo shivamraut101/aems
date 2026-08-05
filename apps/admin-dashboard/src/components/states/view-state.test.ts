@@ -76,3 +76,50 @@ describe("queryViewState", () => {
     expect(queryViewState({ data: [1], isLoading: false, isError: true })).toBe("stale");
   });
 });
+
+/**
+ * The rule the client complained about, stated as tests.
+ *
+ *   "before loading anything you should know what should be loaded. I don't want that
+ *    something is loaded on a flash scale and after that the real things get loaded."
+ *
+ * A page whose data was prefetched on the server hydrates with the answer already in
+ * the cache. Drawing a skeleton over that is the flash — the reader sees grey bars for
+ * one frame and then the content that was in the HTML all along.
+ */
+describe("hydrated and cached data never draws a skeleton", () => {
+  /** What TanStack hands a component after `HydrationBoundary` seeds its key. */
+  const hydrated = { data: [{ id: "a" }], isLoading: false, isError: false };
+
+  it("reports ready on the very first render of a server-prefetched page", () => {
+    expect(queryViewState(hydrated)).toBe("ready");
+  });
+
+  it("stays ready through the background refetch that follows hydration", () => {
+    // `staleTime` elapses and TanStack refetches. `isFetching` goes true; `isLoading`
+    // does not, because v5 defines it as `isPending && isFetching`. Any state machine
+    // keyed off fetching instead would blank the page every refresh interval.
+    expect(queryViewState({ ...hydrated, isLoading: false })).toBe("ready");
+  });
+
+  it("cannot be talked into a skeleton by a caller that mis-wires the flag", () => {
+    // The structural guarantee: `loading` requires *no data*. Even a caller that
+    // passes `isPending` into the `isLoading` slot — the commonest mistake, since v5
+    // exposes both — gets `ready` while something is on screen.
+    expect(queryViewState({ ...hydrated, isLoading: true })).toBe("ready");
+    expect(resolveViewState({ isLoading: true, isError: false, hasData: true })).toBe("ready");
+  });
+
+  it("reports empty, not loading, for a prefetch that legitimately found nothing", () => {
+    expect(queryViewState({ data: [], isLoading: false, isError: false }, (rows) => rows.length === 0)).toBe(
+      "empty",
+    );
+  });
+
+  it("still draws the skeleton when the server prefetch failed and cached nothing", () => {
+    // The deliberate other half: a failed prefetch stores no entry, so the browser
+    // starts the query from scratch and a skeleton is the honest answer. Dehydrating
+    // an empty result instead would render an outage as "no data" forever.
+    expect(queryViewState({ data: undefined, isLoading: true, isError: false })).toBe("loading");
+  });
+});

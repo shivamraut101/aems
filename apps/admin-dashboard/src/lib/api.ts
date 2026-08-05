@@ -1,12 +1,14 @@
 "use client";
 
 import type { ReportDocument, ReportRow } from "@aems/analytics";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 
+import { apiQuery, specRequestInit, specResult, type ApiQuerySpec } from "./query-spec";
 import { apiBaseUrl, joinUrl, parseMeResponse, type Session } from "./session";
 import { createClient } from "./supabase";
 
 export { joinUrl };
+export { apiQuery, type ApiQuerySpec };
 
 /**
  * The shared fetch layer for every client component in the dashboard.
@@ -192,24 +194,91 @@ export function retryUnlessRefused(failureCount: number, error: unknown): boolea
 }
 
 // ---------------------------------------------------------------------------
+// The client half of the server-prefetch pattern
+// ---------------------------------------------------------------------------
+
+/**
+ * Turns an {@link ApiQuerySpec} into TanStack options.
+ *
+ * The counterpart of `serverApiQuery` in `supabase-server.ts`: same key, same path,
+ * same `parse`, different token source. A page that uses one and prefetches with the
+ * other cannot desynchronise them, because there is only one declaration to change.
+ *
+ * Exported for the few callers that need the options object itself — `fetchQuery`
+ * during sign-in, or an `enabled`-gated variant. Prefer {@link useApiQuery}.
+ */
+export function apiQueryOptions<T>(spec: ApiQuerySpec<T>) {
+  return {
+    queryKey: spec.queryKey,
+    queryFn: async (): Promise<T> =>
+      specResult(spec, await apiFetch<unknown>(spec.path, specRequestInit(spec))),
+    retry: retryUnlessRefused,
+    ...(spec.staleTime !== undefined ? { staleTime: spec.staleTime } : {}),
+  };
+}
+
+/**
+ * Reads a declared query.
+ *
+ * If the route's `page.tsx` listed this same spec in its `PrefetchBoundary`, the
+ * answer is already in the cache when this first runs: `isLoading` is false, no
+ * skeleton is drawn, and the real content is in the first paint. If it did not, this
+ * behaves exactly like any other query and the page's loading state is honest.
+ *
+ * `overrides` is for the query *behaviour* — `enabled`, `refetchInterval`,
+ * `placeholderData`. It must never carry `queryKey` or `queryFn`; those come from
+ * the spec, which is the point of the spec.
+ */
+export function useApiQuery<T>(
+  spec: ApiQuerySpec<T>,
+  overrides?: Omit<UseQueryOptions<T, Error, T>, "queryKey" | "queryFn">,
+) {
+  return useQuery<T, Error, T>({ ...apiQueryOptions(spec), ...overrides });
+}
+
+// ---------------------------------------------------------------------------
 // Query hooks
 // ---------------------------------------------------------------------------
 
 /**
  * The signed-in person.
  *
- * `retry: false` because the two ways this fails — no session, no profile linked to
- * the account — are both settled facts that a second attempt cannot change.
+ * Declared as a spec so the root layout can answer it server-side and seed the cache
+ * before a single component renders. That seeding is what stops the sidebar painting
+ * four placeholder bars and then swapping to the real navigation — for an employee
+ * that swap went from four rows to one, which is the flash the client reported.
+ *
+ * `staleTime` is generous because identity does not change under someone mid-session
+ * and the shell must not re-request it on every window focus.
+ */
+export const SESSION_QUERY = apiQuery<Session | null>({
+  queryKey: ["session"],
+  path: "/api/auth/me",
+  parse: parseMeResponse,
+  staleTime: 5 * 60_000,
+});
+
+/**
+ * {@link SESSION_QUERY} as options, with retries off.
+ *
+ * The two ways this fails — no session, no profile linked to the account — are both
+ * settled facts that a second attempt cannot change. Kept as an exported object so
+ * the sign-in form can `fetchQuery` the very same cache entry.
+ */
+export const sessionQuery = {
+  ...apiQueryOptions(SESSION_QUERY),
+  retry: false as const,
+};
+
+/**
+ * The signed-in person, from cache.
+ *
+ * Never in a loading state on a normal page render: `app/layout.tsx` resolves the
+ * profile on the server and hands it to `Providers`, which writes it into the query
+ * cache at construction — before the first render, not after it.
  */
 export function useSession() {
-  return useQuery<Session | null>({
-    queryKey: ["session"],
-    queryFn: async () => parseMeResponse(await apiFetch<unknown>("/api/auth/me")),
-    // Identity does not change under someone mid-session; the shell should not
-    // re-request it on every window focus.
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
+  return useQuery<Session | null>(sessionQuery);
 }
 
 /**

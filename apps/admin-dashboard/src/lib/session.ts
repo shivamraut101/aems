@@ -109,12 +109,30 @@ export type NavIcon =
   | "reports"
   | "insights"
   | "settings"
-  | "me";
+  | "me"
+  | "myDevices"
+  | "account";
+
+/**
+ * Which half of the sidebar an entry belongs to.
+ *
+ * `workspace` is the company — other people's work, read on their behalf.
+ * `personal` is the reader's own record: their activity, the machines enrolled to
+ * them and what each one collects, and their account. The split is not decoration.
+ * Non-negotiable #3 says an employee can read their own data, and a manager who has
+ * to hunt for their own row among the company's is being told, by the layout, that
+ * the personal view is an afterthought.
+ */
+export type NavGroup = "workspace" | "personal";
+
+/** Render order. A group with no entries for the current role is simply skipped. */
+export const NAV_GROUPS: readonly NavGroup[] = ["workspace", "personal"];
 
 export interface NavItem {
   href: string;
   label: string;
   icon: NavIcon;
+  group: NavGroup;
   /** Roles that may reach this destination. Mirrors the API's preHandlers. */
   roles: readonly UserRole[];
 }
@@ -126,26 +144,70 @@ const EVERYONE: readonly UserRole[] = ROLES;
 /**
  * The sidebar, per docs/design.md — flat, no nesting, no collapsible tree.
  *
- * `roles` is on the entry rather than in a separate table so a new destination
- * cannot be added without someone deciding who sees it. Every manager destination
- * here is backed by a `requireManager` route; Settings is company configuration,
- * which only a super admin can write.
+ * This table is the whole authorization surface of the UI, which is why it is data
+ * with a test file pointed at it rather than a set of conditionals spread over ten
+ * components. `roles` sits on the entry so a new destination cannot be added without
+ * someone deciding who sees it, and `canAccessPath` reads the same rows, so the
+ * sidebar and the permission wall can never disagree about who may go where.
+ *
+ * The agreed matrix:
+ *
+ * | Role        | Sees                                                              |
+ * | ----------- | ----------------------------------------------------------------- |
+ * | Employee    | My activity, My devices, Account — their own record, nothing else  |
+ * | Manager     | + Overview, People, Activity, Devices, Reports, AI Insights        |
+ * | Super Admin | + Settings (policy, restrictions, categories, monitoring toggles)   |
+ *
+ * A manager reads the whole company and runs reports but cannot change policy or
+ * people; that is why Settings is `ADMINS` and everything else operational is
+ * `MANAGERS`. None of this is the boundary — the API's guards and RLS are. This
+ * stops the app offering a door the server will not open.
  */
 export const NAV: readonly NavItem[] = [
-  { href: "/", label: "Overview", icon: "overview", roles: MANAGERS },
-  { href: "/people", label: "People", icon: "people", roles: MANAGERS },
-  { href: "/activity", label: "Activity", icon: "activity", roles: MANAGERS },
-  { href: "/devices", label: "Devices", icon: "devices", roles: MANAGERS },
-  { href: "/reports", label: "Reports", icon: "reports", roles: MANAGERS },
-  { href: "/insights", label: "AI Insights", icon: "insights", roles: MANAGERS },
-  { href: "/settings", label: "Settings", icon: "settings", roles: ADMINS },
-  // Non-negotiable #3: employees can read their own data, so every role keeps a
-  // destination and nobody signs in to an empty sidebar.
-  { href: "/me", label: "My activity", icon: "me", roles: EVERYONE },
+  { href: "/", label: "Overview", icon: "overview", group: "workspace", roles: MANAGERS },
+  { href: "/people", label: "People", icon: "people", group: "workspace", roles: MANAGERS },
+  { href: "/activity", label: "Activity", icon: "activity", group: "workspace", roles: MANAGERS },
+  { href: "/devices", label: "Devices", icon: "devices", group: "workspace", roles: MANAGERS },
+  { href: "/reports", label: "Reports", icon: "reports", group: "workspace", roles: MANAGERS },
+  { href: "/insights", label: "AI Insights", icon: "insights", group: "workspace", roles: MANAGERS },
+  { href: "/settings", label: "Settings", icon: "settings", group: "workspace", roles: ADMINS },
+
+  // The personal group. Every role carries all three, so nobody signs in to an empty
+  // sidebar and no role has to be told where its own data lives.
+  { href: "/me", label: "My activity", icon: "me", group: "personal", roles: EVERYONE },
+  // Non-negotiables #1 and #4: a person must be able to see which devices are theirs,
+  // what each one collects and under which policy version — and withdraw that consent.
+  // A consent that can only be given is not consent, and the revoke endpoint has
+  // existed with nothing in the product calling it.
+  //
+  // The href must match the page's directory — `app/(app)/my-devices/`. It briefly did
+  // not: this row read `/me/devices` while the page was built one level up, so the one
+  // sidebar link carrying a compliance obligation was a 404 while every other link to
+  // that same screen worked. `session.test.ts` now derives the served routes from the
+  // filesystem and asserts every entry lands on one, which catches the disagreement
+  // whichever side of it moves.
+  { href: "/my-devices", label: "My devices", icon: "myDevices", group: "personal", roles: EVERYONE },
+  { href: "/account", label: "Account", icon: "account", group: "personal", roles: EVERYONE },
 ];
 
 export function navigationForRole(role: UserRole): NavItem[] {
   return NAV.filter((item) => item.roles.includes(role));
+}
+
+/**
+ * The same list, split into the groups the sidebar draws a rule between.
+ *
+ * Empty groups are dropped rather than returned empty, so a caller can render one
+ * separator per group boundary without having to know that an employee has no
+ * workspace entries at all.
+ */
+export function navigationGroupsForRole(
+  role: UserRole,
+): { group: NavGroup; items: NavItem[] }[] {
+  return NAV_GROUPS.map((group) => ({
+    group,
+    items: NAV.filter((item) => item.group === group && item.roles.includes(role)),
+  })).filter((section) => section.items.length > 0);
 }
 
 /**
@@ -161,6 +223,32 @@ export function isNavActive(href: string, pathname: string): boolean {
 }
 
 /**
+ * The one entry that owns this path, or null if the sidebar does not claim it.
+ *
+ * "Most specific wins" is what makes nesting safe. No two `NAV` entries nest right
+ * now, but routes beneath them exist — `/settings/restrictions` is a page with no row
+ * of its own — and the moment a child gets its own entry, `isNavActive` answers true
+ * for both it and its parent. Highlighting on that alone lights two rows at once, and
+ * judging *access* on the first match would let the looser parent decide who may enter
+ * the child, so a narrow section nested under a broad one would silently inherit the
+ * broad audience.
+ *
+ * Both questions resolve through this one function, so highlighting and access can
+ * never pick different owners for the same path.
+ */
+export function navClaimFor(pathname: string): NavItem | null {
+  const claimed = NAV.filter((item) => isNavActive(item.href, pathname));
+  if (claimed.length === 0) return null;
+
+  return claimed.reduce((a, b) => (b.href.length > a.href.length ? b : a));
+}
+
+/** The href the sidebar should mark as the current section — at most one. */
+export function activeNavHref(pathname: string): string | null {
+  return navClaimFor(pathname)?.href ?? null;
+}
+
+/**
  * May this role render this path?
  *
  * Anything the sidebar does not claim is allowed — this gate exists to stop a role
@@ -168,16 +256,50 @@ export function isNavActive(href: string, pathname: string): boolean {
  * The most specific claim wins, so "/people/abc" is judged by "/people".
  */
 export function canAccessPath(role: UserRole, pathname: string): boolean {
-  const claimed = NAV.filter((item) => isNavActive(item.href, pathname));
-  if (claimed.length === 0) return true;
+  const claim = navClaimFor(pathname);
+  if (!claim) return true;
 
-  const mostSpecific = claimed.reduce((a, b) => (b.href.length > a.href.length ? b : a));
-  return mostSpecific.roles.includes(role);
+  return claim.roles.includes(role);
 }
 
 /** Where this role belongs when they have not asked for anywhere in particular. */
 export function landingPathForRole(role: UserRole): string {
   return role === "employee" ? "/me" : "/";
+}
+
+/**
+ * The request header middleware uses to tell a server component which path is being
+ * rendered.
+ *
+ * Layouts do not receive the pathname — Next deliberately withholds it so a layout
+ * can be reused across the routes beneath it — and `usePathname()` is a client hook,
+ * which is a render too late for a decision that must be made before the first paint.
+ * Middleware already runs on every request and already knows, so it says.
+ *
+ * Not a security input. It is set by our own middleware on the way in, and a value a
+ * client tried to spoof would only change which of *their own* pages they are sent
+ * to; every read behind it is still checked by the API and by RLS.
+ */
+export const PATHNAME_HEADER = "x-aems-pathname";
+
+/**
+ * Where this person should be sent instead of `pathname`, or null to render it.
+ *
+ * The case this exists for, in the client's words: *"I have just enrolled with my
+ * employee id but I am not seeing anything near to it."* An employee signing in
+ * landed on `/` — the manager Overview — and met a permission wall as the first
+ * screen of the product. `/` is not a page they were refused; it is a page that was
+ * never theirs, and the honest response is to open the one that is.
+ *
+ * Only the landing path is redirected. A role that reaches some *other* section it
+ * cannot read keeps the explanatory wall, because there the reader followed a link
+ * and deserves to be told why it went nowhere rather than being silently moved.
+ */
+export function landingRedirectFor(role: UserRole, pathname: string): string | null {
+  if (pathname !== "/") return null;
+
+  const landing = landingPathForRole(role);
+  return landing === "/" ? null : landing;
 }
 
 // ---------------------------------------------------------------------------

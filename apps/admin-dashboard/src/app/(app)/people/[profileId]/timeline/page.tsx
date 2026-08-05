@@ -30,6 +30,13 @@ const CLOCK_INTERVAL_MS = 5 * 60_000;
  *
  * `useDayWindow` reads `useSearchParams`, which forces a Suspense boundary during
  * prerender, so the tab itself is a child component.
+ *
+ * Not server-prefetched, and this is the clearest case of why not: the window is the
+ * viewer's local midnight *clamped to the viewer's current minute*, so its query key
+ * changes every five minutes on a live day. There is no key the server could warm
+ * that the browser would go on to ask for — rule 2 in `lib/server-query.tsx`. The
+ * person, the tab strip and the day control above it are all prefetched by the route
+ * layout, so what settles here is the day's data and nothing else.
  */
 export default function TimelinePage() {
   return (

@@ -4,6 +4,7 @@ import {
   type Productivity,
   type RejectedRule,
 } from "@aems/analytics";
+import { z } from "zod";
 
 import { ApiError } from "@/lib/api";
 
@@ -359,6 +360,32 @@ export function validatePolicyDraft(
   return errors;
 }
 
+/**
+ * {@link validatePolicyDraft} as the resolver React Hook Form takes.
+ *
+ * A factory rather than a constant because the duplicate-version check needs to know
+ * which versions already exist, and that is data rather than schema. `CLAUDE.md` makes
+ * the Zod schema the single source of validation truth for every form — this keeps
+ * that true without forking the rules into a second place: the schema *is* the
+ * validator, wrapped, so the 40-odd assertions already written against
+ * `validatePolicyDraft` go on covering the form.
+ */
+export function policyFormSchema(existingVersions: readonly string[] = []) {
+  return z
+    .object({
+      version: z.string(),
+      name: z.string(),
+      screenshotIntervalSeconds: z.number(),
+      idleThresholdSeconds: z.number(),
+      trackedCategories: z.string(),
+    })
+    .superRefine((draft, ctx) => {
+      for (const [field, message] of Object.entries(validatePolicyDraft(draft, existingVersions))) {
+        if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message });
+      }
+    });
+}
+
 /** Omits `version` when the field is blank, which is how the server is asked to mint one. */
 export function policyDraftToInput(draft: PolicyDraft): PolicyPublishInput {
   const version = draft.version.trim();
@@ -594,6 +621,44 @@ export function validateRuleDraft(draft: RuleDraft): RuleDraftErrors {
 
   return errors;
 }
+
+/**
+ * The path a rule-level refusal is reported at.
+ *
+ * "A rule needs at least one condition" is not about App, Domain or Title — it is
+ * about the three of them together, and pinning it to one of the fields would send
+ * someone to fix the wrong box. React Hook Form's `errors.root.*` namespace exists for
+ * exactly this, so the issue is raised there and rendered above the group.
+ */
+export const RULE_CONDITIONS_ERROR_PATH = ["root", "conditions"] as const;
+
+/**
+ * {@link validateRuleDraft} as a React Hook Form resolver.
+ *
+ * Same reasoning as {@link policyFormSchema}: the schema delegates rather than
+ * duplicates, so the real {@link compileRules} still decides whether a pattern can be
+ * run and the existing tests still cover the form.
+ */
+export const ruleFormSchema = z
+  .object({
+    path: z.string(),
+    productivity: z.enum(["productive", "neutral", "unproductive"]),
+    priority: z.string(),
+    matchApp: z.string(),
+    matchDomain: z.string(),
+    matchTitle: z.string(),
+    ignoreCase: z.boolean(),
+  })
+  .superRefine((draft, ctx) => {
+    for (const [field, message] of Object.entries(validateRuleDraft(draft))) {
+      if (!message) continue;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: field === "match" ? [...RULE_CONDITIONS_ERROR_PATH] : [field],
+        message,
+      });
+    }
+  });
 
 export function ruleDraftToInput(draft: RuleDraft): CategoryRuleInput {
   return {

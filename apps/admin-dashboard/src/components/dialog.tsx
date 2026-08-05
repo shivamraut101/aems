@@ -4,13 +4,34 @@ import { X } from "lucide-react";
 import { useEffect, useId, useRef } from "react";
 
 /**
- * The modal shell the two People dialogs share.
+ * **Legacy. Use `Dialog` from `@aems/ui` instead — this one is on its way out.**
  *
- * `docs/design.md` asks for a dialog or an inline panel rather than a new page for
- * management actions, and there is no dialog primitive in `packages/ui` — so this is
- * the primitive, written once here rather than twice inside the two screens that need
- * it. It is deliberately plain: a thin border, an 8px radius and a flat scrim. No
- * backdrop blur, because the design document rules out glassmorphism.
+ * When this was written there was no dialog primitive in `packages/ui`, so the modal
+ * shell was hand-rolled here rather than twice inside the two screens that needed it.
+ * There is one now, on Radix, and `devices/add-device-dialog.tsx` is the reference for
+ * what a migrated caller looks like.
+ *
+ * It is still here because callers still import it. **Who they are is deliberately not
+ * written down.** This comment listed them twice and was wrong both times within the
+ * same afternoon: `add-person-dialog.tsx` migrated to `@aems/ui`, `withdraw-consent.tsx`
+ * appeared on the legacy shell and then left it too. A deprecated module does not empty
+ * out monotonically while several people are working above it, so a hardcoded roster
+ * here is just one more thing to disagree with reality.
+ *
+ * Ask instead, and trust the answer:
+ *
+ *     grep -rn 'from "@/components/dialog"' apps/admin-dashboard/src
+ *
+ * **Delete the `Dialog` export the moment that comes back empty** — and check the
+ * import lists, not just the file names: a caller that has kept only `Field`,
+ * `FormError` or the class constants is no longer a reason to keep the modal shell.
+ * Those four outlive it and are still the shared form furniture, so removing `Dialog`
+ * does not empty this module.
+ *
+ * Until then, deleting it breaks a screen to tidy a file.
+ *
+ * It is deliberately plain: a thin border, an 8px radius and a flat scrim. No backdrop
+ * blur, because the design document rules out glassmorphism.
  *
  * The three behaviours that make a modal a modal, and that a bare absolutely
  * positioned `<div>` silently omits:

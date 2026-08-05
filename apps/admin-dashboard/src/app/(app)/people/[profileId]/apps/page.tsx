@@ -45,6 +45,14 @@ import {
  *
  * `useSearchParams` (inside `useDayWindow`) forces a Suspense boundary during
  * prerender, so the tab itself is a child component.
+ *
+ * **The only tab with nothing to prefetch, and deliberately so.** Its one read is
+ * `POST /api/reports/run` over a window that starts at the *viewer's* local midnight,
+ * which the server render does not have — see rule 2 in `lib/server-query.tsx`. A
+ * server prefetch would warm a key the browser never asks for and the page would pay
+ * for the same report twice. The skeleton below stays, and it is honest: the question
+ * does not exist until the browser's clock is readable. Splitting this into a server
+ * shell with an empty `queries={[]}` would be ceremony, not a fix.
  */
 export default function AppsTabPage() {
   return (

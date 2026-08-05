@@ -1,13 +1,13 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { apiFetch, type EmployeeRow } from "@/lib/api";
+import { apiFetch, useApiQuery, type EmployeeRow } from "@/lib/api";
 
+import { categoryRulesQuery, companyPolicyQuery } from "./settings-specs";
 import type {
   CategoryRuleDto,
   CategoryRuleInput,
-  CategoryRulesResponse,
   PolicyPublishInput,
   PolicyRecord,
 } from "./settings-view";
@@ -19,6 +19,12 @@ import type {
  * rules are company configuration and the monitoring toggle is the highest-privilege
  * write in the product; none may take the Supabase shortcut, because the API is where
  * the audit log is written.
+ *
+ * The two reads take their key and path from `settings-specs.ts` rather than declaring
+ * them here, because `settings/page.tsx` warms the same objects on the server. A hook
+ * that restated `["policy", "current"]` inline would agree with the prefetch today and
+ * silently stop agreeing the first time either gained a parameter — and the symptom of
+ * that is the skeleton flash coming back with nothing reporting an error.
  */
 
 /**
@@ -33,12 +39,7 @@ import type {
  * missing profile are both facts a second attempt cannot change.
  */
 export function useCompanyPolicy() {
-  return useQuery<PolicyRecord | null>({
-    queryKey: ["policy", "current"],
-    queryFn: () => apiFetch<PolicyRecord | null>("/api/policies/current"),
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
+  return useApiQuery(companyPolicyQuery, { retry: false });
 }
 
 /**
@@ -108,8 +109,6 @@ export function useSetMonitoring() {
 // Category rules
 // ---------------------------------------------------------------------------
 
-const RULES_KEY = ["categories", "rules"] as const;
-
 /**
  * The company's classification rules, in evaluation order, with the engine's refusals.
  *
@@ -117,12 +116,7 @@ const RULES_KEY = ["categories", "rules"] as const;
  * rules being applied to their own activity.
  */
 export function useCategoryRules() {
-  return useQuery<CategoryRulesResponse>({
-    queryKey: RULES_KEY,
-    queryFn: () => apiFetch<CategoryRulesResponse>("/api/activity/categories"),
-    staleTime: 60_000,
-    retry: false,
-  });
+  return useApiQuery(categoryRulesQuery, { retry: false });
 }
 
 /**

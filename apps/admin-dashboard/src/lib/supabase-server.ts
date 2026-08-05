@@ -3,6 +3,7 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { cache } from "react";
 
+import { specRequestInit, specResult, type ApiQuerySpec } from "./query-spec";
 import { apiBaseUrl, joinUrl, parseMeResponse, type Session } from "./session";
 
 /**
@@ -93,6 +94,46 @@ export async function serverApiFetch<T>(path: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Runs one {@link ApiQuerySpec} server-side, and **throws** when it does not answer.
+ *
+ * Throwing is the whole point, and it is the opposite of {@link serverApiFetch}'s
+ * contract on purpose. `prefetchQuery` caches whatever the function returns, so a
+ * fetcher that answers `null` on a 500 would dehydrate `null` as though the API had
+ * said "nothing here" — and the browser would render an empty state for an outage
+ * and never retry, because the cache looks satisfied. A throw leaves the entry
+ * absent, the client fetches it normally, and a real failure reaches the real error
+ * state.
+ *
+ * Server-only: it reads the request's cookie jar. Importing it from a `"use client"`
+ * module is a build error, which is the intended guard rail.
+ */
+export async function serverApiQuery<T>(spec: ApiQuerySpec<T>): Promise<T> {
+  const token = await getAccessToken();
+  if (!token) throw new Error(`No server session; cannot prefetch ${spec.path}`);
+
+  const init = specRequestInit(spec);
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  if (init?.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await fetch(joinUrl(apiBaseUrl(), spec.path), {
+    ...init,
+    headers,
+    // Monitoring data ages fast, and identity must never be served to one employee
+    // out of a cache warmed by another.
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`${spec.path} answered ${String(response.status)}`);
+  }
+
+  return specResult(spec, response.status === 204 ? undefined : await response.json());
 }
 
 /**

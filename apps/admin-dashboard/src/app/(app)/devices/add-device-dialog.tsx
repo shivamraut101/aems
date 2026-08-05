@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Copy, Loader2, MonitorSmartphone, RefreshCw } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   Button,
@@ -11,6 +11,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  Field,
   Select,
   SelectContent,
   SelectItem,
@@ -18,10 +19,21 @@ import {
   SelectValue,
 } from "@aems/ui";
 
-import { Field, FormError } from "@/components/dialog";
-import { describeError, useEmployees, useSession } from "@/lib/api";
+import { describeError, useApiQuery, useSession } from "@/lib/api";
 import { isDeactivated } from "@/lib/queries/employees-form";
 import { expiryLabel, useCreateEnrollmentCode } from "@/lib/queries/enrollment";
+
+import { employeesQuery } from "./queries";
+
+/**
+ * "Bind this to my own account".
+ *
+ * A named default rather than `""`: Radix refuses an empty `SelectItem` value, and the
+ * empty string previously left the trigger showing its placeholder while the request it
+ * would send was already decided — a control whose displayed state and its meaning are
+ * only accidentally the same.
+ */
+const SELF = "self";
 
 /**
  * Add device — the screen the agent has always told people to open.
@@ -36,14 +48,14 @@ import { expiryLabel, useCreateEnrollmentCode } from "@/lib/queries/enrollment";
  */
 export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
   const { data: session } = useSession();
-  const { data: employees } = useEmployees();
+  // The same spec the devices page prefetches, so opening this dialog costs no request.
+  const { data: employees } = useApiQuery(employeesQuery);
   const mint = useCreateEnrollmentCode();
 
-  const selectId = useId();
   // Managers and admins pick a person; an employee can only ever enrol their own
   // machine, so they are not asked a question with one answer.
   const canChoose = session?.role === "manager" || session?.role === "super_admin";
-  const [profileId, setProfileId] = useState("");
+  const [profileId, setProfileId] = useState(SELF);
 
   const code = mint.data ?? null;
 
@@ -66,24 +78,26 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
         ) : (
           <>
             {canChoose ? (
-              <Field label="Employee" htmlFor={selectId}>
-                <Select value={profileId} onValueChange={setProfileId}>
-                  <SelectTrigger id={selectId}>
-                    <SelectValue placeholder="Myself" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="self">Myself</SelectItem>
-                    {/* Off-boarded people are excluded: the API refuses a code for
-                        them, so offering the name would only produce a 409. */}
-                    {(employees ?? [])
-                      .filter((person) => !isDeactivated(person))
-                      .map((person) => (
-                        <SelectItem key={person.id} value={person.id}>
-                          {person.full_name || person.email}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
+              <Field label="Employee">
+                {(field) => (
+                  <Select value={profileId} onValueChange={setProfileId}>
+                    <SelectTrigger {...field}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={SELF}>Myself</SelectItem>
+                      {/* Off-boarded people are excluded: the API refuses a code for
+                          them, so offering the name would only produce a 409. */}
+                      {(employees ?? [])
+                        .filter((person) => !isDeactivated(person))
+                        .map((person) => (
+                          <SelectItem key={person.id} value={person.id}>
+                            {person.full_name || person.email}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </Field>
             ) : (
               <p className="text-sm text-muted-foreground">
@@ -91,17 +105,23 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
               </p>
             )}
 
-            {mint.isError ? <FormError message={describeError(mint.error)} /> : null}
+            {mint.isError ? (
+              <p
+                role="alert"
+                className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
+              >
+                {describeError(mint.error)}
+              </p>
+            ) : null}
 
             <DialogFooter>
-              <Button variant="outline" onClick={onClose}>
+              <Button type="button" variant="outline" onClick={onClose}>
                 Cancel
               </Button>
               <Button
+                type="button"
                 disabled={mint.isPending}
-                onClick={() =>
-                  mint.mutate(profileId && profileId !== "self" ? { profileId } : {})
-                }
+                onClick={() => mint.mutate(profileId === SELF ? {} : { profileId })}
               >
                 {mint.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -177,7 +197,7 @@ function CodeStep({
       </p>
 
       <DialogFooter className="mt-2">
-        <Button variant="outline" onClick={copy}>
+        <Button type="button" variant="outline" onClick={() => void copy()}>
           {copied ? (
             <Check className="h-4 w-4 text-[hsl(var(--success))]" aria-hidden />
           ) : (
@@ -185,7 +205,7 @@ function CodeStep({
           )}
           {copied ? "Copied" : "Copy"}
         </Button>
-        <Button onClick={onClose}>
+        <Button type="button" onClick={onClose}>
           {expired ? <RefreshCw className="h-4 w-4" aria-hidden /> : null}
           Done
         </Button>

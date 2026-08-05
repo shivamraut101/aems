@@ -87,10 +87,13 @@ export function ErrorState({
       </p>
       <p className="text-sm text-muted-foreground">{message}</p>
       {onRetry ? (
+        // `h-9` rather than the padding that used to size it: measured at 375px this
+        // button rendered 26px tall, and a retry a thumb misses is the one control on
+        // a failed screen that has to be hittable.
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-9 items-center rounded-md border px-3 text-xs font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           Try again
         </button>
