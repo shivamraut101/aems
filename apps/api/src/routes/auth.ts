@@ -9,6 +9,13 @@ const consentSchema = z.object({
   method: z.enum(["in_app_dialog", "onboarding_portal", "signed_document"]),
 });
 
+/**
+ * The device-token variant. No `deviceId`: the token names the device, and accepting
+ * one from the body would let a caller with any valid device token consent on behalf
+ * of another machine.
+ */
+const deviceConsentSchema = consentSchema.omit({ deviceId: true });
+
 export const authRoutes: FastifyPluginAsync = async (app) => {
   /** Who am I? Used by the dashboard and by agents right after login. */
   app.get("/me", { preHandler: app.requireUser }, async (request) => {
@@ -100,6 +107,79 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         targetType: "device",
         targetId: deviceId,
         metadata: { policyVersion, method },
+      },
+      app.log,
+    );
+
+    return { consentId: consent.id };
+  });
+
+  /**
+   * The same act, proven by the device token instead of a Supabase session.
+   *
+   * An agent enrolled with a sign-in code never holds a user session — that is the
+   * point of the code. Without this route, code enrolment would produce a device that
+   * can never record consent, and therefore can never legally collect anything.
+   *
+   * The device token already names the device, its company and its owner, and the API
+   * re-reads that row on every request, so there is nothing here for a caller to
+   * assert about who they are. That makes this narrower than the session route, not
+   * wider: it can only ever consent for the one device presenting the token.
+   */
+  app.post("/consent/device", { preHandler: app.requireDevice }, async (request, reply) => {
+    const parsed = deviceConsentSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+    }
+
+    const device = request.device!;
+    const { policyVersion, method } = parsed.data;
+
+    const { data: policy } = await app.supabase
+      .from("policies")
+      .select("version")
+      .eq("company_id", device.companyId)
+      .eq("version", policyVersion)
+      .maybeSingle();
+
+    if (!policy) {
+      return reply.code(400).send({
+        error: "unknown_policy",
+        message: `Policy version ${policyVersion} does not exist`,
+        statusCode: 400,
+      });
+    }
+
+    const { data: consent, error } = await app.supabase
+      .from("consent_records")
+      .insert({
+        company_id: device.companyId,
+        profile_id: device.profileId,
+        device_id: device.deviceId,
+        policy_version: policyVersion,
+        method,
+        ip_address: request.ip,
+      })
+      .select("id")
+      .single();
+
+    if (error || !consent) {
+      return reply
+        .code(409)
+        .send({ error: "consent_exists", message: error?.message ?? "Could not record consent", statusCode: 409 });
+    }
+
+    await recordAudit(
+      app.supabase,
+      {
+        companyId: device.companyId,
+        actorId: device.profileId,
+        action: "consent.granted",
+        targetType: "device",
+        targetId: device.deviceId,
+        metadata: { policyVersion, method, via: "device_token" },
       },
       app.log,
     );

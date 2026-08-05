@@ -11,10 +11,11 @@ import {
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Search, SlidersHorizontal } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useId, useMemo, useState } from "react";
 
+import { primaryButtonClass } from "@/components/dialog";
 import { PageHeader } from "@/components/page-header";
 import {
   EmptyState,
@@ -38,6 +39,8 @@ import {
 } from "@/lib/queries/roster-view";
 import { createClient } from "@/lib/supabase";
 import { mergeQuery, useColumnVisibility, useFilters } from "@/store/filters";
+
+import { AddDeviceDialog } from "./add-device-dialog";
 
 /**
  * Device inventory, `docs/scope.md` §7.
@@ -212,6 +215,7 @@ function DevicesScreen() {
   const columnVisibility = useColumnVisibility("devices");
   const setColumnVisibility = useFilters((state) => state.setColumnVisibility);
   const [sorting, setSorting] = useState<SortingState>([{ id: "lastSeen", desc: true }]);
+  const [addOpen, setAddOpen] = useState(false);
 
   const { data, isLoading, isError, error, refetch } = useDevices();
   const rows = useMemo(() => data ?? [], [data]);
@@ -394,7 +398,22 @@ function DevicesScreen() {
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-7">
-      <PageHeader title="Devices" subtitle="Company-owned hardware reporting into AEMS." />
+      <PageHeader
+        title="Devices"
+        subtitle="Company-owned hardware reporting into AEMS."
+        actions={
+          <button type="button" onClick={() => setAddOpen(true)} className={primaryButtonClass}>
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            Add device
+          </button>
+        }
+      />
+
+      {/* Not gated on role. Everyone may enrol their OWN machine — that is the
+          self-service path — and the API refuses a code for anyone else unless the
+          caller is a manager. Hiding this from employees would leave them unable to
+          set up the laptop they were handed. */}
+      {addOpen ? <AddDeviceDialog onClose={() => setAddOpen(false)} /> : null}
 
       <div className="mb-4 flex flex-wrap items-end gap-2">
         <SearchField filters={filters} onChange={setFilters} />

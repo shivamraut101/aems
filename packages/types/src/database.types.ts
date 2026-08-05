@@ -624,6 +624,67 @@ export interface Database {
           },
         ];
       };
+      /**
+       * Short-lived, single-use codes that bind a machine to a person.
+       *
+       * `code_hash` only — the plaintext is shown once by the API that mints it and
+       * never stored, so a database leak yields nothing an agent could redeem.
+       */
+      device_enrollment_codes: {
+        Row: {
+          id: string;
+          company_id: string;
+          profile_id: string;
+          code_hash: string;
+          expires_at: string;
+          consumed_at: string | null;
+          consumed_device_id: string | null;
+          created_by: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          profile_id: string;
+          code_hash: string;
+          expires_at: string;
+          consumed_at?: string | null;
+          consumed_device_id?: string | null;
+          created_by: string;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["device_enrollment_codes"]["Insert"]>;
+        Relationships: [
+          {
+            foreignKeyName: "device_enrollment_codes_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "device_enrollment_codes_profile_id_fkey";
+            columns: ["profile_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "device_enrollment_codes_consumed_device_id_fkey";
+            columns: ["consumed_device_id"];
+            isOneToOne: false;
+            referencedRelation: "devices";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "device_enrollment_codes_created_by_fkey";
+            columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       reports: {
         // `kind` is `string`, not `ReportKind`: migration ...0010 widened the check
         // constraint to the four registry types (time_and_activity, app_usage,

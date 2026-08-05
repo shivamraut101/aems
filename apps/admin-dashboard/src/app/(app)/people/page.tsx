@@ -48,7 +48,7 @@ import { roleLabel } from "@/lib/session";
 import { mergeQuery, useColumnVisibility, useFilters } from "@/store/filters";
 
 import { AddPersonDialog } from "./add-person-dialog";
-import { primaryButtonClass } from "./dialog";
+import { primaryButtonClass } from "@/components/dialog";
 
 /**
  * The roster, `docs/scope.md` §4.2.

@@ -290,11 +290,17 @@ export function indicatorStateFor(status: AgentStatus): IndicatorState {
 
 export interface EnrollRequest {
   /**
-   * Supabase access token for the signed-in employee. Enrolment and the consent
-   * POST both run as the user, so main keeps this in memory until consent lands
-   * and never writes it to disk.
+   * The short code from the dashboard's Devices → Add device, e.g. `K7P2-9WQX`.
+   *
+   * Never a Supabase access token. A token grants the account's full rights for an
+   * hour and no screen in the product ever shows one, so there was no honest answer
+   * to "where does an employee get this". A code authorises exactly one enrolment for
+   * exactly one person, dies on first use or in ten minutes, and can be read aloud.
+   *
+   * Sent once and not retained: the device token that comes back is what the agent
+   * uses from then on, including for consent.
    */
-  accessToken: string;
+  enrollmentCode: string;
 }
 
 /** Shape of every invoke channel: what it takes and what it gives back. */

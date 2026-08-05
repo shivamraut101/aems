@@ -82,13 +82,9 @@ let indicator: IndicatorController | null = null;
 /** Set only by the tray's Quit item, so every other close path hides instead. */
 let quitting = false;
 
-/**
- * The employee's Supabase access token, held between enrolment and consent.
- *
- * Both of those routes authenticate as the user rather than the device, and the
- * token is never written to disk — it is dropped the moment consent is recorded.
- */
-let accessToken: string | null = null;
+// There is deliberately no user access token in this process any more. Enrolment
+// redeems a short code and consent is proven by the device token, so the agent never
+// holds a credential that could act as the employee anywhere else.
 
 function requireRuntime(): Runtime {
   if (runtime === null) throw new Error("Agent runtime is not initialised");
@@ -388,9 +384,13 @@ function registerIpc(): void {
     async (_event, request: EnrollRequest): Promise<AgentStatus> => {
       const { store, client } = requireRuntime();
 
-      client.setAuth({ kind: "user", token: request.accessToken });
-      const response = await client.enrollDevice(collectDeviceFacts());
-      accessToken = request.accessToken;
+      // No Authorization header at all — the code IS the credential, and the device
+      // token that comes back is what everything after this uses, consent included.
+      // Nothing user-scoped is ever held in this process now.
+      const response = await client.enrollDeviceWithCode(
+        request.enrollmentCode,
+        collectDeviceFacts(),
+      );
 
       store.update({
         deviceId: response.deviceId,
@@ -416,22 +416,19 @@ function registerIpc(): void {
     if (deviceId === null || deviceToken === null || policy === null) {
       throw new Error("Enrol this device before recording consent");
     }
-    if (accessToken === null) {
-      throw new Error("Sign in again before recording consent");
-    }
 
     // Consent has to reach the server before it is believed locally. The API is the
     // enforcement point, so a locally-consented agent with no consent_records row
     // just 403s on every ingest and bounces back to this screen forever.
-    client.setAuth({ kind: "user", token: accessToken });
-    await client.submitConsent({
-      deviceId,
+    //
+    // Proven by the device token: an agent enrolled with a code never holds a user
+    // session, and the token already names the device, its company and its owner.
+    client.setAuth({ kind: "device", token: deviceToken });
+    await client.submitConsentAsDevice({
       policyVersion: policy.version,
       method: "in_app_dialog",
     });
 
-    accessToken = null;
-    client.setAuth({ kind: "device", token: deviceToken });
     store.update({ consentedPolicyVersion: policy.version });
 
     reportInventory();

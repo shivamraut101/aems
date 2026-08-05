@@ -43,6 +43,7 @@ const SCHEMA = {
   companies: 'id,name,created_at,updated_at',
   consent_records: 'id,company_id,profile_id,device_id,policy_version,method,ip_address,consented_at,revoked_at',
   device_applications: 'id,company_id,device_id,name,version,identifier,first_seen_at,last_seen_at',
+  device_enrollment_codes: 'id,company_id,profile_id,code_hash,expires_at,consumed_at,consumed_device_id,created_by,created_at',
   device_telemetry: 'id,company_id,device_id,recorded_at,battery_level,battery_charging,network_type,storage_free_mb,screen_active_seconds',
   devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb',
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',

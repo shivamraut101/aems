@@ -1,11 +1,28 @@
-import type { SessionProfile } from "@aems/auth";
+import { canViewOthers, type SessionProfile } from "@aems/auth";
 import type { Json } from "@aems/types";
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
 import { issueDeviceToken } from "../lib/device-token.js";
+import {
+  CODE_TTL_MS,
+  codeRejection,
+  generateCode,
+  hashCode,
+  normaliseCode,
+} from "../lib/enrollment-code.js";
 import { assertConsent } from "../plugins/context.js";
+
+/** Body accepted when redeeming a code. Same device facts, plus the code itself. */
+const enrollWithCodeSchema = z.object({
+  code: z.string().min(4).max(40),
+});
+
+const mintCodeSchema = z.object({
+  // Omit it and you are enrolling your own machine, which is the common case.
+  profileId: z.string().uuid().optional(),
+});
 
 const enrollSchema = z.object({
   platform: z.enum(["windows", "macos", "android"]),
@@ -81,25 +98,23 @@ export function deviceReadDenial(
 
 export const deviceRoutes: FastifyPluginAsync = async (app) => {
   /**
-   * Enrolment. Runs under the employee's own Supabase session — the agent asks them
-   * to sign in once, then trades that session for a device token it can use forever.
+   * Creates the device row, mints its token and answers the agent.
+   *
+   * Shared by both enrolment paths so a machine bound with a code is byte-identical
+   * to one bound with a session. Two copies of this would drift, and the thing that
+   * drifted would be which policy the device thinks it is under.
    */
-  app.post("/enroll", { preHandler: app.requireUser }, async (request, reply) => {
-    const parsed = enrollSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply
-        .code(400)
-        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
-    }
-
-    const session = request.session!;
-    const body = parsed.data;
-
+  async function completeEnrolment(
+    reply: FastifyReply,
+    ids: { companyId: string; profileId: string; actorId: string },
+    body: z.infer<typeof enrollSchema>,
+    audit: Record<string, unknown>,
+  ) {
     const { data: device, error } = await app.supabase
       .from("devices")
       .insert({
-        company_id: session.companyId,
-        profile_id: session.profileId,
+        company_id: ids.companyId,
+        profile_id: ids.profileId,
         platform: body.platform,
         label: body.label,
         os_version: body.osVersion,
@@ -115,25 +130,141 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       .single();
 
     if (error || !device) {
-      return reply
-        .code(500)
-        .send({ error: "enroll_failed", message: error?.message ?? "Could not enrol device", statusCode: 500 });
+      return {
+        sent: reply
+          .code(500)
+          .send({ error: "enroll_failed", message: error?.message ?? "Could not enrol device", statusCode: 500 }),
+        device: null,
+      };
     }
 
     const { data: policy } = await app.supabase
       .from("policies")
       .select("version, name, screenshot_interval_seconds, idle_threshold_seconds, tracked_categories")
-      .eq("company_id", session.companyId)
+      .eq("company_id", ids.companyId)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
     if (!policy) {
+      return {
+        sent: reply.code(409).send({
+          error: "no_policy",
+          message: "This company has no monitoring policy yet — an admin must create one first",
+          statusCode: 409,
+        }),
+        device: null,
+      };
+    }
+
+    await recordAudit(
+      app.supabase,
+      {
+        companyId: ids.companyId,
+        actorId: ids.actorId,
+        action: "device.enrolled",
+        targetType: "device",
+        targetId: device.id,
+        metadata: { platform: body.platform, label: body.label, ...audit } as Json,
+      },
+      app.log,
+    );
+
+    return {
+      sent: null,
+      device,
+      payload: {
+        deviceId: device.id,
+        companyId: ids.companyId,
+        profileId: ids.profileId,
+        deviceToken: issueDeviceToken(
+          {
+            deviceId: device.id,
+            companyId: ids.companyId,
+            profileId: ids.profileId,
+            issuedAt: Date.now(),
+          },
+          app.env.DEVICE_TOKEN_SECRET,
+        ),
+        // Freshly enrolled devices always need consent before collecting anything.
+        consentRequired: true,
+        policy: {
+          version: policy.version,
+          name: policy.name,
+          screenshotIntervalSeconds: policy.screenshot_interval_seconds,
+          idleThresholdSeconds: policy.idle_threshold_seconds,
+          trackedCategories: policy.tracked_categories,
+        },
+      },
+    };
+  }
+
+  /**
+   * Mints a sign-in code for the dashboard's Devices → Add device.
+   *
+   * Anyone may mint one for themselves — that is the self-service path, and it is the
+   * only reason an employee needs the dashboard at all before their agent runs.
+   * Minting one for someone ELSE is a manager's act, because it hands over the right
+   * to bind a machine that will report under that person's name.
+   */
+  app.post("/enrollment-codes", { preHandler: app.requireUser }, async (request, reply) => {
+    const parsed = mintCodeSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+    }
+
+    const session = request.session!;
+    const subjectId = parsed.data.profileId ?? session.profileId;
+
+    if (subjectId !== session.profileId && !canViewOthers(session.role)) {
+      return reply.code(403).send({
+        error: "forbidden",
+        message: "You can only generate a code for your own device",
+        statusCode: 403,
+      });
+    }
+
+    // Company-scoped: the service-role key bypasses RLS, so this lookup is the whole
+    // tenant boundary. It also refuses a deactivated person, because a code is a way
+    // back into collection and off-boarding must not leave one lying around.
+    const { data: subject } = await app.supabase
+      .from("profiles")
+      .select("id, full_name, email, deactivated_at")
+      .eq("id", subjectId)
+      .eq("company_id", session.companyId)
+      .maybeSingle();
+
+    if (!subject) {
+      return reply
+        .code(404)
+        .send({ error: "not_found", message: "No such employee in your company", statusCode: 404 });
+    }
+
+    if (subject.deactivated_at !== null) {
       return reply.code(409).send({
-        error: "no_policy",
-        message: "This company has no monitoring policy yet — an admin must create one first",
+        error: "employee_deactivated",
+        message: "Reactivate this employee before enrolling a device for them",
         statusCode: 409,
       });
+    }
+
+    const code = generateCode();
+    const expiresAt = new Date(Date.now() + CODE_TTL_MS).toISOString();
+
+    const { error } = await app.supabase.from("device_enrollment_codes").insert({
+      company_id: session.companyId,
+      profile_id: subjectId,
+      code_hash: hashCode(code),
+      expires_at: expiresAt,
+      created_by: session.profileId,
+    });
+
+    if (error) {
+      return reply
+        .code(500)
+        .send({ error: "code_failed", message: error.message, statusCode: 500 });
     }
 
     await recordAudit(
@@ -141,37 +272,127 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       {
         companyId: session.companyId,
         actorId: session.profileId,
-        action: "device.enrolled",
-        targetType: "device",
-        targetId: device.id,
-        metadata: { platform: body.platform, label: body.label },
+        action: "device.enrollment_code_issued",
+        targetType: "profile",
+        targetId: subjectId,
+        // The code itself is deliberately absent: an audit log readable by admins is
+        // not a place to leave a live credential.
+        metadata: { expiresAt } as Json,
       },
       app.log,
     );
 
+    // The only time the plaintext exists outside the agent's hands.
     return {
-      deviceId: device.id,
-      companyId: session.companyId,
-      profileId: session.profileId,
-      deviceToken: issueDeviceToken(
-        {
-          deviceId: device.id,
-          companyId: session.companyId,
-          profileId: session.profileId,
-          issuedAt: Date.now(),
-        },
-        app.env.DEVICE_TOKEN_SECRET,
-      ),
-      // Freshly enrolled devices always need consent before collecting anything.
-      consentRequired: true,
-      policy: {
-        version: policy.version,
-        name: policy.name,
-        screenshotIntervalSeconds: policy.screenshot_interval_seconds,
-        idleThresholdSeconds: policy.idle_threshold_seconds,
-        trackedCategories: policy.tracked_categories,
-      },
+      code,
+      expiresAt,
+      profileId: subjectId,
+      fullName: subject.full_name,
+      email: subject.email,
     };
+  });
+
+  /**
+   * Enrolment by code. **Deliberately unauthenticated** — the code IS the credential.
+   *
+   * This is what makes the product usable: an employee reads eight characters off the
+   * dashboard and types them into the agent, instead of pasting an access token that
+   * no screen in the product will ever show them.
+   */
+  app.post("/enroll-with-code", async (request, reply) => {
+    const parsed = enrollSchema.merge(enrollWithCodeSchema).safeParse(request.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+    }
+
+    const body = parsed.data;
+
+    // Looked up BY HASH, so there is no query here that could enumerate codes.
+    const { data: row } = await app.supabase
+      .from("device_enrollment_codes")
+      .select("id, company_id, profile_id, expires_at, consumed_at")
+      .eq("code_hash", hashCode(body.code))
+      .maybeSingle();
+
+    const rejection = codeRejection(row, Date.now());
+    if (rejection) return reply.code(rejection.statusCode).send(rejection);
+
+    // Monitoring disabled or the person off-boarded between minting and redeeming.
+    const { data: subject } = await app.supabase
+      .from("profiles")
+      .select("id, deactivated_at")
+      .eq("id", row!.profile_id)
+      .maybeSingle();
+
+    if (!subject || subject.deactivated_at !== null) {
+      return reply.code(401).send({
+        error: "invalid_code",
+        message: "That sign-in code is not valid any more. Generate a new one from the dashboard.",
+        statusCode: 401,
+      });
+    }
+
+    const result = await completeEnrolment(
+      reply,
+      { companyId: row!.company_id, profileId: row!.profile_id, actorId: row!.profile_id },
+      body,
+      { via: "enrollment_code" },
+    );
+    if (result.sent) return result.sent;
+
+    // Burned only AFTER the device exists. The reverse order would consume the code
+    // and then fail to enrol, leaving the person holding a dead code and no device —
+    // the one failure mode they cannot recover from without asking for another.
+    //
+    // The `is("consumed_at", null)` filter is the race guard: two agents redeeming the
+    // same code concurrently both pass the check above, and exactly one wins here.
+    const { data: burned } = await app.supabase
+      .from("device_enrollment_codes")
+      .update({ consumed_at: new Date().toISOString(), consumed_device_id: result.device!.id })
+      .eq("id", row!.id)
+      .is("consumed_at", null)
+      .select("id")
+      .maybeSingle();
+
+    if (!burned) {
+      // Someone else redeemed it first. Undo the device we just made rather than
+      // leaving an orphan bound to a code that produced two machines.
+      await app.supabase.from("devices").delete().eq("id", result.device!.id);
+      return reply.code(401).send({
+        error: "invalid_code",
+        message: "That sign-in code is not valid any more. Generate a new one from the dashboard.",
+        statusCode: 401,
+      });
+    }
+
+    return result.payload;
+  });
+
+  /**
+   * Enrolment under the employee's own Supabase session.
+   *
+   * Kept for scripts and tests. The agent uses the code path above, because a person
+   * cannot be handed a JWT.
+   */
+  app.post("/enroll", { preHandler: app.requireUser }, async (request, reply) => {
+    const parsed = enrollSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_body", message: parsed.error.message, statusCode: 400 });
+    }
+
+    const session = request.session!;
+    const result = await completeEnrolment(
+      reply,
+      { companyId: session.companyId, profileId: session.profileId, actorId: session.profileId },
+      parsed.data,
+      { via: "session" },
+    );
+
+    return result.sent ?? result.payload;
   });
 
   /**

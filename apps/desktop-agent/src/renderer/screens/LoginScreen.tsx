@@ -33,7 +33,7 @@ export function LoginScreen({ onEnrolled }: LoginScreenProps): ReactElement {
     setError(null);
 
     try {
-      onEnrolled(await bridge.enroll({ accessToken: trimmed }));
+      onEnrolled(await bridge.enroll({ enrollmentCode: trimmed }));
     } catch (cause) {
       setError(
         bridgeErrorMessage(

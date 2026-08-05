@@ -23,7 +23,7 @@ import {
   controlClass,
   primaryButtonClass,
   secondaryButtonClass,
-} from "./dialog";
+} from "@/components/dialog";
 
 /**
  * Add a person — scope §4.2's first bullet, and the one the roster used to answer by

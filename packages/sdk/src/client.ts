@@ -105,6 +105,21 @@ export class AemsClient {
     return this.request("POST", "/api/devices/enroll", body);
   }
 
+  /**
+   * Binds this machine using a short code from the dashboard.
+   *
+   * Sends no Authorization header, and that is the point: the code is the credential.
+   * The alternative was asking a person to paste an access token, which is 800
+   * characters of JWT granting their account's full rights — something no screen in
+   * the product shows them and nobody should be copying around.
+   */
+  enrollDeviceWithCode(
+    code: string,
+    body: DeviceEnrollmentRequest,
+  ): Promise<DeviceEnrollmentResponse> {
+    return this.request("POST", "/api/devices/enroll-with-code", { ...body, code });
+  }
+
   listDevices(): Promise<Device[]> {
     return this.request("GET", "/api/devices");
   }
@@ -125,6 +140,19 @@ export class AemsClient {
 
   submitConsent(body: ConsentSubmission): Promise<{ consentId: string }> {
     return this.request("POST", "/api/auth/consent", body);
+  }
+
+  /**
+   * Consent proven by the device token rather than a user session.
+   *
+   * What an agent enrolled with a sign-in code uses, because it never holds a session.
+   * No `deviceId` argument: the token already names the device, and letting the caller
+   * supply one would mean any valid device token could consent for another machine.
+   */
+  submitConsentAsDevice(
+    body: Omit<ConsentSubmission, "deviceId">,
+  ): Promise<{ consentId: string }> {
+    return this.request("POST", "/api/auth/consent/device", body);
   }
 
   // -- activity -----------------------------------------------------------
