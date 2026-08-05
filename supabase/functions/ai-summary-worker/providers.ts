@@ -12,6 +12,15 @@ export interface SummaryRequest {
   system: string;
   prompt: string;
   maxTokens?: number;
+  /**
+   * Request a JSON object where the provider has a mode for it. Defaults to on;
+   * pass `false` for a caller that wants prose.
+   *
+   * Never a guarantee — Claude has no JSON mode at all — so `parseModelOutput`
+   * still has to cope with a plain paragraph. This only raises the odds of the
+   * structured path being taken.
+   */
+  json?: boolean;
 }
 
 export interface SummaryResult {
@@ -53,12 +62,26 @@ export function summarise(request: SummaryRequest): Promise<SummaryResult> {
   }
 }
 
+/**
+ * A hung provider must not hold the whole batch.
+ *
+ * The worker summarises every employee in sequence; without a deadline one stalled
+ * connection takes the Edge Function's wall clock with it and the rest of the
+ * company gets no summary at all.
+ */
+const REQUEST_TIMEOUT_MS = 45_000;
+
+function timeout(): AbortSignal {
+  return AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+}
+
 async function callClaude(request: SummaryRequest): Promise<SummaryResult> {
   const key = requireKey("ANTHROPIC_API_KEY");
   const model = MODELS.claude;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
+    signal: timeout(),
     headers: {
       "x-api-key": key,
       "anthropic-version": "2023-06-01",
@@ -101,10 +124,13 @@ async function callOpenAi(request: SummaryRequest): Promise<SummaryResult> {
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
+    signal: timeout(),
     headers: { Authorization: `Bearer ${key}`, "content-type": "application/json" },
     body: JSON.stringify({
       model,
       max_completion_tokens: request.maxTokens ?? 2048,
+      // Safe to request: the system prompt names JSON, which this mode requires.
+      ...(request.json === false ? {} : { response_format: { type: "json_object" } }),
       messages: [
         { role: "system", content: request.system },
         { role: "user", content: request.prompt },
@@ -117,11 +143,18 @@ async function callOpenAi(request: SummaryRequest): Promise<SummaryResult> {
   }
 
   const body = await response.json();
-  return {
-    provider: "openai",
-    model,
-    content: body.choices?.[0]?.message?.content ?? "",
-  };
+  const choice = body.choices?.[0];
+
+  // Same shape of event as Claude's `stop_reason: "refusal"`, reported differently:
+  // a populated `refusal` field, or the filter tripping on the way out.
+  if (typeof choice?.message?.refusal === "string" && choice.message.refusal.length > 0) {
+    throw new ProviderRefusal("refusal");
+  }
+  if (choice?.finish_reason === "content_filter") {
+    throw new ProviderRefusal("content_filter");
+  }
+
+  return { provider: "openai", model, content: choice?.message?.content ?? "" };
 }
 
 async function callGemini(request: SummaryRequest): Promise<SummaryResult> {
@@ -132,11 +165,15 @@ async function callGemini(request: SummaryRequest): Promise<SummaryResult> {
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
       method: "POST",
+      signal: timeout(),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: request.system }] },
         contents: [{ role: "user", parts: [{ text: request.prompt }] }],
-        generationConfig: { maxOutputTokens: request.maxTokens ?? 2048 },
+        generationConfig: {
+          maxOutputTokens: request.maxTokens ?? 2048,
+          ...(request.json === false ? {} : { responseMimeType: "application/json" }),
+        },
       }),
     },
   );
@@ -146,7 +183,19 @@ async function callGemini(request: SummaryRequest): Promise<SummaryResult> {
   }
 
   const body = await response.json();
-  const text = (body.candidates?.[0]?.content?.parts ?? [])
+
+  // Gemini declines in two places: before generation (the prompt is blocked) and
+  // after (the candidate is). Neither is an HTTP error, so both need reading.
+  const blockReason = body.promptFeedback?.blockReason;
+  if (typeof blockReason === "string") throw new ProviderRefusal(blockReason);
+
+  const candidate = body.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  if (typeof finishReason === "string" && finishReason !== "STOP" && finishReason !== "MAX_TOKENS") {
+    throw new ProviderRefusal(finishReason);
+  }
+
+  const text = (candidate?.content?.parts ?? [])
     .map((part: { text?: string }) => part.text ?? "")
     .join("");
 

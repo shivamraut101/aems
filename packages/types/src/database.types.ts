@@ -1,8 +1,11 @@
 /**
  * Supabase schema types.
  *
- * Regenerate after every migration — do not hand-edit:
- *   pnpm db:types
+ * Keep in step with every migration. NOTE: despite the `db:types` script, this file
+ * is NOT raw CLI output — the standalone aliases below (`UserRole`, `ReportStatus`,
+ * `DevicePlatform`, …) are hand-written, and the generator emits none of them. Running
+ * `pnpm db:types` over this file would delete them and break every importer, so treat
+ * the generated output as something to merge in, not to overwrite with.
  *
  * Kept in @aems/types rather than @aems/supabase so consumers can type their data
  * without pulling in the supabase-js runtime.
@@ -19,11 +22,16 @@ export type UserRole = "super_admin" | "manager" | "employee";
 export type DevicePlatform = "windows" | "macos" | "android";
 export type DeviceStatus = "active" | "offline" | "revoked";
 export type ConsentMethod = "in_app_dialog" | "onboarding_portal" | "signed_document";
+/** @deprecated The legacy `reports.kind` set. Migration ...0010 widened the column to
+ *  the four registry types as well; `@aems/analytics`' `ReportKind` is the authority. */
 export type ReportKind = "daily" | "weekly" | "team";
 export type ReportStatus = "pending" | "ready" | "failed";
+export type ReportFormat = "csv" | "pdf";
 export type SummaryKind = "daily" | "weekly" | "insight";
 export type AiProvider = "openai" | "claude" | "gemini";
 export type NetworkType = "wifi" | "cellular" | "ethernet" | "offline";
+/** `category_rules.productivity` — tri-state, because "in use but not productive" is real. */
+export type Productivity = "productive" | "neutral" | "unproductive";
 
 export interface Database {
   public: {
@@ -438,6 +446,44 @@ export interface Database {
           },
         ];
       };
+      category_rules: {
+        Row: {
+          id: string;
+          company_id: string;
+          priority: number;
+          category_path: string[];
+          productivity: Productivity;
+          match_app: string | null;
+          match_title: string | null;
+          match_domain: string | null;
+          ignore_case: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          priority?: number;
+          category_path: string[];
+          productivity?: Productivity;
+          match_app?: string | null;
+          match_title?: string | null;
+          match_domain?: string | null;
+          ignore_case?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["category_rules"]["Insert"]>;
+        Relationships: [
+          {
+            foreignKeyName: "category_rules_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       break_events: {
         Row: {
           id: number;
@@ -573,28 +619,45 @@ export interface Database {
         ];
       };
       reports: {
+        // `kind` is `string`, not `ReportKind`: migration ...0010 widened the check
+        // constraint to the four registry types (time_and_activity, app_usage,
+        // website_usage, work_breaks) while keeping the legacy daily/weekly/team
+        // valid. The authority on the set is `@aems/analytics`' registry, which
+        // depends on this package and so cannot be imported here.
         Row: {
           id: number;
           company_id: string;
           profile_id: string | null;
-          kind: ReportKind;
+          kind: string;
           period_start: string;
           period_end: string;
           status: ReportStatus;
           storage_path: string | null;
           created_at: string;
           updated_at: string;
+          format: ReportFormat;
+          grouping: string;
+          params: Json | null;
+          requested_by: string | null;
+          row_count: number | null;
+          failure_reason: string | null;
         };
         Insert: {
           company_id: string;
           profile_id?: string | null;
-          kind: ReportKind;
+          kind: string;
           period_start: string;
           period_end: string;
           status?: ReportStatus;
           storage_path?: string | null;
           created_at?: string;
           updated_at?: string;
+          format?: ReportFormat;
+          grouping?: string;
+          params?: Json | null;
+          requested_by?: string | null;
+          row_count?: number | null;
+          failure_reason?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["reports"]["Insert"]>;
         Relationships: [

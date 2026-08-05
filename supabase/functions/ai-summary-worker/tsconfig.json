@@ -1,0 +1,41 @@
+{
+  // Deno does not read this file — it reads deno.json, which this is not — and the
+  // Supabase CLI only bundles what index.ts imports, so it never ships. It exists
+  // so `npx tsc --noEmit -p supabase/functions/ai-summary-worker` is a command the
+  // next person can run: the worker's logic lives in four pure modules that have no
+  // Deno globals and no network imports, and tsc catches a class of defect the
+  // tests do not.
+  //
+  // index.ts and providers.ts are excluded on purpose: they use `Deno.serve`,
+  // `Deno.env` and an https: import specifier, none of which tsc can resolve
+  // without Deno's own lib. Their correctness is guarded by the pure modules they
+  // delegate to.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    // Nothing here relies on ambient globals; the test file imports what it uses.
+    "types": [],
+    "baseUrl": ".",
+    "paths": {
+      // vitest is a workspace devDependency; this directory sits outside the pnpm
+      // workspace, so resolution has to be pointed at it explicitly.
+      "vitest": ["../../../packages/analytics/node_modules/vitest"]
+    }
+  },
+  "files": [
+    "intervals.ts",
+    "aggregate.ts",
+    "period.ts",
+    "content.ts",
+    "worker.test.ts"
+  ]
+}

@@ -197,3 +197,34 @@ describe("abort mechanics", () => {
     }
   });
 });
+
+/** Captures the request URL, which `recordingFetch` deliberately discards. */
+function urlRecordingFetch(urls: string[], body: unknown = {}): typeof globalThis.fetch {
+  return ((url: string) => {
+    urls.push(url);
+    return Promise.resolve(jsonResponse(body));
+  }) as unknown as typeof globalThis.fetch;
+}
+
+describe("getTimeline query construction", () => {
+  it("omits bucketSeconds entirely when the caller does not pick one", async () => {
+    const urls: string[] = [];
+    const client = new AemsClient({ baseUrl: "https://api.test", fetch: urlRecordingFetch(urls) });
+
+    await client.getTimeline("p1", "2026-08-05T00:00:00Z", "2026-08-05T23:59:59Z");
+
+    // Sending `bucketSeconds=undefined` would fail the API's `.int()` refinement with
+    // a 400 — an absent key is what makes the server-side default apply.
+    expect(urls[0]).not.toContain("bucketSeconds");
+    expect(urls[0]).toContain("profileId=p1");
+  });
+
+  it("forwards a chosen bucketSeconds", async () => {
+    const urls: string[] = [];
+    const client = new AemsClient({ baseUrl: "https://api.test", fetch: urlRecordingFetch(urls) });
+
+    await client.getTimeline("p1", "2026-08-05T00:00:00Z", "2026-08-05T23:59:59Z", 1800);
+
+    expect(urls[0]).toContain("bucketSeconds=1800");
+  });
+});

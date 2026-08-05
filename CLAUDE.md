@@ -276,9 +276,12 @@ Ask before acting on these.
    for the MVP with R2 as a possible later swap. The code follows `docs/stack.md`
    (Supabase Storage, single `aems` bucket). Confirm which is right before the demo.
 2. ~~Nothing has been run against a live database.~~ **Resolved 2026-08-05.** All
-   migrations are applied to project `dayyrqcfktwwnkttlres` (Postgres 17.6) and the
-   RLS suite in `supabase/tests/rls_isolation.sql` passes. **Re-run that suite after
-   any policy change or any new column on `profiles`** — it already caught one
+   nine migrations are applied to project `dayyrqcfktwwnkttlres` (Postgres 17.6) and
+   the RLS suite in `supabase/tests/rls_isolation.sql` passes **35/35**, now including
+   `category_rules` — an employee or a manager who could edit a scoring rule could
+   rewrite their own numbers without touching an activity row, so that table is tested
+   like a privilege boundary, not like reference data. **Re-run the suite after any
+   policy change or any new column on `profiles`** — it already caught one
    privilege-escalation hole (migration `...0005`).
 3. ~~The desktop agent buffers nothing to disk.~~ **Resolved 2026-08-05.** Observed
    events are journalled to `state/pending-events.ndjson` before any network call and
@@ -324,5 +327,16 @@ Ask before acting on these.
    The inverse (failing to show) is covered.
 9. **Android toolchain unverified.** The Android SDK has not been confirmed present,
    so the Expo agent has never been built.
+10. **Leaked-password protection is off.** Supabase Auth can reject passwords found in
+    the HaveIBeenPwned corpus; the project currently does not. It is a dashboard toggle
+    (Auth → Policies), not code, and it is the client's call for their employees — but
+    it is the cheapest real security win available before the demo.
+11. **The `rls_auto_enable` advisor warning is a false positive — do not re-chase it.**
+    `get_advisors` reports `public.rls_auto_enable()` as a `SECURITY DEFINER` function
+    callable by `anon` over `/rest/v1/rpc/`. It is not reachable: the function returns
+    `event_trigger`, and PostgREST rejects the call with HTTP 400 `cannot display a
+    value of type event_trigger` for both anon and authenticated (verified 2026-08-05).
+    It is also Supabase's own platform trigger (`ensure_rls`), not ours, and its only
+    effect is to *enable* RLS on new public tables. Left in place deliberately.
 
 Delete each item once it is resolved.
