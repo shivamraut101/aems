@@ -14,6 +14,9 @@
     "lint": {
       "dependsOn": ["^build"]
     },
+    // `^build` is upstream packages only. Where a package's own build emits types it
+    // then typechecks against — Next.js writing `.next/types` — the package overrides
+    // this to depend on its own build too. See apps/admin-dashboard/turbo.json.
     "typecheck": {
       "dependsOn": ["^build"]
     },
