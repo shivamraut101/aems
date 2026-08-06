@@ -1,0 +1,30 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Registers the foreground service with Android.
+
+    Without this the class is just Kotlin on disk: `startMonitoring()` calls
+    `startForegroundService`, ActivityManager answers
+    "Unable to start service ... not found", and the call fails silently — no
+    exception reaches JS, so an agent with no visible notification looks exactly
+    like a working one. That is the failure this file exists to prevent, and it is
+    a compliance failure rather than a cosmetic one: the notification *is* the
+    Android visible indicator required by the Non-negotiables, and the service is
+    also the only thing that ever calls `ScreenTimeTracker.markScreenOn`.
+
+    The name is fully qualified on purpose. This module's namespace
+    (com.primexmeta.aems.usage) differs from the application id
+    (com.primexmeta.aems.agent), so a leading-dot relative name would resolve
+    against the wrong package once merged into the app manifest.
+
+    `foregroundServiceType="dataSync"` is required from API 34, which this app
+    targets, and must match the FOREGROUND_SERVICE_DATA_SYNC permission declared
+    in app.json. `exported="false"` because nothing outside the app may start it.
+  -->
+  <application>
+    <service
+      android:name="com.primexmeta.aems.usage.MonitoringService"
+      android:enabled="true"
+      android:exported="false"
+      android:foregroundServiceType="dataSync" />
+  </application>
+</manifest>

@@ -48,7 +48,9 @@ export function ConsentScreen({ status, onAccept, onAccepted }: ConsentScreenPro
     try {
       await onAccept();
       if (!AemsUsage.hasUsageAccess()) AemsUsage.requestUsageAccess();
-      AemsUsage.startMonitoring();
+      // Starting the foreground service is deliberately *not* done here. `onAccept`
+      // has just set `collecting`, and App.tsx starts and stops the service from that
+      // one flag — so it also comes back on the launches this handler never sees.
       onAccepted();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

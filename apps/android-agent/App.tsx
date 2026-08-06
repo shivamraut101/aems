@@ -1,3 +1,4 @@
+import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { View } from "react-native";
@@ -5,6 +6,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useFonts } from "expo-font";
 
+import AemsUsage from "./modules/aems-usage";
 import { registerBackgroundSync } from "./src/background-task";
 import { ConsentScreen } from "./src/screens/ConsentScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
@@ -46,6 +48,43 @@ export default function App() {
       void registerBackgroundSync();
     }
   }, [status.deviceId]);
+
+  /**
+   * The visible indicator, bound to collection itself rather than to a screen.
+   *
+   * The foreground service's undismissable notification is this platform's answer to
+   * the *Monitoring is never silent* non-negotiable, and its `MonitoringService` is
+   * also what feeds `ScreenTimeTracker` — nothing else calls `markScreenOn`.
+   *
+   * It used to be started from one place: the consent screen's accept handler. That
+   * covered the first run and nothing after it, because consent *persists* — every
+   * later launch reads it back, goes straight to Home, and never mounts the consent
+   * screen at all. So the agent came up collecting, with no notification saying so,
+   * and with a screen-time counter that could only ever read 0h 00m.
+   *
+   * Keyed on `collecting`, the two states can no longer disagree: the notification is
+   * up for exactly as long as the agent records, and a revoked device (which lands
+   * back on `login` with `collecting: false`) takes it down on the same render.
+   *
+   * The permission request is not boilerplate. From Android 13, POST_NOTIFICATIONS is
+   * a *runtime* grant, and declaring it in app.json only earns the right to ask. Left
+   * unasked it stays denied, and the platform then suppresses the notification while
+   * running the service anyway — `dumpsys` reports `isForeground=true`, the shade
+   * reads "No notifications", and monitoring is silent in the one way the rules do
+   * not allow. Asking before `startMonitoring()` is what makes the indicator real.
+   */
+  useEffect(() => {
+    if (!status.collecting) {
+      AemsUsage.stopMonitoring();
+      return;
+    }
+
+    void (async () => {
+      const current = await Notifications.getPermissionsAsync();
+      if (!current.granted) await Notifications.requestPermissionsAsync();
+      AemsUsage.startMonitoring();
+    })();
+  }, [status.collecting]);
 
   // Foreground sync only runs once consent is in force — the same gate the sync
   // cycle applies server-side, kept here too so an unconsented device doesn't
