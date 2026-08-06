@@ -36,25 +36,47 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
   const lastSync = status.lastSyncAt === null ? null : formatRelative(status.lastSyncAt, now);
 
   // Ending a break must stay available even though collection is paused during one —
-  // otherwise a break started by mistake could never be closed.
-  const breakAvailable = status.collecting || status.onBreak;
+  // otherwise a break started by mistake could never be closed. Not offered once the
+  // day is over: pausing a finished day is not a state worth being able to reach.
+  const breakAvailable = !status.dayEnded && (status.collecting || status.onBreak);
+
+  // The day control is the one thing here an employee reaches for at a fixed time
+  // every day, so it is present whenever they are enrolled — including while a break
+  // is open, because "I am not coming back" is exactly the thing someone on a break
+  // needs to be able to say.
+  const dayAvailable = status.enrolled && !status.revoked;
 
   return (
     <Shell
       footer={
         <>
-          {breakAvailable && (
+          {(breakAvailable || dayAvailable) && (
             <div className="actions">
-              <button
-                className="button button--quiet button--block"
-                type="button"
-                onClick={() => {
-                  const bridge = agentBridge();
-                  void (status.onBreak ? bridge?.endBreak() : bridge?.startBreak());
-                }}
-              >
-                {status.onBreak ? "End break" : "Start a break"}
-              </button>
+              {breakAvailable && (
+                <button
+                  className="button button--quiet button--block"
+                  type="button"
+                  onClick={() => {
+                    const bridge = agentBridge();
+                    void (status.onBreak ? bridge?.endBreak() : bridge?.startBreak());
+                  }}
+                >
+                  {status.onBreak ? "End break" : "Take a break"}
+                </button>
+              )}
+
+              {dayAvailable && (
+                <button
+                  className="button button--primary button--block"
+                  type="button"
+                  onClick={() => {
+                    const bridge = agentBridge();
+                    void (status.dayEnded ? bridge?.startDay() : bridge?.endDay());
+                  }}
+                >
+                  {status.dayEnded ? "Start working again" : "End day"}
+                </button>
+              )}
             </div>
           )}
 
@@ -66,6 +88,16 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
         </>
       }
     >
+      {status.dayEnded && !status.revoked && (
+        // Said plainly and at the top, because the readout below it goes still: an
+        // employee who clocked out and then saw a frozen timer with no explanation
+        // would reasonably conclude the agent had crashed.
+        <Notice tone="plain" title="You have finished for today">
+          Nothing further is being recorded. Monitoring starts again by itself tomorrow, or
+          you can start working again below.
+        </Notice>
+      )}
+
       {status.revoked && (
         <Notice tone="warn" title="Monitoring has been stopped">
           An administrator revoked this device, so nothing is being recorded or sent. Contact them

@@ -360,6 +360,18 @@ export interface DayState {
   /** Without it a restart loop captures far more often than the consented interval. */
   lastCaptureAt: string | null;
   lastSyncAt: string | null;
+  /**
+   * When the employee said they had finished for the day, or null while working.
+   *
+   * Persisted rather than held in memory because the point of ending a day is that it
+   * stays ended: an agent that resumed collecting because someone rebooted their
+   * laptop at 9pm would be recording after the person had explicitly said they were
+   * done, which is the one thing this control exists to prevent.
+   *
+   * It is a timestamp rather than a boolean so the next morning can clear it without
+   * asking anyone — see `Collector.restore`.
+   */
+  dayEndedAt: string | null;
 }
 
 export function emptyDayState(): DayState {
@@ -372,6 +384,7 @@ export function emptyDayState(): DayState {
     openBreakSince: null,
     lastCaptureAt: null,
     lastSyncAt: null,
+    dayEndedAt: null,
   };
 }
 

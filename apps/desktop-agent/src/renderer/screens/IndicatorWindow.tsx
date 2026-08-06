@@ -55,52 +55,38 @@ html, body, #root {
   white-space: nowrap;
   user-select: none;
   cursor: default;
-  transition: background-color 140ms ease, border-color 140ms ease;
+  transition: opacity 140ms ease;
 }
 
 /*
- * Hover fades the panel, never the signal.
+ * Hover fades the whole pill to 20%.
  *
- * The pill sits in the bottom-right corner of the work area, which is also where a
- * status bar, a notification tray and half the world's toolbar buttons live — so it
- * will sometimes cover something the employee is trying to read. Moving the cursor
- * onto it drops the navy slab to a wash and lets that through.
+ * The pill sits in the bottom-right of the work area, which is also where a status
+ * bar and half the world's toolbar buttons live, so it will sometimes cover something
+ * the employee is reading. Moving the cursor onto it takes it almost out of the way.
  *
- * What it must not do is vanish. Non-negotiable #2 is that monitoring is never
- * silent, and an indicator an employee can dismiss by resting the cursor on it is a
- * dismissable indicator — so nothing here touches .indicator's own opacity, which
- * would take the dot and the label down with it. The two parts that carry the meaning
- * are instead re-styled to survive without the panel behind them: the dot keeps its
- * full colour and gains a ring, and the label keeps a shadow. Both are needed because
- * once the slab is gone the backdrop is an arbitrary desktop — #f8fafc text over a
- * white document is invisible without the shadow, and an emerald dot on a pale
- * background is weak without the ring.
+ * One property on one element, deliberately. An earlier version cleared the panel,
+ * hid the label and slid the dot to the far corner with row-reverse — three things
+ * moving at once, which lurched, and which was not what was asked for either. Fading
+ * the container means nothing changes size or position and there is nothing to
+ * glitch.
  *
- * Hover changes how much of the screen the pill covers. It does not change whether
- * the pill is on screen.
+ * 20% rather than 0: non-negotiable #2 is that monitoring is never silent, and an
+ * indicator an employee can switch off by resting the cursor on it is a dismissable
+ * indicator. At 20% the pill is still perceptible against any backdrop, the tray icon
+ * is unaffected, and it returns to full strength the moment the pointer leaves.
  *
  * This works only because main/indicator.ts passes { forward: true } to
  * setIgnoreMouseEvents — the window is click-through, and that flag is the reason
- * mouse-move messages still reach this page. Dropping it silently disables every
- * rule below, with no error anywhere.
+ * mouse-move messages still reach this page. Dropping it disables the rule below with
+ * no error and no failing test.
  *
- * NOTE: this whole stylesheet lives inside a JavaScript template literal, so a
- * backtick anywhere in it — including in a comment — terminates the string and the
- * renderer stops building. That is exactly what happened here.
+ * NOTE: this stylesheet lives inside a JavaScript template literal, so a backtick
+ * anywhere in it — including in a comment — terminates the string and the renderer
+ * stops building. That has already happened once.
  */
 .indicator:hover {
-  border-color: transparent;
-  background: transparent;
-  /*
-   * The dot retreats to the corner rather than staying where the pill's left edge was.
-   *
-   * The window is anchored to the bottom-right of the work area, so its right edge is
-   * the screen corner and its left edge is 184px into whatever the employee is reading.
-   * Leaving the dot there would clear the panel and then park the one remaining opaque
-   * thing in the middle of the text. row-reverse costs nothing and is robust to
-   * INDICATOR_SIZE changing, which a hard-coded translate would not be.
-   */
-  flex-direction: row-reverse;
+  opacity: 0.2;
 }
 
 .indicator__dot {
@@ -108,13 +94,6 @@ html, body, #root {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  transition: box-shadow 140ms ease;
-}
-
-.indicator:hover .indicator__dot {
-  /* A ring, because the dot loses the navy panel it was reading against and has to
-     hold up over a white document as well as a dark editor. */
-  box-shadow: 0 0 0 2px rgb(2 6 23 / 55%), 0 0 0 3px rgb(248 250 252 / 45%);
 }
 
 .indicator__dot--recording {
@@ -130,24 +109,6 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
   transition: opacity 140ms ease;
-}
-
-/*
- * The label goes, the dot stays.
- *
- * A half-faded label does not solve the problem it was meant to: white text at 70%
- * over whatever text is underneath produces two overlapping strings and neither is
- * readable, so the employee still cannot see what the pill is covering. Removing it
- * outright is what actually clears the corner.
- *
- * The dot is then carrying non-negotiable #2 on its own, which it can: it keeps its
- * full colour, it is never removed from the layout, the window is still on screen and
- * still on top, the tray icon is unaffected, and the full pill comes back the instant
- * the pointer moves away. What an employee gets by hovering is a smaller indicator
- * for as long as they hold the cursor there — not a way to turn one off.
- */
-.indicator:hover .indicator__label {
-  opacity: 0;
 }
 
 /*

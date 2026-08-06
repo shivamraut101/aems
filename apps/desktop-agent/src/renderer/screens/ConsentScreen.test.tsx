@@ -41,6 +41,7 @@ const CONSENTED: AgentStatus = {
   permissions: { screenRecording: "granted", accessibility: "granted", websiteTracking: "browser-url" },
   totals: emptyTotals(),
   onBreak: false,
+  dayEnded: false,
 };
 
 function bridge(overrides: Partial<AgentApi> = {}): AgentApi {
@@ -54,6 +55,8 @@ function bridge(overrides: Partial<AgentApi> = {}): AgentApi {
     openPermissionSettings: () => Promise.resolve(),
     startBreak: () => Promise.resolve(CONSENTED),
     endBreak: () => Promise.resolve(CONSENTED),
+    endDay: () => Promise.resolve(CONSENTED),
+    startDay: () => Promise.resolve(CONSENTED),
     quit: () => Promise.resolve(),
     onStatusChanged: () => () => undefined,
     ...overrides,

@@ -19,6 +19,7 @@ import {
   TICK_INTERVAL_MS,
 } from "./collector.js";
 import type { CollectorAdapters } from "./collector.js";
+import { MAX_OPEN_BREAK_MS } from "./collector.js";
 import { IdleWatcher } from "./idle.js";
 import type { DayState } from "./persistence.js";
 import { emptyDayState } from "./persistence.js";
@@ -1041,5 +1042,127 @@ describe("device telemetry", () => {
     expect(h.logs).toContain("Could not report device telemetry");
     // The rest of the tick still happened.
     expect(h.api.heartbeats).toHaveLength(1);
+  });
+});
+
+/**
+ * Clocking out for the day.
+ *
+ * The control exists so an employee can stop being monitored without quitting the
+ * agent — an app somebody has to quit to get their evening back is one they will quit
+ * permanently, and a monitoring agent that is not running is worse for everybody than
+ * one that is running and honestly idle.
+ *
+ * So the property under test is not "endDay sets a flag". It is that the answer
+ * *sticks*: nothing is observed afterwards, a restart does not undo it, and it lifts by
+ * itself when the day actually rolls over rather than needing anyone to remember.
+ */
+describe("ending the day", () => {
+  it("closes the work session and stops observing", async () => {
+    const h = harness();
+    await h.collector.tick(at(0));
+    expect(h.sessions.current).not.toBeNull();
+
+    await h.collector.endDay(at(60));
+
+    expect(h.collector.dayEnded).toBe(true);
+    expect(h.sessions.current).toBeNull();
+
+    // The tick after clock-out must not reopen anything. This is the assertion that
+    // matters: a flag that every other code path ignores is not a clock-out.
+    h.focus.sample = { appName: "Code", windowTitle: "after hours", url: null };
+    await h.collector.tick(at(120));
+    expect(h.sessions.current).toBeNull();
+  });
+
+  it("is idempotent, so a double click cannot close a second session", async () => {
+    const h = harness();
+    await h.collector.tick(at(0));
+    await h.collector.endDay(at(60));
+    const sessionCalls = h.api.endCalls.length;
+
+    await h.collector.endDay(at(90));
+    expect(h.api.endCalls.length).toBe(sessionCalls);
+  });
+
+  it("survives a restart on the same day", () => {
+    // The whole point of persisting it. Someone who clocks out at 18:00 and reboots at
+    // 21:00 must not find themselves being recorded again.
+    const store = new FakeDayStore({ dayEndedAt: at(60).toISOString() });
+    const h = harness(consented(), store);
+    expect(h.collector.dayEnded).toBe(true);
+  });
+
+  it("lifts by itself the next day", async () => {
+    // Yesterday's clock-out must not silence today, and nobody should have to remember
+    // to switch monitoring back on.
+    const yesterday = new Date(at(0).getTime() - 26 * 3600 * 1000);
+    const store = new FakeDayStore({ dayEndedAt: yesterday.toISOString() });
+    const h = harness(consented(), store);
+
+    expect(h.collector.dayEnded).toBe(false);
+    await h.collector.tick(at(0));
+    expect(h.sessions.current).not.toBeNull();
+  });
+
+  it("starts a fresh session when someone carries on working", async () => {
+    const h = harness();
+    await h.collector.tick(at(0));
+    await h.collector.endDay(at(60));
+
+    h.collector.startDay(at(120));
+    expect(h.collector.dayEnded).toBe(false);
+
+    // A new session, not the old one reopened — an afternoon after a false clock-out is
+    // honestly two sessions, and that is the shape the reports already understand.
+    await h.collector.tick(at(180));
+    expect(h.sessions.current).not.toBeNull();
+  });
+});
+
+/**
+ * A break nobody came back from.
+ *
+ * Observed in the field: 7h 51m of "break" beside 1h 06m of active work. An open break
+ * has no natural end — the day summary resolves an unterminated span at the current
+ * instant — so someone who declares a break and shuts the lid banks the whole night as
+ * tracked time. A manager reading that dashboard cannot tell it from a real day.
+ */
+describe("an abandoned break", () => {
+  it("ends the day, at the moment the break started", async () => {
+    const h = harness();
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+
+    // Still a plausible break: nothing happens.
+    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 - 60));
+    expect(h.collector.dayEnded).toBe(false);
+
+    // Past the ceiling: the person went home.
+    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 + 60));
+    expect(h.collector.dayEnded).toBe(true);
+    expect(h.sessions.current).toBeNull();
+  });
+
+  it("does not bank the abandoned hours as tracked time", async () => {
+    const h = harness();
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 + 60));
+
+    // The whole point. Ending at `now` would count every hour of the break as tracked;
+    // ending at the break start says what happened — work stopped there.
+    expect(h.collector.dayTotals.breakSeconds).toBeLessThan(MAX_OPEN_BREAK_MS / 1000);
+  });
+
+  it("leaves a short break alone", async () => {
+    const h = harness();
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+    await h.collector.tick(at(60 + 45 * 60));
+
+    // Lunch is not an abandoned day.
+    expect(h.collector.dayEnded).toBe(false);
+    expect(h.sessions.current).not.toBeNull();
   });
 });

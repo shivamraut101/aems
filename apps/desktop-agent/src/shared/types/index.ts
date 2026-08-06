@@ -28,6 +28,8 @@ export const IPC_CHANNELS = {
   PERMISSIONS_OPEN_SETTINGS: "aems:permissions:open-settings",
   BREAK_START: "aems:break:start",
   BREAK_END: "aems:break:end",
+  DAY_END: "aems:day:end",
+  DAY_START: "aems:day:start",
   QUIT: "aems:quit",
 } as const;
 
@@ -202,13 +204,28 @@ export interface AgentStatus {
   totals: DayTotals;
   /** An explicit break is open, so idle is not being inferred and capture is paused. */
   onBreak: boolean;
+  /**
+   * The employee has clocked out for the day.
+   *
+   * Distinct from `onBreak`, and the difference is the whole point: a break is a pause
+   * inside a working day and the agent expects to resume, where this says the day is
+   * over. Nothing is collected until it is cleared, and it clears itself at the next
+   * local midnight so nobody has to remember to switch monitoring back on.
+   */
+  dayEnded: boolean;
 }
 
 export function statusOf(
   config: AgentConfig,
   extra: Pick<
     AgentStatus,
-    "workSessionId" | "pendingEvents" | "lastSyncAt" | "permissions" | "totals" | "onBreak"
+    | "workSessionId"
+    | "pendingEvents"
+    | "lastSyncAt"
+    | "permissions"
+    | "totals"
+    | "onBreak"
+    | "dayEnded"
   >,
 ): AgentStatus {
   const enrolled = config.deviceToken !== null;
@@ -316,6 +333,8 @@ export interface IpcContract {
   };
   [IPC_CHANNELS.BREAK_START]: { request: void; response: AgentStatus };
   [IPC_CHANNELS.BREAK_END]: { request: void; response: AgentStatus };
+  [IPC_CHANNELS.DAY_END]: { request: void; response: AgentStatus };
+  [IPC_CHANNELS.DAY_START]: { request: void; response: AgentStatus };
   [IPC_CHANNELS.QUIT]: { request: void; response: void };
 }
 
@@ -338,6 +357,15 @@ export interface AgentApi {
    */
   startBreak(): Promise<AgentStatus>;
   endBreak(): Promise<AgentStatus>;
+  /**
+   * Clock out for the day.
+   *
+   * Reachable from the window and not only the tray: the tray is a shortcut for people
+   * who know it is there, and the window is where everyone else looks. A control that
+   * exists in one place is a control most people do not have.
+   */
+  endDay(): Promise<AgentStatus>;
+  startDay(): Promise<AgentStatus>;
   quit(): Promise<void>;
   /** Returns an unsubscribe function — the renderer must call it on unmount. */
   onStatusChanged(listener: (status: AgentStatus) => void): () => void;

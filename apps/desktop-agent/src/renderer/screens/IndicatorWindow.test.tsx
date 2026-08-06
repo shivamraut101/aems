@@ -63,31 +63,36 @@ describe("the hover rules", () => {
     return match?.[1] ?? "";
   };
 
-  it("clears the panel, so the pill stops covering what is underneath", () => {
-    // The whole point of the change: the navy slab is 184x32 of an employee's screen
-    // and it sits over the corner of whatever they are reading.
-    expect(hoverBlock()).toMatch(/background:\s*transparent/);
+  /** The fade level, as a number, so the bounds below are checked and not eyeballed. */
+  const hoverOpacity = (): number => {
+    const match = /opacity:\s*([\d.]+)/.exec(hoverBlock());
+    expect(match?.[1], "hover no longer sets an opacity").toBeTypeOf("string");
+    return Number(match?.[1]);
+  };
+
+  it("fades the pill out of the way", () => {
+    // The whole point: the pill is 184x32 of somebody's screen and it sits over the
+    // corner of whatever they are reading.
+    expect(hoverOpacity()).toBeLessThan(1);
   });
 
-  it("never fades the indicator itself", () => {
-    // The one rule that must not be broken. `opacity` here would cascade to the dot,
-    // and an indicator an employee can switch off by resting the cursor on it is a
-    // dismissable indicator — which is precisely what non-negotiable #2 forbids.
-    // Fade the panel and the label individually; never the container.
-    expect(hoverBlock()).not.toMatch(/opacity/);
+  it("never fades to nothing", () => {
+    // The invariant that outlives the exact number. Non-negotiable #2 is that
+    // monitoring is never silent, and an indicator an employee can switch off by
+    // resting the cursor on it is a dismissable indicator. How faint it goes is a
+    // judgement call the client owns; that it stays perceptible is not.
+    expect(hoverOpacity()).toBeGreaterThan(0);
     expect(hoverBlock()).not.toMatch(/display:\s*none/);
     expect(hoverBlock()).not.toMatch(/visibility:\s*hidden/);
   });
 
-  it("leaves the dot fully opaque and ringed", () => {
-    const dot = /\.indicator:hover\s+\.indicator__dot\s*\{([^}]*)\}/.exec(INDICATOR_CSS);
-    const body = dot?.[1] ?? "";
-    expect(body, "the dot is what carries the signal once the panel is gone").not.toBe("");
-
-    // A ring in both directions: the dot loses the navy panel it was reading against
-    // and has to hold up over a white document as well as a dark editor.
-    expect(body).toMatch(/box-shadow/);
-    expect(body).not.toMatch(/opacity/);
+  it("moves nothing", () => {
+    // An earlier version cleared the panel, hid the label and slid the dot across with
+    // row-reverse. Three things moving at once read as a glitch. Fading the container
+    // is one property on one element, so there is nothing to lurch.
+    expect(hoverBlock()).not.toMatch(/flex-direction/);
+    expect(hoverBlock()).not.toMatch(/transform/);
+    expect(INDICATOR_CSS).not.toMatch(/\.indicator:hover\s+\.indicator__label/);
   });
 
   it("keeps the tone colours out of the hover rules", () => {

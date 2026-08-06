@@ -34,6 +34,7 @@ const READY: AgentStatus = {
   permissions: { screenRecording: "granted", accessibility: "granted", websiteTracking: "browser-url" },
   totals: emptyTotals(),
   onBreak: false,
+  dayEnded: false,
 };
 
 function status(overrides: Partial<AgentStatus> = {}): AgentStatus {
@@ -52,6 +53,8 @@ function bridge(overrides: Partial<AgentApi> = {}): AgentApi {
     openPermissionSettings: () => Promise.resolve(),
     startBreak: () => Promise.resolve(status()),
     endBreak: () => Promise.resolve(status()),
+    endDay: () => Promise.resolve(status()),
+    startDay: () => Promise.resolve(status()),
     quit: () => Promise.resolve(),
     onStatusChanged: () => () => undefined,
     ...overrides,

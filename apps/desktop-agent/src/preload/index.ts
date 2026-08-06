@@ -35,6 +35,8 @@ const api: AgentApi = {
   startBreak: (): Promise<AgentStatus> => ipcRenderer.invoke(IPC_CHANNELS.BREAK_START),
 
   endBreak: (): Promise<AgentStatus> => ipcRenderer.invoke(IPC_CHANNELS.BREAK_END),
+  endDay: (): Promise<AgentStatus> => ipcRenderer.invoke(IPC_CHANNELS.DAY_END),
+  startDay: (): Promise<AgentStatus> => ipcRenderer.invoke(IPC_CHANNELS.DAY_START),
 
   quit: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.QUIT),
 

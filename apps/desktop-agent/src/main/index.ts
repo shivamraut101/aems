@@ -142,6 +142,7 @@ function currentStatus(): AgentStatus {
     permissions: rt.permissions.read(),
     totals: rt.collector?.dayTotals ?? emptyTotals(),
     onBreak: rt.collector?.onBreak ?? false,
+    dayEnded: rt.collector?.dayEnded ?? false,
   });
 }
 
@@ -197,10 +198,22 @@ function updateTray(status: AgentStatus): void {
       // Reachable without opening the window, because a break is declared at the
       // moment somebody stands up rather than after they have found a window.
       {
-        label: status.onBreak ? "End break" : "Start a break",
-        enabled: status.collecting || status.onBreak,
+        label: status.onBreak ? "End break" : "Take a break",
+        // Not offered after clock-out: a break is a pause inside a working day, and
+        // pausing a day that has already ended is not a state worth being able to reach.
+        enabled: !status.dayEnded && (status.collecting || status.onBreak),
         click: () => {
           toggleBreak(status.onBreak);
+        },
+      },
+      {
+        // The ellipsis is a promise that this asks before it acts. Ending the day
+        // stops collection and closes the work session, and an employee who meant to
+        // take a break should not lose their afternoon to a mis-click.
+        label: status.dayEnded ? "Start working again" : "End day…",
+        enabled: status.enrolled && !status.revoked,
+        click: () => {
+          void toggleDay(status.dayEnded);
         },
       },
       { type: "separator" },
@@ -385,6 +398,39 @@ function attachDevice(deviceId: string, deviceToken: string): void {
   rt.collector.start();
 }
 
+/**
+ * Clock in or out for the day, from the tray.
+ *
+ * Ending asks first. It is not destructive in the sense that nothing is lost — the
+ * events are flushed, not discarded — but it does stop collection until tomorrow, and a
+ * silent stop is exactly as bad as a silent start: the employee would believe they were
+ * still clocked in and their manager would see a day that ended at lunch.
+ */
+async function toggleDay(dayEnded: boolean): Promise<void> {
+  const collector = runtime?.collector;
+  if (!collector) return;
+
+  if (dayEnded) {
+    collector.startDay();
+    return;
+  }
+
+  const { response } = await dialog.showMessageBox({
+    type: "question",
+    buttons: ["End day", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "End day",
+    message: "End your working day?",
+    detail:
+      "Your work session will be closed and nothing further will be recorded today. " +
+      "Monitoring starts again by itself tomorrow, and you can start working again from " +
+      "this menu if you carry on.",
+  });
+
+  if (response === 0) await collector.endDay();
+}
+
 function toggleBreak(onBreak: boolean): void {
   const collector = runtime?.collector;
   if (!collector) return;
@@ -485,6 +531,19 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.BREAK_END, (): AgentStatus => {
     requireRuntime().collector?.endBreak();
+    return publishStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DAY_END, async (): Promise<AgentStatus> => {
+    // Awaited, unlike the break handlers: ending the day drains the queue and closes
+    // the work session over the network, and returning a status before that lands
+    // would show the employee a day that is still open.
+    await requireRuntime().collector?.endDay();
+    return publishStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DAY_START, (): AgentStatus => {
+    requireRuntime().collector?.startDay();
     return publishStatus();
   });
 

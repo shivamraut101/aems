@@ -155,6 +155,13 @@ export class Collector {
 
   private totals: DayTotals = emptyTotals();
 
+  /**
+   * When the employee clocked out, or null while the day is live.
+   *
+   * Held here as well as on disk so the gate in `run` costs no file read per tick.
+   */
+  private dayEndedAt: Date | null = null;
+
   constructor(parts: CollectorParts, adapters: Partial<CollectorAdapters> = {}) {
     this.parts = parts;
     this.adapters = { ...DEFAULT_ADAPTERS, ...adapters };
@@ -190,6 +197,13 @@ export class Collector {
 
     this.idleSpans.push(...restored.idleSpans);
     this.breakSpans.push(...restored.breakSpans);
+
+    // Yesterday's clock-out must not silence today. The flag is a timestamp precisely
+    // so this can be decided without asking anyone: same local day, still ended; a new
+    // day, and the agent starts working again on its own.
+    const endedAt = parseStamp(restored.dayEndedAt);
+    this.dayEndedAt =
+      endedAt !== null && sameLocalDay(endedAt, this.adapters.now()) ? endedAt : null;
   }
 
   /**
@@ -212,6 +226,7 @@ export class Collector {
         openIdleSince: this.parts.idle.openIdleSince?.toISOString() ?? null,
         openBreakSince: this.parts.idle.openBreakSince?.toISOString() ?? null,
         lastCaptureAt: this.parts.screenshots.lastCaptureAt?.toISOString() ?? null,
+        dayEndedAt: this.dayEndedAt?.toISOString() ?? null,
       });
     } catch (error) {
       // A full disk or a revoked directory ACL must cost the safety net, not the
@@ -258,6 +273,48 @@ export class Collector {
   }
 
   private async run(now: Date): Promise<void> {
+    // The day rolls over without anyone asking. Checked on the tick rather than by a
+    // timer, because a laptop that was shut at 6pm and opened at 9am the next morning
+    // never fires a midnight timer — and that is the ordinary case, not the edge one.
+    if (this.dayEndedAt !== null && !sameLocalDay(this.dayEndedAt, now)) {
+      this.dayEndedAt = null;
+      this.persistDay();
+      this.adapters.onChanged();
+    }
+
+    /*
+     * A break nobody came back from is not a break.
+     *
+     * An open break has no natural end — `summariseDay` resolves an unterminated span
+     * at the current instant — so an employee who declares a break at 18:00 and shuts
+     * the lid accrues "break" all night. Observed in the field: 7h 51m of break beside
+     * 1h 06m of active work, which is not a record of a working day, it is a record of
+     * an app left running.
+     *
+     * The honest reading of a break that has run this long is that the person went
+     * home without clocking out, so the day is ended AT THE MOMENT THE BREAK STARTED
+     * rather than now. Ending it at `now` would bank the whole night as tracked time;
+     * ending it at the break start says what actually happened — work stopped then.
+     *
+     * This is the automatic counterpart to the tray's End day. Both exist because the
+     * alternative is a dashboard that reports overnight idling as a working day, and a
+     * manager reading it has no way to tell the difference.
+     */
+    const openBreak = this.parts.idle.openBreakSince;
+    if (
+      this.dayEndedAt === null &&
+      openBreak !== null &&
+      now.getTime() - openBreak.getTime() > MAX_OPEN_BREAK_MS
+    ) {
+      await this.endDay(openBreak);
+      return;
+    }
+
+    // Nothing is observed after clock-out. Deliberately before the consent check and
+    // everything else: the employee said they had finished, and that answer does not
+    // depend on what any other part of the system currently believes.
+    if (this.dayEndedAt !== null) return;
+
     const collecting = mayCollect(this.parts.config.current);
 
     if (collecting) {
@@ -530,6 +587,58 @@ export class Collector {
   }
 
   /** Declares a break. Idle running up to it is kept and closed at the break start. */
+  /**
+   * Clock out for the day.
+   *
+   * The same sequence `shutdown` runs — close the open stretches, flush what is
+   * queued, end the work session — but the agent stays alive afterwards. That
+   * difference matters: an employee who has finished for the day should not have to
+   * quit a monitoring app to stop being monitored, and an app they have to quit is one
+   * they will quit permanently.
+   *
+   * Order is load-bearing and matches `shutdown`: the flush happens while the session
+   * is still open, because events flushed after it closes carry a null work_session_id
+   * and scope §2.2 cannot aggregate over those.
+   */
+  async endDay(now: Date = this.adapters.now()): Promise<void> {
+    if (this.dayEndedAt !== null) return;
+
+    const collecting = mayCollect(this.parts.config.current);
+    this.drain(now, { keep: collecting });
+
+    if (collecting) {
+      this.applyOutcome(await this.parts.queue.flush(this.parts.sessions.current, now), now);
+    }
+
+    if (this.parts.sessions.current !== null) await this.endSession(now);
+
+    this.dayEndedAt = now;
+    this.recomputeTotals(now);
+    this.persistDay();
+    this.adapters.onChanged();
+  }
+
+  /**
+   * Start working again after clocking out, before the day has rolled over.
+   *
+   * Someone who ends their day and then goes back to work needs a way back in that is
+   * not "reinstall the agent". The next tick opens a fresh work session, so the
+   * afternoon is a second session rather than a reopened first one — which is the
+   * honest shape, and the one the reports already understand.
+   */
+  startDay(now: Date = this.adapters.now()): void {
+    if (this.dayEndedAt === null) return;
+    this.dayEndedAt = null;
+    this.recomputeTotals(now);
+    this.persistDay();
+    this.adapters.onChanged();
+  }
+
+  /** True while the employee has clocked out and the local day has not rolled over. */
+  get dayEnded(): boolean {
+    return this.dayEndedAt !== null;
+  }
+
   startBreak(now: Date = this.adapters.now()): void {
     if (!mayCollect(this.parts.config.current)) return;
 
@@ -680,7 +789,31 @@ function discardBefore(spans: DaySpan[], dayStart: Date): void {
   spans.push(...kept);
 }
 
+/**
+ * How long a declared break may run before the day is closed for the employee.
+ *
+ * Three hours is deliberately generous — longer than any lunch, a school run or a
+ * dentist appointment, so a real break is never cut short — while being far below the
+ * overnight case this exists to catch. The cost of being wrong in each direction is
+ * asymmetric: too short and someone's genuine long break becomes a second work session
+ * they have to explain, too long and the dashboard reports a night's sleep as tracked
+ * time. Three hours sits well clear of both.
+ */
+export const MAX_OPEN_BREAK_MS = 3 * 60 * 60 * 1000;
+
 /** Local midnight — the day boundary an employee and their manager both mean. */
 function startOfDay(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+/**
+ * Whether two instants fall in the same local day.
+ *
+ * Local, not UTC, and via `startOfDay` so there is one definition of a day boundary in
+ * this file rather than two that drift. A clock-out at 22:00 IST must still be in force
+ * at 23:59 and lifted at 00:01 — comparing UTC dates would lift it four and a half
+ * hours early and start recording someone who had said they were finished.
+ */
+function sameLocalDay(a: Date, b: Date): boolean {
+  return startOfDay(a).getTime() === startOfDay(b).getTime();
 }
