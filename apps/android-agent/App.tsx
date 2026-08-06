@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
-import { useFonts } from "@expo-google-fonts/inter";
+import { useFonts } from "expo-font";
 
 import { registerBackgroundSync } from "./src/background-task";
 import { ConsentScreen } from "./src/screens/ConsentScreen";
