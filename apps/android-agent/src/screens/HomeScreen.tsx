@@ -1,7 +1,7 @@
 import * as Battery from "expo-battery";
 import * as Network from "expo-network";
 import { useEffect, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { AppState, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 
@@ -15,8 +15,13 @@ interface HomeScreenProps {
 }
 
 interface DeviceReadout {
-  todayFormatted: string;
   activeSeconds: number;
+  /**
+   * When `activeSeconds` was read, so the display can carry it forward between reads.
+   * Without this a seconds digit would sit still for a whole sync interval and then
+   * jump sixty at once, which reads as a frozen clock rather than a live one.
+   */
+  readAtMs: number;
   batteryLevel: number;
   batteryState: Battery.BatteryState;
   networkType: Network.NetworkStateType;
@@ -24,8 +29,8 @@ interface DeviceReadout {
 }
 
 const EMPTY_READOUT: DeviceReadout = {
-  todayFormatted: "0h 00m",
   activeSeconds: 0,
+  readAtMs: 0,
   batteryLevel: -1,
   batteryState: Battery.BatteryState.UNKNOWN,
   networkType: Network.NetworkStateType.UNKNOWN,
@@ -53,6 +58,42 @@ export function HomeScreen({ status }: HomeScreenProps) {
     };
   }, [status.lastSync]);
 
+  /**
+   * Re-reads the moment the app comes back to the foreground.
+   *
+   * The local clock below assumes the screen has been on the whole time it has been
+   * counting, which is true while someone is looking at this screen and false across
+   * a locked phone — `ScreenTimeTracker` stops accumulating there, and a display that
+   * kept ticking would come back overstating the day. Reading native truth on return
+   * corrects it immediately rather than waiting out the next sync.
+   */
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      void loadReadout().then(setReadout);
+    });
+
+    return () => subscription.remove();
+  }, []);
+
+  /**
+   * Drives the seconds digit. The readout itself is only re-read once per sync, so
+   * this carries it forward in between; every real read snaps back to whatever the
+   * native tracker says, so the estimate can never drift for more than one interval.
+   */
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // `readAtMs === 0` is the pre-first-read placeholder — carrying *that* forward would
+  // add fifty-odd years of "active time" to the very first frame.
+  const elapsedSinceRead =
+    readout.readAtMs === 0 ? 0 : Math.max(0, Math.floor((nowMs - readout.readAtMs) / 1000));
+  const activeSeconds = readout.activeSeconds + elapsedSinceRead;
+
   const styles = createStyles(theme);
 
   // Helper for computing initials
@@ -68,7 +109,7 @@ export function HomeScreen({ status }: HomeScreenProps) {
 
   // Compute work progress percentage (8 hours = 28800 seconds target)
   const workTargetSeconds = 8 * 3600;
-  const progressPercent = Math.min(100, Math.round((readout.activeSeconds / workTargetSeconds) * 100));
+  const progressPercent = Math.min(100, Math.round((activeSeconds / workTargetSeconds) * 100));
 
   // Determine battery icon
   const getBatteryIcon = () => {
@@ -124,7 +165,7 @@ export function HomeScreen({ status }: HomeScreenProps) {
           <View style={styles.heroHeader}>
             <View>
               <Text style={styles.heroLabel}>TODAY'S ACTIVE TIME</Text>
-              <Text style={styles.heroValue}>{readout.todayFormatted}</Text>
+              <Text style={styles.heroValue}>{formatDuration(activeSeconds)}</Text>
             </View>
             <View style={styles.heroIconBox}>
               <Feather name="clock" size={24} color={theme.colors.indigo} />
@@ -247,8 +288,8 @@ async function loadReadout(): Promise<DeviceReadout> {
   ]);
 
   return {
-    todayFormatted: formatHoursMinutes(snapshot.screenActiveSeconds),
     activeSeconds: snapshot.screenActiveSeconds,
+    readAtMs: Date.now(),
     batteryLevel,
     batteryState,
     networkType: networkState.type ?? Network.NetworkStateType.UNKNOWN,
@@ -256,10 +297,18 @@ async function loadReadout(): Promise<DeviceReadout> {
   };
 }
 
-function formatHoursMinutes(totalSeconds: number): string {
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+/**
+ * `0h 03m 45s`. Minutes and seconds are zero-padded so the readout keeps a constant
+ * width — an unpadded value shifts the whole line every time it crosses ten, which on
+ * a figure that updates every second is a visible twitch rather than a detail.
+ */
+function formatDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
 }
 
 function formatBattery(level: number, state: Battery.BatteryState): string {

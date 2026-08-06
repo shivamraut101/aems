@@ -19,7 +19,6 @@ export interface AgentStatus {
   screen: Screen;
   greeting: string;
   fullName: string | null;
-  todayFormatted: string;
   collecting: boolean;
   policyVersion: string | null;
   lastSync: string;
@@ -128,7 +127,6 @@ export function useAgentState() {
     screen: "login",
     greeting: greeting(),
     fullName: null,
-    todayFormatted: "0h 00m",
     collecting: false,
     policyVersion: null,
     lastSync: "Not synced",
