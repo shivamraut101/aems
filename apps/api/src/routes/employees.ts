@@ -462,21 +462,25 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
     // Pre-flight, before an auth user exists. Every check that can be made without
     // writing is made here, because a failure after `createUser` costs a
     // compensating delete and a failure of THAT costs a manual cleanup.
-    if (body.managerId) {
-      const denial = await checkManager(body.managerId, session.companyId, null);
-      if (denial) {
-        return reply
-          .code(denial.statusCode)
-          .send({ error: denial.error, message: denial.message, statusCode: denial.statusCode });
-      }
-    }
+    //
+    // Both are reads with nothing between them, so they go together rather than one
+    // after the other. The manager denial is still reported first — issuing the two
+    // queries concurrently changes when they run, never which refusal the caller sees.
+    const [denial, { data: clash }] = await Promise.all([
+      body.managerId ? checkManager(body.managerId, session.companyId, null) : null,
+      app.supabase
+        .from("profiles")
+        .select("id")
+        .eq("company_id", session.companyId)
+        .eq("email", body.email)
+        .maybeSingle(),
+    ]);
 
-    const { data: clash } = await app.supabase
-      .from("profiles")
-      .select("id")
-      .eq("company_id", session.companyId)
-      .eq("email", body.email)
-      .maybeSingle();
+    if (denial) {
+      return reply
+        .code(denial.statusCode)
+        .send({ error: denial.error, message: denial.message, statusCode: denial.statusCode });
+    }
 
     if (clash) {
       return reply.code(409).send({

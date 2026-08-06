@@ -204,6 +204,35 @@ async function ruleSetFor(app: FastifyInstance, companyId: string): Promise<Comp
   return set;
 }
 
+/**
+ * A category-to-productivity lookup for one company, off the same cached rule set.
+ *
+ * Exported so the analytics routes can split active time three ways without a second
+ * read of `category_rules` — one cache, one source of truth, and a rule edit changes
+ * both surfaces at the same moment. A lookup rather than the rule set itself, because
+ * the caller has already-categorised rows and needs to score a stored category string,
+ * not re-run the matchers over raw events.
+ *
+ * Anything no rule names resolves to `neutral`, matching `UNCATEGORIZED_RESULT`: an
+ * application nobody wrote a rule for is evidence of nothing, and this product does
+ * not count "we don't know" against a person.
+ */
+export async function productivityLookupFor(
+  app: FastifyInstance,
+  companyId: string,
+): Promise<(category: string | null) => Productivity> {
+  const set = await ruleSetFor(app, companyId);
+  const byCategory = new Map<string, Productivity>();
+
+  // Later rules lose: `rules` is already in evaluation order, so the first mention of
+  // a category is the one that would have won when the event was classified.
+  for (const rule of set.rules) {
+    if (!byCategory.has(rule.category)) byCategory.set(rule.category, rule.productivity);
+  }
+
+  return (category) => (category === null ? "neutral" : (byCategory.get(category) ?? "neutral"));
+}
+
 export const activityRoutes: FastifyPluginAsync = async (app) => {
   /** Clock in. The partial unique index on the table makes a second open session impossible. */
   app.post("/sessions", { preHandler: app.requireDevice }, async (request, reply) => {

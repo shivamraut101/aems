@@ -6,6 +6,18 @@ const OFFLINE_AFTER_MS = 10 * 60 * 1000;
 /** An idle stretch longer than this raises an alert. */
 const IDLE_ALERT_SECONDS = 30 * 60;
 
+/**
+ * Ceiling on the idle stretches one run will alert on.
+ *
+ * This scan cannot be scoped by company — the worker is cross-tenant by design — so
+ * it cannot use `(company_id, profile_id, idle_start_at)` and reads `idle_events`
+ * by `idle_start_at` alone. Unbounded, that grows with the table forever. Ordered
+ * longest-first so the cap drops the least alarming stretches rather than an
+ * arbitrary slice, and reported as `truncated` rather than passed off as the
+ * complete picture.
+ */
+const MAX_IDLE_ALERTS = 1000;
+
 interface Alert {
   companyId: string;
   kind: "device_offline" | "prolonged_idle" | "report_ready";
@@ -38,10 +50,11 @@ Deno.serve(async (request: Request) => {
 
   if (deviceError) return json({ error: deviceError.message }, 500);
 
-  for (const device of devices ?? []) {
-    if (!device.last_seen_at) continue;
-    if (now - Date.parse(device.last_seen_at) <= OFFLINE_AFTER_MS) continue;
+  const wentQuiet = (devices ?? []).filter(
+    (device) => device.last_seen_at && now - Date.parse(device.last_seen_at) > OFFLINE_AFTER_MS,
+  );
 
+  for (const device of wentQuiet) {
     alerts.push({
       companyId: device.company_id,
       kind: "device_offline",
@@ -49,9 +62,17 @@ Deno.serve(async (request: Request) => {
       targetId: device.id,
       detail: `${device.label} has not reported since ${device.last_seen_at}`,
     });
+  }
 
-    // Reflect the state so the dashboard agrees with the alert.
-    await supabase.from("devices").update({ status: "offline" }).eq("id", device.id);
+  // Reflect the state so the dashboard agrees with the alert — one statement for the
+  // whole sweep. This used to be an update per device inside the loop above, so a
+  // company with fifty quiet laptops cost fifty sequential round trips to set one
+  // column to one value.
+  if (wentQuiet.length > 0) {
+    await supabase
+      .from("devices")
+      .update({ status: "offline" })
+      .in("id", wentQuiet.map((device) => device.id));
   }
 
   // -- unusually long idle stretches ----------------------------------------
@@ -61,7 +82,9 @@ Deno.serve(async (request: Request) => {
     .from("idle_events")
     .select("id, company_id, profile_id, duration_seconds")
     .gte("idle_start_at", since)
-    .gte("duration_seconds", IDLE_ALERT_SECONDS);
+    .gte("duration_seconds", IDLE_ALERT_SECONDS)
+    .order("duration_seconds", { ascending: false })
+    .limit(MAX_IDLE_ALERTS);
 
   for (const event of idleEvents ?? []) {
     alerts.push({
@@ -103,5 +126,10 @@ Deno.serve(async (request: Request) => {
     );
   }
 
-  return json({ alerts: alerts.length });
+  // A run that hit the idle ceiling saw more than it reported. Saying so beats a
+  // count that looks complete and is not.
+  return json({
+    alerts: alerts.length,
+    truncated: (idleEvents ?? []).length >= MAX_IDLE_ALERTS,
+  });
 });

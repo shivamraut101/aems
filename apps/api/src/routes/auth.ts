@@ -51,26 +51,26 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { deviceId, policyVersion, method } = parsed.data;
 
-    // The device must belong to the person consenting — nobody consents on
-    // someone else's behalf.
-    const { data: device } = await app.supabase
-      .from("devices")
-      .select("id, company_id, profile_id")
-      .eq("id", deviceId)
-      .single();
+    // Two independent reads, so one round trip rather than two. Neither is a write and
+    // the ownership refusal below still comes first: what a caller who fails it sees is
+    // unchanged, only the policy row was fetched alongside instead of afterwards.
+    const [{ data: device }, { data: policy }] = await Promise.all([
+      // The device must belong to the person consenting — nobody consents on
+      // someone else's behalf.
+      app.supabase.from("devices").select("id, company_id, profile_id").eq("id", deviceId).single(),
+      app.supabase
+        .from("policies")
+        .select("version")
+        .eq("company_id", session.companyId)
+        .eq("version", policyVersion)
+        .maybeSingle(),
+    ]);
 
     if (!device || device.profile_id !== session.profileId) {
       return reply
         .code(403)
         .send({ error: "forbidden", message: "Device does not belong to you", statusCode: 403 });
     }
-
-    const { data: policy } = await app.supabase
-      .from("policies")
-      .select("version")
-      .eq("company_id", session.companyId)
-      .eq("version", policyVersion)
-      .maybeSingle();
 
     if (!policy) {
       return reply.code(400).send({

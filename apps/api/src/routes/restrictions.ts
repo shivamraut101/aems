@@ -1272,22 +1272,28 @@ export const restrictionRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "consent_required", message: consent.message, statusCode: 403 });
     }
 
-    const settings = await loadSettings(device.companyId);
+    const claimed = [...new Set(body.events.map((e) => e.ruleId).filter((v): v is string => !!v))];
+
+    // The company's posture and the rules the agent claims to have enforced are
+    // independent lookups, both behind the consent gate above, so they go in one round
+    // trip instead of two. Each is still scoped to the device's own company — that
+    // filter is what turns a foreign rule id into null rather than a cross-tenant read.
+    const [settings, claimedRules] = await Promise.all([
+      loadSettings(device.companyId),
+      claimed.length > 0
+        ? app.supabase
+            .from("website_restriction_rules")
+            .select("id, pattern")
+            .eq("company_id", device.companyId)
+            .in("id", claimed)
+        : { data: [] },
+    ]);
+
     const mode = settings?.mode ?? "blocklist";
 
-    const claimed = [...new Set(body.events.map((e) => e.ruleId).filter((v): v is string => !!v))];
     const patterns = new Map<string, string>();
-
-    if (claimed.length > 0) {
-      const { data } = await app.supabase
-        .from("website_restriction_rules")
-        .select("id, pattern")
-        .eq("company_id", device.companyId)
-        .in("id", claimed);
-
-      for (const row of (data ?? []) as { id: string; pattern: string }[]) {
-        patterns.set(row.id, row.pattern);
-      }
+    for (const row of (claimedRules.data ?? []) as { id: string; pattern: string }[]) {
+      patterns.set(row.id, row.pattern);
     }
 
     const rows: TablesInsert<"website_block_events">[] = [];

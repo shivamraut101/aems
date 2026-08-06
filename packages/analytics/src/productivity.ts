@@ -9,12 +9,27 @@ import type {
 
 import { clamp, difference, merge, toInterval, totalSeconds, type Interval } from "./intervals.js";
 
+/**
+ * The columns this arithmetic actually reads.
+ *
+ * Narrower than the table types so a route can `select` four columns instead of `*`,
+ * for the same reason `ScreenshotRow` below and `ActivityRow` in `timeline.ts` exist.
+ * `activity_events` also carries `window_title`, `url` and four uuids that nothing
+ * here looks at, and those are what make the row wide. A full row stays assignable,
+ * so callers holding one do not have to map first.
+ */
+export type PeriodActivityRow = Pick<
+  ActivityEvent,
+  "app_name" | "category" | "started_at" | "ended_at"
+>;
+export type PeriodIdleRow = Pick<IdleEvent, "idle_start_at" | "idle_end_at">;
+
 export interface PeriodInput {
   profileId: string;
   periodStart: string;
   periodEnd: string;
-  activity: ActivityEvent[];
-  idle: IdleEvent[];
+  activity: PeriodActivityRow[];
+  idle: PeriodIdleRow[];
 }
 
 /**
@@ -56,7 +71,7 @@ export function summarisePeriod(input: PeriodInput): ProductivitySummary {
 }
 
 /** Per-application totals, busiest first. */
-export function rankApps(activity: ActivityEvent[], window: Interval, limit = 10): AppUsage[] {
+export function rankApps(activity: PeriodActivityRow[], window: Interval, limit = 10): AppUsage[] {
   const byApp = new Map<string, { category: string | null; intervals: Interval[] }>();
 
   for (const event of activity) {
