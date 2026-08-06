@@ -33,6 +33,7 @@ module.exports = {
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
+          muted: "hsl(var(--destructive-muted))",
         },
         muted: {
           DEFAULT: "hsl(var(--muted))",
@@ -41,6 +42,24 @@ module.exports = {
         accent: {
           DEFAULT: "hsl(var(--accent))",
           foreground: "hsl(var(--accent-foreground))",
+          /* The tinted ground an AI surface sits on. Indigo is reserved for model
+             output, so its tint is too — never spend it on a normal panel. */
+          muted: "hsl(var(--accent-muted))",
+        },
+        /*
+         * Status, as first-class colours rather than the Tailwind palette.
+         *
+         * Screens were reaching for `emerald-600` and `amber-50` directly, which put
+         * two greens on one page and left dark mode with tints designed for white.
+         * Routing them through the tokens means both themes are tuned in one file.
+         */
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          muted: "hsl(var(--success-muted))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          muted: "hsl(var(--warning-muted))",
         },
         card: {
           DEFAULT: "hsl(var(--card))",

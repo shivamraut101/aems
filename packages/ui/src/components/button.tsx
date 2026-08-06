@@ -4,7 +4,34 @@ import * as React from "react";
 import { cn } from "../lib/utils.js";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+  [
+    "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium",
+    // Transform joins the transition so the press below eases rather than snaps.
+    "transition-[color,background-color,border-color,transform] duration-150",
+    /*
+     * `ring-2`, not shadcn's stock `ring-1`.
+     *
+     * Every other focusable thing in this product — nav items, table links, the
+     * filter chips, the sign-out control — rings at 2. A button ringing at 1 meant
+     * the focus indicator got *thinner* as a keyboard user tabbed onto the most
+     * important control on the screen, which is the wrong way round.
+     */
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    /*
+     * Press feedback.
+     *
+     * A button that looks identical the instant it is clicked gives a reader nothing
+     * to tell a registered press from a missed one, so they click again — the same
+     * complaint that produced the navigation skeletons, one layer down. Two percent
+     * is deliberately below the threshold anyone would call an animation:
+     * docs/design.md rules out heavy motion, and this is meant to be felt rather
+     * than watched. `prefers-reduced-motion` collapses the duration globally in
+     * globals.css, so it becomes instant rather than absent — the acknowledgement
+     * survives, the movement does not.
+     */
+    "active:scale-[0.98]",
+    "disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100",
+  ].join(" "),
   {
     variants: {
       variant: {
