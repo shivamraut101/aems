@@ -1,21 +1,15 @@
 import { useState } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ScrollView, StyleSheet, Text, TextInput, View, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Feather } from "@expo/vector-icons";
 
 import { PressableScale } from "../components/PressableScale";
-import { useTheme } from "../theme";
+import { useTheme, fontFamily } from "../theme";
 
 interface LoginScreenProps {
   onLogin: (code: string) => Promise<void>;
 }
 
-/**
- * Sign-in and device binding (scope §3.1).
- *
- * Mirrors the desktop agent's `LoginScreen.tsx`: the employee pastes the sign-in
- * code the web dashboard issues rather than typing a password here. The code is
- * sent as-is to `POST /api/devices/enroll-with-code` — see `state.ts`'s `login()`.
- */
 export function LoginScreen({ onLogin }: LoginScreenProps) {
   const theme = useTheme();
   const [code, setCode] = useState("");
@@ -34,9 +28,6 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
 
     try {
       await onLogin(trimmed);
-      // Left set on success: the screen is being replaced, and re-enabling the
-      // input first would invite a second enrolment of a device that already has
-      // one pending.
     } catch (err) {
       setError(
         err instanceof Error
@@ -52,6 +43,18 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {/* Brand Header */}
+        <View style={styles.brandHeader}>
+          <View style={styles.logoContainer}>
+            <View style={styles.logoOuter}>
+              <View style={styles.logoInner}>
+                <Feather name="shield" size={24} color={theme.colors.indigo} />
+              </View>
+            </View>
+          </View>
+          <Text style={styles.brandName}>AEMS COMPANION</Text>
+        </View>
+
         <View style={styles.titleBlock}>
           <Text style={styles.largeTitle}>Sign in to this device</Text>
           <Text style={styles.body}>
@@ -60,15 +63,29 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
           </Text>
         </View>
 
-        <Text style={styles.callout}>
-          Open the AEMS dashboard, go to Devices → Add device, and paste the
-          sign-in code it shows you.
-        </Text>
+        {/* Informational Callout Card */}
+        <View style={styles.calloutCard}>
+          <View style={styles.calloutHeader}>
+            <Feather name="info" size={16} color={theme.colors.muted} />
+            <Text style={styles.calloutTitle}>Instructions</Text>
+          </View>
+          <Text style={styles.calloutText}>
+            Open the AEMS dashboard, go to <Text style={styles.semibold}>Devices → Add device</Text>, and paste the sign-in code it shows you.
+          </Text>
+        </View>
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        {error ? (
+          <View style={styles.errorCard}>
+            <Feather name="alert-triangle" size={16} color={theme.colors.destructive} />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : null}
 
         <View style={styles.group}>
-          <Text style={styles.groupLabel}>SIGN-IN CODE</Text>
+          <View style={styles.labelRow}>
+            <Feather name="key" size={12} color={theme.colors.muted} />
+            <Text style={styles.groupLabel}>SIGN-IN CODE</Text>
+          </View>
           <View
             style={[
               styles.fieldCard,
@@ -103,7 +120,14 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
           accessibilityState={{ disabled }}
           style={[styles.button, disabled && styles.buttonDisabled]}
         >
-          <Text style={styles.buttonText}>{busy ? "Signing in…" : "Bind this device"}</Text>
+          {busy ? (
+            <ActivityIndicator color="#FFFFFF" size="small" />
+          ) : (
+            <View style={styles.buttonContent}>
+              <Text style={styles.buttonText}>Bind this device</Text>
+              <Feather name="arrow-right" size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
+            </View>
+          )}
         </PressableScale>
 
         <Text style={styles.note}>
@@ -120,18 +144,95 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
 
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: colors.background },
-    content: { padding: spacing.lg, paddingTop: spacing.md, gap: spacing.lg },
-    titleBlock: { gap: spacing.sm },
-    largeTitle: { ...typography.largeTitle, color: colors.foreground },
-    body: { ...typography.body, color: colors.foreground },
-    callout: { ...typography.callout, color: colors.muted, lineHeight: 21 },
-    errorText: { ...typography.subhead, color: colors.destructive },
+    content: { padding: spacing.lg, paddingTop: spacing.xl, gap: spacing.lg },
+    brandHeader: {
+      alignItems: "center",
+      marginTop: spacing.md,
+      marginBottom: spacing.xs,
+      gap: spacing.sm,
+    },
+    logoContainer: {
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    logoOuter: {
+      width: 56,
+      height: 56,
+      borderRadius: 16,
+      backgroundColor: theme.mode === "dark" ? "#1E293B" : "#F1F5F9",
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    logoInner: {
+      width: 42,
+      height: 42,
+      borderRadius: 12,
+      backgroundColor: colors.card,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: colors.border,
+      shadowColor: colors.indigo,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+      elevation: 2,
+    },
+    brandName: {
+      fontFamily: theme.typography.title.fontFamily,
+      fontSize: 12,
+      fontWeight: "700",
+      letterSpacing: 1.5,
+      color: colors.indigo,
+    },
+    titleBlock: { gap: spacing.xs },
+    largeTitle: { ...typography.largeTitle, color: colors.foreground, textAlign: "center" },
+    body: { ...typography.body, color: colors.muted, textAlign: "center", paddingHorizontal: spacing.sm },
+    calloutCard: {
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius,
+      padding: spacing.md,
+      gap: spacing.xs,
+    },
+    calloutHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+    },
+    calloutTitle: {
+      ...typography.caption,
+      color: colors.foreground,
+      fontWeight: "600",
+    },
+    calloutText: { ...typography.footnote, color: colors.muted, lineHeight: 18 },
+    semibold: { fontFamily: fontFamily.semibold, fontWeight: "600" },
+    errorCard: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+      backgroundColor: theme.mode === "dark" ? "#311" : "#FEF2F2",
+      borderColor: colors.destructive,
+      borderWidth: 1,
+      borderRadius: radius,
+      padding: spacing.md,
+    },
+    errorText: { ...typography.subhead, color: colors.destructive, flex: 1 },
     group: { gap: spacing.sm },
+    labelRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+      marginLeft: spacing.xs,
+    },
     groupLabel: {
       ...typography.caption,
       color: colors.muted,
-      marginLeft: spacing.xs,
       textTransform: "uppercase",
+      fontWeight: "600",
     },
     fieldCard: {
       borderWidth: 1,
@@ -143,10 +244,10 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
       paddingHorizontal: spacing.md,
     },
     fieldCardFocused: { borderColor: colors.indigo, borderWidth: 1.5 },
-    input: { ...typography.body, color: colors.foreground, paddingVertical: spacing.sm },
-    footnote: { ...typography.footnote, color: colors.muted, marginLeft: spacing.xs },
+    input: { ...typography.body, color: colors.foreground, paddingVertical: spacing.sm, textAlign: "center" },
+    footnote: { ...typography.footnote, color: colors.muted, marginLeft: spacing.xs, marginTop: spacing.xs / 2 },
     button: {
-      minHeight: minTouchTarget,
+      minHeight: minTouchTarget + 6,
       borderRadius: radius,
       backgroundColor: colors.indigo,
       alignItems: "center",
@@ -154,7 +255,14 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
       ...theme.shadow,
     },
     buttonDisabled: { opacity: 0.4 },
+    buttonContent: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+    },
     buttonText: { ...typography.headline, color: "#FFFFFF" },
-    note: { ...typography.footnote, color: colors.muted, textAlign: "center" },
+    note: { ...typography.footnote, color: colors.muted, textAlign: "center", paddingHorizontal: spacing.md },
   });
 }
+
+
