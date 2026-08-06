@@ -105,6 +105,35 @@ class MonitoringService : Service() {
 }
 
 /**
+ * Whether monitoring is meant to be running, recorded where a freshly-booted process
+ * can read it.
+ *
+ * The service itself cannot answer this after a reboot — it is not running, and the
+ * consent that authorises it lives in SecureStore, which only the JavaScript side can
+ * open. So the decision is written down at the moment it is made, and `BootReceiver`
+ * reads the note rather than trying to re-derive it.
+ *
+ * This is a record of intent, not a second source of truth about consent: JavaScript
+ * clears it the moment collection stops, and the API rejects anything a revoked or
+ * de-consented device sends regardless.
+ */
+object MonitoringState {
+  private const val PREFS_NAME = "aems_monitoring_state"
+  private const val KEY_ACTIVE = "active"
+
+  fun setActive(context: Context, active: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      .edit()
+      .putBoolean(KEY_ACTIVE, active)
+      .apply()
+  }
+
+  fun isActive(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      .getBoolean(KEY_ACTIVE, false)
+}
+
+/**
  * Accumulates today's screen-on seconds in `SharedPreferences`, so the count survives
  * the service being killed and restarted by the OS.
  *

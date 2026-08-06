@@ -98,6 +98,10 @@ class AemsUsageModule : Module() {
     }
 
     Function("startMonitoring") {
+      // Recorded before the start, so a crash between the two lines errs towards the
+      // agent coming back after a reboot rather than staying silently off.
+      MonitoringState.setActive(context, true)
+
       val intent = Intent(context, MonitoringService::class.java)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.startForegroundService(intent)
@@ -107,6 +111,7 @@ class AemsUsageModule : Module() {
     }
 
     Function("stopMonitoring") {
+      MonitoringState.setActive(context, false)
       context.stopService(Intent(context, MonitoringService::class.java))
     }
   }

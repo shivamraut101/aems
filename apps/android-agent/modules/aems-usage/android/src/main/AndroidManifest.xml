@@ -26,5 +26,23 @@
       android:enabled="true"
       android:exported="false"
       android:foregroundServiceType="dataSync" />
+
+    <!--
+      Restarts monitoring after a reboot or an app update. `exported="true"` is
+      required here and is not a loosening: BOOT_COMPLETED is broadcast by the system,
+      and a receiver the system cannot reach is a receiver that never fires. The
+      `android:permission` attribute pins the sender to the OS, so no other app can
+      forge the broadcast.
+    -->
+    <receiver
+      android:name="com.primexmeta.aems.usage.BootReceiver"
+      android:enabled="true"
+      android:exported="true"
+      android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
   </application>
 </manifest>

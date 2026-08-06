@@ -71,6 +71,12 @@ function mockFetch(): typeof globalThis.fetch {
 
     if (method === "POST" && path === "/api/devices/enroll-with-code") return respond(MOCK_ENROLLMENT);
     if (method === "POST" && path === "/api/auth/consent/device") return respond({ consentId: "preview-consent" });
+    if (method === "POST" && path === "/api/activity/sessions") {
+      return respond({ id: 1, clock_in_at: new Date().toISOString(), clock_out_at: null });
+    }
+    if (method === "POST" && /^\/api\/activity\/sessions\/\d+\/end$/.test(path)) {
+      return respond({ id: 1, clock_out_at: new Date().toISOString() });
+    }
     if (method === "POST" && path === "/api/devices/heartbeat") return respond({ ok: true });
     if (method === "POST" && path === "/api/devices/telemetry") return respond({ ok: true });
     if (method === "POST" && path === "/api/devices/applications") return respond({ upserted: 0 });

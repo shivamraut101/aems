@@ -1,3 +1,5 @@
+import * as SecureStore from "expo-secure-store";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useColorScheme } from "react-native";
 
 /**
@@ -111,9 +113,62 @@ export interface Theme {
   shadow: ShadowStyle;
 }
 
+/**
+ * What the employee chose, which is not the same as what is on screen.
+ *
+ * `"system"` is the default and stays the default: on a work phone the appearance
+ * someone already set for the device is the better guess than anything this app would
+ * pick for them. The override exists because that guess is occasionally wrong — a
+ * bright screen in a dark warehouse, say — not because the app has an opinion.
+ */
+export type ThemePreference = "system" | "light" | "dark";
+
+const THEME_PREFERENCE_KEY = "aems.themePreference";
+
+function isThemePreference(value: string | null): value is ThemePreference {
+  return value === "system" || value === "light" || value === "dark";
+}
+
+const ThemePreferenceContext = createContext<{
+  preference: ThemePreference;
+  setPreference: (next: ThemePreference) => void;
+}>({ preference: "system", setPreference: () => {} });
+
+export const ThemePreferenceProvider = ThemePreferenceContext.Provider;
+
+/**
+ * Owns the stored preference. Mounted once, at the root, so every screen resolves the
+ * same appearance — a per-screen hook would let two of them disagree mid-transition.
+ */
+export function useThemePreferenceState() {
+  const [preference, setPreferenceState] = useState<ThemePreference>("system");
+
+  useEffect(() => {
+    void SecureStore.getItemAsync(THEME_PREFERENCE_KEY).then((stored) => {
+      if (isThemePreference(stored)) setPreferenceState(stored);
+    });
+  }, []);
+
+  const setPreference = useCallback((next: ThemePreference) => {
+    // Applied immediately and written behind: a theme toggle that waits on disk before
+    // repainting reads as a control that did not respond.
+    setPreferenceState(next);
+    void SecureStore.setItemAsync(THEME_PREFERENCE_KEY, next);
+  }, []);
+
+  return { preference, setPreference };
+}
+
+export function useThemePreference() {
+  return useContext(ThemePreferenceContext);
+}
+
 export function useTheme(): Theme {
   const scheme = useColorScheme();
-  const mode = scheme === "dark" ? "dark" : "light";
+  const { preference } = useThemePreference();
+
+  const mode =
+    preference === "system" ? (scheme === "dark" ? "dark" : "light") : preference;
   const palette = mode === "dark" ? darkPalette : lightPalette;
 
   return {

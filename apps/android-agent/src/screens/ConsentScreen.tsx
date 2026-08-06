@@ -78,7 +78,7 @@ export function ConsentScreen({ status, onAccept, onAccepted }: ConsentScreenPro
         </View>
 
         <View style={styles.cardList}>
-          {DISCLOSURE_ITEMS.map((item, index) => (
+          {DISCLOSURE_ITEMS.map((item) => (
             <View key={item.text} style={[styles.disclosureCard, theme.shadow]}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardIconBox}>

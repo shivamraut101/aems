@@ -6,7 +6,10 @@ import type { ActivityEventInput, InstalledApplication, NetworkType } from "@aem
 import { AemsApiError } from "@aems/sdk";
 
 import { client } from "./api";
-import { clearDeviceCredentials, loadSyncContext, LAST_SYNC_KEY } from "./state";
+import { hasEnded, isOnBreak, loadDay } from "./day";
+import { clearPending, enqueue, loadPending, pendingCount } from "./queue";
+import { closeForgottenBreak, ensureWorkSession } from "./session";
+import { clearDeviceCredentials, loadSyncContext, LAST_SYNC_KEY, markRevoked } from "./state";
 import AemsUsage from "../modules/aems-usage";
 
 export type SyncOutcome = "synced" | "revoked" | "no-device";
@@ -32,7 +35,7 @@ export async function runSyncCycle(): Promise<SyncOutcome> {
   // de-consented device finds out, so it must run even before consent is given.
   const heartbeat = await attempt(() => client.heartbeat({ deviceId: credentials.deviceId }));
   if (heartbeat === "revoked") {
-    await clearDeviceCredentials();
+    await revoke();
     return "revoked";
   }
 
@@ -43,15 +46,65 @@ export async function runSyncCycle(): Promise<SyncOutcome> {
     return "synced";
   }
 
+  // A break the employee forgot to end is closed here rather than on a timer, because
+  // a sleeping phone runs no timers but does reach this line when it wakes.
+  await closeForgottenBreak();
+
+  const day = await ensureWorkSession(await loadDay(), credentials.deviceId);
+
   await attempt(() => syncTelemetry());
-  const activity = await attempt(() => syncActivity(credentials.deviceId));
-  if (activity === "revoked") {
-    await clearDeviceCredentials();
+
+  // Observation stops for a declared break and for a finished day, matching the
+  // desktop collector — but the queue is still drained, so anything already recorded
+  // still reaches the server.
+  const observing = !isOnBreak(day) && !hasEnded(day);
+  if (observing) await attempt(() => collectActivity(credentials.deviceId));
+
+  const flushed = await attempt(() => flushPending(credentials.deviceId, day.workSessionId));
+  if (flushed === "revoked") {
+    await revoke();
     return "revoked";
   }
 
   await SecureStore.setItemAsync(LAST_SYNC_KEY, new Date().toISOString());
   return "synced";
+}
+
+/**
+ * A revoked device keeps the fact locally so the UI can say what happened.
+ *
+ * Clearing the credentials on its own is what made revocation look like a bug: the
+ * employee was dropped onto the sign-in screen with nothing to explain it.
+ */
+async function revoke(): Promise<void> {
+  await markRevoked();
+  await clearDeviceCredentials();
+}
+
+/** How many observed events are waiting to be accepted — surfaced on the status screen. */
+export async function pendingEventCount(): Promise<number> {
+  return pendingCount(await loadPending());
+}
+
+/**
+ * Sends everything the journal holds, and clears it only on confirmation.
+ *
+ * Ordering matters: the events are already on disk by the time this runs, so a crash
+ * mid-request loses nothing, and a duplicate send is rejected server-side by
+ * `clientEventId`.
+ */
+async function flushPending(deviceId: string, workSessionId: number | null): Promise<void> {
+  const pending = await loadPending();
+  if (pendingCount(pending) === 0) return;
+
+  await client.ingestActivity({
+    deviceId,
+    workSessionId,
+    activity: pending.activity,
+    breaks: pending.breaks,
+  });
+
+  await clearPending();
 }
 
 async function syncTelemetry(): Promise<void> {
@@ -115,44 +168,40 @@ function networkTypeFrom(type: Network.NetworkStateType | undefined): NetworkTyp
  * previous cycle's `clientEventId`, get silently deduplicated by the ingestion
  * endpoint's idempotency check and undercount the day.
  */
-async function syncActivity(deviceId: string): Promise<"ok" | "revoked"> {
+async function collectActivity(deviceId: string): Promise<void> {
   const startMs = await loadLastActivitySyncMs();
   const endMs = Date.now();
-  if (endMs <= startMs) return "ok";
+  if (endMs <= startMs) return;
 
   const stats = await AemsUsage.queryUsage(startMs, endMs);
 
-  if (stats.length === 0) {
-    await SecureStore.setItemAsync(LAST_ACTIVITY_SYNC_KEY, String(endMs));
-    return "ok";
+  if (stats.length > 0) {
+    const activity: ActivityEventInput[] = stats.map((stat) => ({
+      // Stable across a retry of *this* cycle (same window), which is all the
+      // stability this needs — the next cycle queries a disjoint window and so
+      // naturally produces different ids.
+      clientEventId: `${deviceId}:${stat.packageName}:${startMs}`,
+      appName: stat.appLabel,
+      startedAt: new Date(stat.firstTimeStamp).toISOString(),
+      endedAt: new Date(stat.firstTimeStamp + stat.totalTimeForegroundMs).toISOString(),
+    }));
+
+    await enqueue({ activity });
+
+    // Inventory is a snapshot of what is installed, not an observation that can be
+    // lost — it is re-sent in full every cycle, so it does not belong in the queue.
+    const applications: InstalledApplication[] = stats.map((stat) => ({
+      name: stat.appLabel,
+      identifier: stat.packageName,
+    }));
+    await attempt(() => client.reportApplications({ applications }));
   }
 
-  const applications: InstalledApplication[] = stats.map((stat) => ({
-    name: stat.appLabel,
-    identifier: stat.packageName,
-  }));
-
-  const activity: ActivityEventInput[] = stats.map((stat) => ({
-    // Stable across a retry of *this* cycle (same window), which is all the
-    // stability this needs — the next cycle queries a disjoint window and so
-    // naturally produces different ids.
-    clientEventId: `${deviceId}:${stat.packageName}:${startMs}`,
-    appName: stat.appLabel,
-    startedAt: new Date(stat.firstTimeStamp).toISOString(),
-    endedAt: new Date(stat.firstTimeStamp + stat.totalTimeForegroundMs).toISOString(),
-  }));
-
-  const applicationsOutcome = await attempt(() => client.reportApplications({ applications }));
-  if (applicationsOutcome === "revoked") return "revoked";
-
-  const activityOutcome = await attempt(() => client.ingestActivity({ deviceId, activity }));
-  if (activityOutcome === "revoked") return "revoked";
-
-  // Only advance past this window once both reports were at least attempted
-  // without a revocation — a dropped or retryable failure leaves the window
-  // in place so the next cycle covers the same usage again rather than losing it.
+  // Advancing as soon as the events are journalled is now correct, and it is the
+  // point of having a journal: durability used to be a side effect of leaving this
+  // window in place, which covered a failed request and nothing else — not a crash,
+  // and not a break event, which `UsageStatsManager` cannot be re-asked for.
   await SecureStore.setItemAsync(LAST_ACTIVITY_SYNC_KEY, String(endMs));
-  return "ok";
 }
 
 async function loadLastActivitySyncMs(): Promise<number> {

@@ -1,178 +1,118 @@
-import * as Battery from "expo-battery";
-import * as Network from "expo-network";
-import { useEffect, useState } from "react";
-import { AppState, ScrollView, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import { PressableScale } from "../components/PressableScale";
-import { useTheme, fontFamily } from "../theme";
 import AemsUsage from "../../modules/aems-usage";
+import { PressableScale } from "../components/PressableScale";
+import type { DayTotals } from "../day";
 import type { AgentStatus } from "../state";
+import { useTheme } from "../theme";
 
 interface HomeScreenProps {
   status: AgentStatus;
+  onStartBreak: () => Promise<void>;
+  onEndBreak: () => Promise<void>;
+  onStartDay: () => Promise<void>;
+  onEndDay: () => Promise<void>;
 }
 
-interface DeviceReadout {
-  activeSeconds: number;
-  /**
-   * When `activeSeconds` was read, so the display can carry it forward between reads.
-   * Without this a seconds digit would sit still for a whole sync interval and then
-   * jump sixty at once, which reads as a frozen clock rather than a live one.
-   */
-  readAtMs: number;
-  batteryLevel: number;
-  batteryState: Battery.BatteryState;
-  networkType: Network.NetworkStateType;
-  isConnected: boolean;
-}
+/** The daily target the progress bar is drawn against. */
+const WORK_TARGET_SECONDS = 8 * 3600;
 
-const EMPTY_READOUT: DeviceReadout = {
-  activeSeconds: 0,
-  readAtMs: 0,
-  batteryLevel: -1,
-  batteryState: Battery.BatteryState.UNKNOWN,
-  networkType: Network.NetworkStateType.UNKNOWN,
-  isConnected: false,
-};
-
-export function HomeScreen({ status }: HomeScreenProps) {
+export function HomeScreen({
+  status,
+  onStartBreak,
+  onEndBreak,
+  onStartDay,
+  onEndDay,
+}: HomeScreenProps) {
   const theme = useTheme();
+  const styles = createStyles(theme);
+
   const [hasUsageAccess, setHasUsageAccess] = useState(true);
-  const [readout, setReadout] = useState<DeviceReadout>(EMPTY_READOUT);
+  const [busy, setBusy] = useState<"break" | "day" | null>(null);
 
   useEffect(() => {
     setHasUsageAccess(AemsUsage.hasUsageAccess());
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const totals = useLiveTotals(status);
+  const split = splitForDisplay(totals);
+  const progressPercent = Math.min(
+    100,
+    Math.round((totals.activeSeconds / WORK_TARGET_SECONDS) * 100),
+  );
 
-    void loadReadout().then((next) => {
-      if (!cancelled) setReadout(next);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [status.lastSync]);
-
-  /**
-   * Re-reads the moment the app comes back to the foreground.
-   *
-   * The local clock below assumes the screen has been on the whole time it has been
-   * counting, which is true while someone is looking at this screen and false across
-   * a locked phone — `ScreenTimeTracker` stops accumulating there, and a display that
-   * kept ticking would come back overstating the day. Reading native truth on return
-   * corrects it immediately rather than waiting out the next sync.
-   */
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (next) => {
-      if (next !== "active") return;
-      void loadReadout().then(setReadout);
-    });
-
-    return () => subscription.remove();
-  }, []);
-
-  /**
-   * Drives the seconds digit. The readout itself is only re-read once per sync, so
-   * this carries it forward in between; every real read snaps back to whatever the
-   * native tracker says, so the estimate can never drift for more than one interval.
-   */
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // `readAtMs === 0` is the pre-first-read placeholder — carrying *that* forward would
-  // add fifty-odd years of "active time" to the very first frame.
-  const elapsedSinceRead =
-    readout.readAtMs === 0 ? 0 : Math.max(0, Math.floor((nowMs - readout.readAtMs) / 1000));
-  const activeSeconds = readout.activeSeconds + elapsedSinceRead;
-
-  const styles = createStyles(theme);
-
-  // Helper for computing initials
-  const getInitials = (name?: string | null) => {
-    if (!name) return "W";
-    return name
-      .split(" ")
-      .map((part) => part[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2);
-  };
-
-  // Compute work progress percentage (8 hours = 28800 seconds target)
-  const workTargetSeconds = 8 * 3600;
-  const progressPercent = Math.min(100, Math.round((activeSeconds / workTargetSeconds) * 100));
-
-  // Determine battery icon
-  const getBatteryIcon = () => {
-    if (readout.batteryState === Battery.BatteryState.CHARGING) {
-      return "battery-charging" as const;
+  async function run(kind: "break" | "day", action: () => Promise<void>) {
+    setBusy(kind);
+    try {
+      await action();
+    } finally {
+      setBusy(null);
     }
-    if (readout.batteryLevel < 0.2) return "battery" as const; // low battery indicator styling via UI if needed
-    return "battery" as const;
-  };
+  }
 
-  // Determine network icon & text
-  const getNetworkDetails = () => {
-    switch (readout.networkType) {
-      case Network.NetworkStateType.WIFI:
-        return { label: "Wi-Fi", icon: "wifi" as const };
-      case Network.NetworkStateType.CELLULAR:
-        return { label: "Cellular", icon: "phone" as const };
-      case Network.NetworkStateType.ETHERNET:
-        return { label: "Ethernet", icon: "hard-drive" as const };
-      default:
-        return readout.isConnected
-          ? { label: "Connected", icon: "globe" as const }
-          : { label: "Offline", icon: "wifi-off" as const };
-    }
-  };
-
-  const networkDetails = getNetworkDetails();
+  const statusLabel = status.revoked
+    ? "Stopped"
+    : status.dayEnded
+      ? "Finished"
+      : status.onBreak
+        ? "On a break"
+        : status.collecting
+          ? "Collecting"
+          : "Paused";
+  const statusIsLive = status.collecting && !status.onBreak && !status.dayEnded;
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+    <SafeAreaView style={styles.screen} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.content}>
-        {/* Header Profile Section */}
         <View style={styles.headerContainer}>
           <View style={styles.profileRow}>
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{getInitials(status.fullName)}</Text>
+              <Text style={styles.avatarText}>{initials(status.fullName)}</Text>
             </View>
             <View style={styles.headerInfo}>
               <Text style={styles.greeting}>{status.greeting}</Text>
               <Text style={styles.largeTitle}>{status.fullName ?? "Welcome"}</Text>
             </View>
           </View>
-          <View style={[styles.statusBadge, status.collecting ? styles.badgeWorking : styles.badgePaused]}>
-            <View style={[styles.badgeDot, status.collecting ? styles.dotWorking : styles.dotPaused]} />
-            <Text style={status.collecting ? styles.badgeTextWorking : styles.badgeTextPaused}>
-              {status.collecting ? "Collecting" : "Paused"}
+          <View style={[styles.statusBadge, statusIsLive ? styles.badgeWorking : styles.badgePaused]}>
+            <View style={[styles.badgeDot, statusIsLive ? styles.dotWorking : styles.dotPaused]} />
+            <Text style={statusIsLive ? styles.badgeTextWorking : styles.badgeTextPaused}>
+              {statusLabel}
             </Text>
           </View>
         </View>
 
-        {/* Hero Card: Today's Work Progress */}
+        {status.dayEnded ? (
+          <Banner
+            theme={theme}
+            icon="check-circle"
+            title="You have finished for today"
+            body="Nothing further is being recorded. Start again below whenever you carry on."
+          />
+        ) : status.onBreak ? (
+          <Banner
+            theme={theme}
+            icon="pause-circle"
+            title="You are on a break"
+            body="App usage and working time are not being recorded until you end the break."
+          />
+        ) : null}
+
+        {/* Hero: today's work */}
         <View style={[styles.heroCard, theme.shadow]}>
           <View style={styles.heroHeader}>
             <View>
-              <Text style={styles.heroLabel}>TODAY'S ACTIVE TIME</Text>
-              <Text style={styles.heroValue}>{formatDuration(activeSeconds)}</Text>
+              <Text style={styles.heroLabel}>TODAY&rsquo;S ACTIVE TIME</Text>
+              <Text style={styles.heroValue}>{formatDuration(totals.activeSeconds)}</Text>
             </View>
             <View style={styles.heroIconBox}>
               <Feather name="clock" size={24} color={theme.colors.indigo} />
             </View>
           </View>
 
-          {/* Progress Tracker bar */}
           <View style={styles.progressContainer}>
             <View style={styles.progressBarBackground}>
               <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
@@ -184,11 +124,78 @@ export function HomeScreen({ status }: HomeScreenProps) {
           </View>
         </View>
 
-        {/* Section: Activity & Sync */}
+        {/*
+          The four-way split `docs/scope.md` §2.2 is written around. Shown as durations
+          rather than as one percentage, per `docs/design.md`: "Focused time 7h 20m"
+          reads as insight, "86%" reads as a score.
+        */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeader}>CONNECTION & SYNC</Text>
+          <Text style={styles.sectionHeader}>YOUR DAY</Text>
+          <View style={[styles.splitCard, theme.shadow]}>
+            <Split theme={theme} label="Total" value={split.total} tone="foreground" />
+            <Split theme={theme} label="Active" value={split.active} tone="emerald" />
+            <Split theme={theme} label="Idle" value={split.idle} tone="muted" />
+            <Split theme={theme} label="Break" value={split.breakTime} tone="amber" />
+          </View>
+        </View>
+
+        {/* Controls */}
+        {!status.revoked ? (
+          <View style={styles.controls}>
+            {status.dayStarted && !status.dayEnded ? (
+              <PressableScale
+                onPress={() => void run("break", status.onBreak ? onEndBreak : onStartBreak)}
+                disabled={busy !== null}
+                accessibilityRole="button"
+                style={[styles.secondaryButton, busy !== null && styles.buttonDisabled]}
+              >
+                {busy === "break" ? (
+                  <ActivityIndicator size="small" color={theme.colors.foreground} />
+                ) : (
+                  <>
+                    <Feather
+                      name={status.onBreak ? "play" : "pause"}
+                      size={16}
+                      color={theme.colors.foreground}
+                    />
+                    <Text style={styles.secondaryButtonText}>
+                      {status.onBreak ? "End break" : "Take a break"}
+                    </Text>
+                  </>
+                )}
+              </PressableScale>
+            ) : null}
+
+            <PressableScale
+              onPress={() =>
+                void run("day", status.dayStarted && !status.dayEnded ? onEndDay : onStartDay)
+              }
+              disabled={busy !== null}
+              accessibilityRole="button"
+              style={[styles.primaryButton, busy !== null && styles.buttonDisabled]}
+            >
+              {busy === "day" ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Feather
+                    name={status.dayStarted && !status.dayEnded ? "log-out" : "log-in"}
+                    size={16}
+                    color="#FFFFFF"
+                  />
+                  <Text style={styles.primaryButtonText}>
+                    {status.dayStarted && !status.dayEnded ? "End day" : "Start working"}
+                  </Text>
+                </>
+              )}
+            </PressableScale>
+          </View>
+        ) : null}
+
+        {/* Connection */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>CONNECTION &amp; SYNC</Text>
           <View style={[styles.card, theme.shadow]}>
-            {/* Status Row */}
             <View style={styles.row}>
               <View style={styles.rowLabelBox}>
                 <Feather name="play-circle" size={16} color={theme.colors.muted} />
@@ -198,16 +205,15 @@ export function HomeScreen({ status }: HomeScreenProps) {
                 <View
                   style={[
                     styles.indicatorDot,
-                    { backgroundColor: status.collecting ? theme.colors.emerald : theme.colors.muted },
+                    { backgroundColor: statusIsLive ? theme.colors.emerald : theme.colors.muted },
                   ]}
                 />
-                <Text style={styles.rowValue}>{status.collecting ? "Working" : "Paused"}</Text>
+                <Text style={styles.rowValue}>{statusIsLive ? "Working" : "Paused"}</Text>
               </View>
             </View>
 
             <View style={styles.rowDivider} />
 
-            {/* Sync Row */}
             <View style={styles.row}>
               <View style={styles.rowLabelBox}>
                 <Feather name="refresh-cw" size={16} color={theme.colors.muted} />
@@ -215,43 +221,26 @@ export function HomeScreen({ status }: HomeScreenProps) {
               </View>
               <Text style={styles.rowValue}>{formatLastSync(status.lastSync)}</Text>
             </View>
-          </View>
-        </View>
 
-        {/* Section: Device Stats */}
-        <View style={styles.section}>
-          <Text style={styles.sectionHeader}>DEVICE HEALTH & COMPLIANCE</Text>
-          <View style={[styles.card, theme.shadow]}>
-            {/* Battery Row */}
-            <View style={styles.row}>
-              <View style={styles.rowLabelBox}>
-                <Feather name={getBatteryIcon()} size={16} color={theme.colors.muted} />
-                <Text style={styles.rowLabel}>Battery Level</Text>
-              </View>
-              <Text style={styles.rowValue}>{formatBattery(readout.batteryLevel, readout.batteryState)}</Text>
-            </View>
-
-            <View style={styles.rowDivider} />
-
-            {/* Network Row */}
-            <View style={styles.row}>
-              <View style={styles.rowLabelBox}>
-                <Feather name={networkDetails.icon} size={16} color={theme.colors.muted} />
-                <Text style={styles.rowLabel}>Network Mode</Text>
-              </View>
-              <Text style={styles.rowValue}>{networkDetails.label}</Text>
-            </View>
-
-            <View style={styles.rowDivider} />
-
-            {/* Policy Version Row */}
-            <View style={styles.row}>
-              <View style={styles.rowLabelBox}>
-                <Feather name="file-text" size={16} color={theme.colors.muted} />
-                <Text style={styles.rowLabel}>Company Policy</Text>
-              </View>
-              <Text style={styles.rowValue}>{status.policyVersion ?? "—"}</Text>
-            </View>
+            {/*
+              Shown only when there is something waiting. A permanent "0 events" row
+              would train the reader to ignore the one number that matters when the
+              phone has been offline.
+            */}
+            {status.pendingEvents > 0 ? (
+              <>
+                <View style={styles.rowDivider} />
+                <View style={styles.row}>
+                  <View style={styles.rowLabelBox}>
+                    <Feather name="upload-cloud" size={16} color={theme.colors.muted} />
+                    <Text style={styles.rowLabel}>Waiting to sync</Text>
+                  </View>
+                  <Text style={styles.rowValue}>
+                    {status.pendingEvents} {status.pendingEvents === 1 ? "event" : "events"}
+                  </Text>
+                </View>
+              </>
+            ) : null}
           </View>
         </View>
 
@@ -262,7 +251,8 @@ export function HomeScreen({ status }: HomeScreenProps) {
               <Text style={styles.noticeTitle}>Permission Required</Text>
             </View>
             <Text style={styles.noticeText}>
-              Android requires usage access permission in settings to detect active applications and log time accurately.
+              Android requires usage access permission in settings to detect active
+              applications and log time accurately.
             </Text>
             <PressableScale
               onPress={() => AemsUsage.requestUsageAccess()}
@@ -279,22 +269,100 @@ export function HomeScreen({ status }: HomeScreenProps) {
   );
 }
 
-async function loadReadout(): Promise<DeviceReadout> {
-  const [batteryLevel, batteryState, networkState, snapshot] = await Promise.all([
-    Battery.getBatteryLevelAsync(),
-    Battery.getBatteryStateAsync(),
-    Network.getNetworkStateAsync(),
-    AemsUsage.getDeviceSnapshot(),
-  ]);
+/**
+ * The stored totals, carried forward a second at a time.
+ *
+ * `refresh()` recomputes them once a sync cycle, which is far too slow for a figure
+ * with a seconds digit on it — so the gap since the last read is added here and the
+ * next read snaps back to native truth. Which counter grows depends on what the
+ * employee is doing: a break advances `break`, working advances `active`, and `total`
+ * advances through both, which keeps the partition adding up between reads exactly as
+ * it does inside `summariseDay`.
+ */
+function useLiveTotals(status: AgentStatus): DayTotals {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [readAtMs, setReadAtMs] = useState(() => Date.now());
+
+  useEffect(() => setReadAtMs(Date.now()), [status.totals]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const running = status.dayStarted && !status.dayEnded && !status.revoked;
+  if (!running) return status.totals;
+
+  const elapsed = Math.max(0, Math.floor((nowMs - readAtMs) / 1000));
 
   return {
-    activeSeconds: snapshot.screenActiveSeconds,
-    readAtMs: Date.now(),
-    batteryLevel,
-    batteryState,
-    networkType: networkState.type ?? Network.NetworkStateType.UNKNOWN,
-    isConnected: !!networkState.isConnected,
+    totalSeconds: status.totals.totalSeconds + elapsed,
+    activeSeconds: status.totals.activeSeconds + (status.onBreak ? 0 : elapsed),
+    breakSeconds: status.totals.breakSeconds + (status.onBreak ? elapsed : 0),
+    idleSeconds: status.totals.idleSeconds,
   };
+}
+
+function Banner({
+  theme,
+  icon,
+  title,
+  body,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  icon: React.ComponentProps<typeof Feather>["name"];
+  title: string;
+  body: string;
+}) {
+  const styles = createStyles(theme);
+  return (
+    <View style={styles.banner}>
+      <Feather name={icon} size={18} color={theme.colors.amber} />
+      <View style={styles.bannerText}>
+        <Text style={styles.bannerTitle}>{title}</Text>
+        <Text style={styles.bannerBody}>{body}</Text>
+      </View>
+    </View>
+  );
+}
+
+function Split({
+  theme,
+  label,
+  value,
+  tone,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  label: string;
+  value: string;
+  tone: "foreground" | "emerald" | "muted" | "amber";
+}) {
+  const styles = createStyles(theme);
+  const color =
+    tone === "emerald"
+      ? theme.colors.emerald
+      : tone === "amber"
+        ? theme.colors.amber
+        : tone === "muted"
+          ? theme.colors.muted
+          : theme.colors.foreground;
+
+  return (
+    <View style={styles.split}>
+      <Text style={[styles.splitValue, { color }]}>{value}</Text>
+      <Text style={styles.splitLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function initials(name?: string | null): string {
+  if (!name) return "W";
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
 }
 
 /**
@@ -311,10 +379,52 @@ function formatDuration(totalSeconds: number): string {
   return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
 }
 
-function formatBattery(level: number, state: Battery.BatteryState): string {
-  if (level < 0) return "Unknown";
-  const percent = `${Math.round(level * 100)}%`;
-  return state === Battery.BatteryState.CHARGING ? `${percent} · Charging` : percent;
+/**
+ * The four figures, rounded so they still add up.
+ *
+ * Rounding each part on its own is what produced "Total 6m" sitting above
+ * "1m + 0m + 4m": every part loses up to a minute to the floor, and the reader is left
+ * looking at arithmetic that does not work — on a screen about how their time was
+ * counted, which is the worst possible place to look approximate.
+ *
+ * Allocating from running sums hands each part the difference between two cumulative
+ * roundings, so the error moves between neighbours instead of accumulating and the
+ * three parts always total the whole. It is the same trick the desktop agent's
+ * `summariseDay` uses, for the same reason.
+ */
+function splitForDisplay(totals: DayTotals): {
+  total: string;
+  active: string;
+  idle: string;
+  breakTime: string;
+} {
+  const toMinutes = (seconds: number) => Math.round(Math.max(0, seconds) / 60);
+
+  const activeMinutes = toMinutes(totals.activeSeconds);
+  const throughIdle = toMinutes(totals.activeSeconds + totals.idleSeconds);
+  const throughBreak = toMinutes(
+    totals.activeSeconds + totals.idleSeconds + totals.breakSeconds,
+  );
+
+  const idleMinutes = throughIdle - activeMinutes;
+  const breakMinutes = throughBreak - throughIdle;
+
+  return {
+    // Deliberately the sum of the parts rather than a fourth independent rounding of
+    // `totalSeconds`, so the row can never contradict itself.
+    total: formatMinutes(activeMinutes + idleMinutes + breakMinutes),
+    active: formatMinutes(activeMinutes),
+    idle: formatMinutes(idleMinutes),
+    breakTime: formatMinutes(breakMinutes),
+  };
+}
+
+/** `7h 20m` — the split reads as a comparison, and seconds there would be noise. */
+function formatMinutes(totalMinutes: number): string {
+  const safe = Math.max(0, totalMinutes);
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  return hours === 0 ? `${minutes}m` : `${hours}h ${String(minutes).padStart(2, "0")}m`;
 }
 
 function formatLastSync(lastSync: string): string {
@@ -336,82 +446,62 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
 
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: colors.background },
-    content: { padding: spacing.lg, paddingTop: spacing.md, gap: spacing.lg },
-    headerContainer: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginTop: spacing.sm,
-    },
-    profileRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: spacing.md,
-    },
+    content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xl },
+
+    headerContainer: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+    profileRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flex: 1, minWidth: 0 },
     avatar: {
-      width: 46,
-      height: 46,
-      borderRadius: 23,
+      width: 48,
+      height: 48,
+      borderRadius: 24,
       backgroundColor: colors.indigo,
       alignItems: "center",
       justifyContent: "center",
     },
-    avatarText: {
-      color: "#FFFFFF",
-      fontFamily: fontFamily.bold,
-      fontSize: 16,
-      fontWeight: "700",
-    },
-    headerInfo: { gap: 1 },
-    greeting: { ...typography.footnote, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5 },
+    avatarText: { ...typography.headline, color: "#FFFFFF" },
+    headerInfo: { flex: 1, minWidth: 0 },
+    greeting: { ...typography.caption, color: colors.muted, letterSpacing: 0.6, textTransform: "uppercase" },
     largeTitle: { ...typography.title, color: colors.foreground },
+
     statusBadge: {
       flexDirection: "row",
       alignItems: "center",
-      gap: spacing.xs,
+      gap: 6,
       paddingHorizontal: spacing.sm,
-      paddingVertical: spacing.xs / 2,
-      borderRadius: 12,
+      paddingVertical: 6,
+      borderRadius: 999,
       borderWidth: 1,
     },
-    badgeWorking: {
-      backgroundColor: theme.mode === "dark" ? "#064e3b" : "#ECFDF5",
-      borderColor: colors.emerald,
-    },
-    badgePaused: {
-      backgroundColor: theme.mode === "dark" ? "#1e293b" : "#F1F5F9",
-      borderColor: colors.border,
-    },
-    badgeDot: {
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-    },
+    badgeWorking: { borderColor: colors.emerald, backgroundColor: "transparent" },
+    badgePaused: { borderColor: colors.border, backgroundColor: "transparent" },
+    badgeDot: { width: 7, height: 7, borderRadius: 4 },
     dotWorking: { backgroundColor: colors.emerald },
     dotPaused: { backgroundColor: colors.muted },
-    badgeTextWorking: {
-      ...typography.caption,
-      color: colors.emerald,
-      fontWeight: "600",
-    },
-    badgeTextPaused: {
-      ...typography.caption,
-      color: colors.muted,
-      fontWeight: "600",
-    },
-    heroCard: {
-      padding: spacing.lg,
+    badgeTextWorking: { ...typography.caption, color: colors.emerald, fontWeight: "600" },
+    badgeTextPaused: { ...typography.caption, color: colors.muted, fontWeight: "600" },
+
+    banner: {
+      flexDirection: "row",
+      gap: spacing.sm,
+      padding: spacing.md,
       borderRadius: radius,
+      borderWidth: 1,
+      borderColor: colors.amber,
+      backgroundColor: colors.warningSurface,
+    },
+    bannerText: { flex: 1, gap: 2 },
+    bannerTitle: { ...typography.subhead, color: colors.foreground },
+    bannerBody: { ...typography.footnote, color: colors.foreground, lineHeight: 18 },
+
+    heroCard: {
       backgroundColor: colors.card,
       borderWidth: 1,
       borderColor: colors.border,
+      borderRadius: radius,
+      padding: spacing.md,
       gap: spacing.md,
     },
-    heroHeader: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "flex-start",
-    },
+    heroHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" },
     heroLabel: { ...typography.caption, color: colors.muted, letterSpacing: 0.6, fontWeight: "600" },
     heroValue: { ...typography.largeTitle, color: colors.foreground, marginTop: 4 },
     heroIconBox: {
@@ -421,98 +511,91 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
       backgroundColor: theme.mode === "dark" ? "#1E293B" : "#F1F5F9",
       alignItems: "center",
       justifyContent: "center",
-      borderWidth: 1,
-      borderColor: colors.border,
     },
-    progressContainer: { gap: spacing.xs, marginTop: spacing.xs },
-    progressBarBackground: {
-      height: 6,
-      backgroundColor: theme.mode === "dark" ? "#1E293B" : "#E2E8F0",
-      borderRadius: 3,
-      overflow: "hidden",
-    },
-    progressBarFill: {
-      height: "100%",
-      backgroundColor: colors.indigo,
-      borderRadius: 3,
-    },
-    progressLabels: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-    },
+    progressContainer: { gap: spacing.xs },
+    progressBarBackground: { height: 6, borderRadius: 3, backgroundColor: colors.border, overflow: "hidden" },
+    progressBarFill: { height: 6, borderRadius: 3, backgroundColor: colors.indigo },
+    progressLabels: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
     progressLabelText: { ...typography.footnote, color: colors.muted },
     progressPercentText: { ...typography.footnote, color: colors.foreground, fontWeight: "600" },
+
     section: { gap: spacing.sm },
-    sectionHeader: {
-      ...typography.caption,
-      color: colors.muted,
-      marginLeft: spacing.xs,
-      letterSpacing: 0.8,
-      fontWeight: "600",
+    sectionHeader: { ...typography.caption, color: colors.muted, letterSpacing: 0.6, marginLeft: spacing.xs },
+
+    splitCard: {
+      flexDirection: "row",
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius,
+      paddingVertical: spacing.md,
     },
-    card: {
+    split: { flex: 1, alignItems: "center", gap: 2 },
+    splitValue: { ...typography.headline },
+    splitLabel: { ...typography.caption, color: colors.muted },
+
+    controls: { flexDirection: "row", gap: spacing.sm },
+    primaryButton: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.xs,
+      minHeight: minTouchTarget,
+      borderRadius: radius,
+      backgroundColor: colors.indigo,
+      ...theme.shadow,
+    },
+    primaryButtonText: { ...typography.headline, color: "#FFFFFF" },
+    secondaryButton: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.xs,
+      minHeight: minTouchTarget,
       borderRadius: radius,
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.card,
-      overflow: "hidden",
+    },
+    secondaryButtonText: { ...typography.headline, color: colors.foreground },
+    buttonDisabled: { opacity: 0.5 },
+
+    card: {
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius,
+      paddingHorizontal: spacing.md,
     },
     row: {
       flexDirection: "row",
+      alignItems: "center",
       justifyContent: "space-between",
-      alignItems: "center",
       minHeight: minTouchTarget,
-      paddingHorizontal: spacing.md,
       paddingVertical: spacing.sm,
-    },
-    rowLabelBox: {
-      flexDirection: "row",
-      alignItems: "center",
       gap: spacing.sm,
     },
-    rowLabel: { ...typography.body, color: colors.foreground },
-    rowValueWrap: { flexDirection: "row", alignItems: "center", gap: 7 },
-    rowValue: { ...typography.subhead, color: colors.foreground, fontWeight: "500" },
-    indicatorDot: { width: 7, height: 7, borderRadius: 4 },
     rowDivider: { height: 1, backgroundColor: colors.border },
+    rowLabelBox: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flex: 1, minWidth: 0 },
+    rowLabel: { ...typography.body, color: colors.foreground },
+    rowValueWrap: { flexDirection: "row", alignItems: "center", gap: 6 },
+    rowValue: { ...typography.subhead, color: colors.muted },
+    indicatorDot: { width: 8, height: 8, borderRadius: 4 },
+
     noticeCard: {
       backgroundColor: colors.card,
-      borderColor: colors.amber,
       borderWidth: 1,
+      borderColor: colors.amber,
       borderRadius: radius,
       padding: spacing.md,
       gap: spacing.sm,
     },
-    noticeHeader: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: spacing.xs,
-    },
-    noticeTitle: {
-      ...typography.headline,
-      color: colors.foreground,
-    },
-    noticeText: {
-      ...typography.footnote,
-      color: colors.muted,
-      lineHeight: 18,
-    },
-    noticeButton: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      backgroundColor: theme.mode === "dark" ? "#422006" : "#FEF3C7",
-      borderColor: colors.amber,
-      borderWidth: 0.5,
-      paddingVertical: spacing.sm,
-      paddingHorizontal: spacing.md,
-      borderRadius: radius - 2,
-    },
-    noticeButtonText: {
-      ...typography.subhead,
-      color: theme.mode === "dark" ? "#F59E0B" : "#B45309",
-      fontWeight: "600",
-    },
+    noticeHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    noticeTitle: { ...typography.headline, color: colors.foreground },
+    noticeText: { ...typography.footnote, color: colors.muted, lineHeight: 18 },
+    noticeButton: { flexDirection: "row", alignItems: "center", gap: 2, alignSelf: "flex-start", paddingVertical: spacing.xs },
+    noticeButtonText: { ...typography.subhead, color: colors.amber, fontWeight: "600" },
   });
 }
-

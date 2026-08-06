@@ -5,15 +5,26 @@ import { useCallback, useState } from "react";
 import type { AgentPolicy, DeviceEnrollmentRequest } from "@aems/types";
 
 import { client } from "./api";
+import {
+  EMPTY_TOTALS,
+  hasEnded,
+  isOnBreak,
+  loadDay,
+  summariseDay,
+  type DayTotals,
+} from "./day";
+import { loadPending, pendingCount } from "./queue";
+import * as session from "./session";
 import AemsUsage from "../modules/aems-usage";
 
 const DEVICE_TOKEN_KEY = "aems.deviceToken";
 const DEVICE_ID_KEY = "aems.deviceId";
 const POLICY_KEY = "aems.policy";
 const CONSENT_KEY = "aems.consentedPolicyVersion";
+const REVOKED_KEY = "aems.revoked";
 export const LAST_SYNC_KEY = "aems.lastSyncAt";
 
-export type Screen = "login" | "consent" | "home";
+export type Screen = "login" | "consent" | "home" | "revoked";
 
 export interface AgentStatus {
   screen: Screen;
@@ -23,6 +34,30 @@ export interface AgentStatus {
   policyVersion: string | null;
   lastSync: string;
   deviceId: string | null;
+  /** An administrator stopped this device. Terminal until it is enrolled again. */
+  revoked: boolean;
+  onBreak: boolean;
+  dayStarted: boolean;
+  dayEnded: boolean;
+  totals: DayTotals;
+  /** Observed events journalled to disk and not yet accepted by the API. */
+  pendingEvents: number;
+}
+
+/**
+ * Revocation outlives the credentials it invalidates.
+ *
+ * `clearDeviceCredentials()` deliberately wipes everything the device could still
+ * authenticate with, which used to leave the employee on the sign-in screen with no
+ * account of what had happened. This flag is what survives that wipe so the app can
+ * say so, and enrolling again is what clears it.
+ */
+export async function markRevoked(): Promise<void> {
+  await SecureStore.setItemAsync(REVOKED_KEY, "1");
+}
+
+export async function isRevoked(): Promise<boolean> {
+  return (await SecureStore.getItemAsync(REVOKED_KEY)) === "1";
 }
 
 export interface DeviceCredentials {
@@ -131,21 +166,58 @@ export function useAgentState() {
     policyVersion: null,
     lastSync: "Not synced",
     deviceId: null,
+    revoked: false,
+    onBreak: false,
+    dayStarted: false,
+    dayEnded: false,
+    totals: EMPTY_TOTALS,
+    pendingEvents: 0,
   });
 
   const refresh = useCallback(async () => {
-    const [credentials, consentedVersion, lastSyncAt] = await Promise.all([
+    const [credentials, consentedVersion, lastSyncAt, revoked, day, pending] = await Promise.all([
       loadDeviceCredentials(),
       SecureStore.getItemAsync(CONSENT_KEY),
       SecureStore.getItemAsync(LAST_SYNC_KEY),
+      isRevoked(),
+      loadDay(),
+      loadPending(),
     ]);
+
+    const screenActive = await screenActiveSeconds();
+    const totals = summariseDay(day, screenActive);
+    const dayFields = {
+      onBreak: isOnBreak(day),
+      dayStarted: day.startedAtMs !== null,
+      dayEnded: hasEnded(day),
+      totals,
+      pendingEvents: pendingCount(pending),
+    };
+
+    // Revocation is checked before credentials, because revoking is what removed
+    // them — reading "no credentials" as "not signed in" is what made an
+    // administrator stopping this device look like the app losing its session.
+    if (revoked) {
+      setStatus((current) => ({
+        ...current,
+        ...dayFields,
+        screen: "revoked",
+        greeting: greeting(),
+        collecting: false,
+        revoked: true,
+        deviceId: null,
+      }));
+      return;
+    }
 
     if (credentials === null) {
       setStatus((current) => ({
         ...current,
+        ...dayFields,
         screen: "login",
         greeting: greeting(),
         collecting: false,
+        revoked: false,
         deviceId: null,
         policyVersion: null,
       }));
@@ -160,14 +232,45 @@ export function useAgentState() {
 
     setStatus((current) => ({
       ...current,
+      ...dayFields,
       screen: consented ? "home" : "consent",
       greeting: greeting(),
       collecting: consented,
+      revoked: false,
       deviceId: credentials.deviceId,
       policyVersion: credentials.policy.version,
       lastSync: lastSyncAt ?? "Not synced",
     }));
   }, []);
+
+  /**
+   * The day controls. Each writes local state, then `refresh()` reads it straight
+   * back — so what the screen shows is what was actually persisted, never an
+   * optimistic guess that a failed write would leave lying.
+   */
+  const startDay = useCallback(async () => {
+    const credentials = await loadDeviceCredentials();
+    if (credentials === null) return;
+    await session.startDay(credentials.deviceId);
+    await refresh();
+  }, [refresh]);
+
+  const endDay = useCallback(async () => {
+    const credentials = await loadDeviceCredentials();
+    if (credentials === null) return;
+    await session.endDay(credentials.deviceId);
+    await refresh();
+  }, [refresh]);
+
+  const startBreak = useCallback(async () => {
+    await session.startBreak();
+    await refresh();
+  }, [refresh]);
+
+  const endBreak = useCallback(async () => {
+    await session.endBreak();
+    await refresh();
+  }, [refresh]);
 
   const login = useCallback(async (code: string) => {
     // No Authorization header sent — enroll-with-code is deliberately unauthenticated,
@@ -182,6 +285,9 @@ export function useAgentState() {
       // A fresh enrolment always needs fresh consent, even if a *different* prior
       // enrolment on this device had already recorded one.
       SecureStore.deleteItemAsync(CONSENT_KEY),
+      // Enrolling again is the one thing that clears a revocation: an administrator
+      // issuing a new code is them deciding this device may be used after all.
+      SecureStore.deleteItemAsync(REVOKED_KEY),
     ]);
 
     client.setAuth({ kind: "device", token: response.deviceToken });
@@ -192,6 +298,7 @@ export function useAgentState() {
       deviceId: response.deviceId,
       policyVersion: response.policy.version,
       collecting: false,
+      revoked: false,
     }));
   }, []);
 
@@ -214,13 +321,34 @@ export function useAgentState() {
 
     await SecureStore.setItemAsync(CONSENT_KEY, credentials.policy.version);
 
-    setStatus((current) => ({
-      ...current,
-      screen: "home",
-      collecting: true,
-      policyVersion: credentials.policy.version,
-    }));
-  }, []);
+    // Accepting is clocking in. Leaving the day closed here would put the employee on
+    // a home screen that says "Collecting" above a set of totals frozen at zero.
+    await session.startDay(credentials.deviceId);
+    await refresh();
+  }, [refresh]);
 
-  return { status, refresh, login, acceptConsent };
+  return {
+    status,
+    refresh,
+    login,
+    acceptConsent,
+    startDay,
+    endDay,
+    startBreak,
+    endBreak,
+  };
+}
+
+/**
+ * Today's screen-on seconds, or zero if the native module cannot be reached.
+ *
+ * Zero is the safe direction to fail in: it understates the day rather than inventing
+ * work, and the next successful read corrects it.
+ */
+async function screenActiveSeconds(): Promise<number> {
+  try {
+    return (await AemsUsage.getDeviceSnapshot()).screenActiveSeconds;
+  } catch {
+    return 0;
+  }
 }

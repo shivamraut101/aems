@@ -1,19 +1,34 @@
 import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
+import * as SystemUI from "expo-system-ui";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useFonts } from "expo-font";
 
 import AemsUsage from "./modules/aems-usage";
+import { TabBar, type TabKey } from "./src/components/TabBar";
 import { registerBackgroundSync } from "./src/background-task";
+import { ActivityScreen } from "./src/screens/ActivityScreen";
 import { ConsentScreen } from "./src/screens/ConsentScreen";
+import { DeviceScreen } from "./src/screens/DeviceScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
+import { PrivacyScreen } from "./src/screens/PrivacyScreen";
+import { RevokedScreen } from "./src/screens/RevokedScreen";
 import { useAgentState } from "./src/state";
 import { runSyncCycle } from "./src/sync";
-import { fontFamily, useTheme, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "./src/theme";
+import {
+  fontFamily,
+  ThemePreferenceProvider,
+  useTheme,
+  useThemePreferenceState,
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+} from "./src/theme";
 
 const FOREGROUND_SYNC_INTERVAL_MS = 60_000;
 
@@ -21,12 +36,19 @@ const FOREGROUND_SYNC_INTERVAL_MS = 60_000;
 const SCREEN_TRANSITION_MS = 220;
 
 /**
- * Root component. Three screens, swapped by hand instead of pulling in a router —
- * login → consent → collecting is a strict progression, so "navigation" here is
- * just how far along it a device is, per `useAgentState`'s `status.screen`.
+ * The agent proper.
+ *
+ * Which *screen* shows is still a function of agent state rather than of navigation —
+ * login → consent → collecting is a strict progression a tab cannot skip. What tabs
+ * add is movement *within* the collecting state, which is where the employee's own
+ * data lives: `docs/scope.md` §3.2 and §3.4 are collected on this phone, and until
+ * there was somewhere to put them the person they describe was the only one who could
+ * not read them.
  */
-export default function App() {
-  const { status, refresh, login, acceptConsent } = useAgentState();
+function AgentApp() {
+  const { status, refresh, login, acceptConsent, startDay, endDay, startBreak, endBreak } =
+    useAgentState();
+  const [tab, setTab] = useState<TabKey>("today");
   const theme = useTheme();
   const [fontsLoaded] = useFonts({
     [fontFamily.regular]: Inter_400Regular,
@@ -105,23 +127,72 @@ export default function App() {
     return <View style={{ flex: 1, backgroundColor: theme.colors.background }} />;
   }
 
+  // Tabs belong to the signed-in, consented state and nothing else. Showing them
+  // during sign-in or on the consent gate would offer a way around a screen that is
+  // deliberately blocking — the consent gate in particular must be answered, not
+  // navigated past.
+  const tabbed = status.screen === "home";
+
   return (
     <SafeAreaProvider>
       <StatusBar style={theme.mode === "dark" ? "light" : "dark"} />
-      <Animated.View
-        key={status.screen}
-        entering={FadeIn.duration(SCREEN_TRANSITION_MS)}
-        exiting={FadeOut.duration(SCREEN_TRANSITION_MS)}
-        style={{ flex: 1, backgroundColor: theme.colors.background }}
-      >
-        {status.screen === "login" ? (
-          <LoginScreen onLogin={login} />
-        ) : status.screen === "consent" ? (
-          <ConsentScreen status={status} onAccept={acceptConsent} onAccepted={refresh} />
-        ) : (
-          <HomeScreen status={status} />
-        )}
-      </Animated.View>
+      <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
+        <Animated.View
+          key={tabbed ? `home:${tab}` : status.screen}
+          entering={FadeIn.duration(SCREEN_TRANSITION_MS)}
+          exiting={FadeOut.duration(SCREEN_TRANSITION_MS)}
+          style={{ flex: 1 }}
+        >
+          {status.screen === "login" ? (
+            <LoginScreen onLogin={login} />
+          ) : status.screen === "revoked" ? (
+            <RevokedScreen policyVersion={status.policyVersion} />
+          ) : status.screen === "consent" ? (
+            <ConsentScreen status={status} onAccept={acceptConsent} onAccepted={refresh} />
+          ) : tab === "activity" ? (
+            <ActivityScreen />
+          ) : tab === "device" ? (
+            <DeviceScreen />
+          ) : tab === "privacy" ? (
+            <PrivacyScreen policyVersion={status.policyVersion} />
+          ) : (
+            <HomeScreen
+              status={status}
+              onStartBreak={startBreak}
+              onEndBreak={endBreak}
+              onStartDay={startDay}
+              onEndDay={endDay}
+            />
+          )}
+        </Animated.View>
+
+        {tabbed ? <TabBar active={tab} onSelect={setTab} /> : null}
+      </View>
     </SafeAreaProvider>
+  );
+}
+
+/**
+ * Wraps the app in the stored appearance preference.
+ *
+ * It has to sit outside `AgentApp` rather than inside it: `useTheme()` reads this
+ * context, and a provider mounted in the same component that consumes it would leave
+ * every `useTheme()` call in the tree below reading the default instead.
+ */
+export default function App() {
+  const themePreference = useThemePreferenceState();
+
+  useEffect(() => {
+    // Keeps the system chrome behind the app in step with the chosen appearance —
+    // without it a light theme keeps a navy navigation bar underneath it.
+    void SystemUI.setBackgroundColorAsync(
+      themePreference.preference === "dark" ? "#020617" : "#F8FAFC",
+    );
+  }, [themePreference.preference]);
+
+  return (
+    <ThemePreferenceProvider value={themePreference}>
+      <AgentApp />
+    </ThemePreferenceProvider>
   );
 }
