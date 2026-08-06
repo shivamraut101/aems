@@ -295,6 +295,22 @@ export interface TimelineMarker {
 /** Whole-window totals, so a header does not have to re-sum the grid. */
 export interface TimelineTotals {
   activeSeconds: number;
+  /**
+   * `activeSeconds`, split by what the work was.
+   *
+   * The three sum to `activeSeconds` exactly. Active time was previously one number,
+   * which forced every worked second into "productive or idle" — and
+   * `docs/inspiration.md` argues at length that the honest third bucket is *neutral*:
+   * the machine was in use and we cannot fairly call it productive either way.
+   *
+   * `neutral` is also where uncategorised activity lands, deliberately. An application
+   * nobody has written a rule for is evidence of nothing, and a product positioned as
+   * workforce intelligence must not count "we don't know" against a person — the same
+   * reasoning as `UNCATEGORIZED_RESULT` in the analytics package.
+   */
+  productiveSeconds: number;
+  neutralSeconds: number;
+  unproductiveSeconds: number;
   idleSeconds: number;
   breakSeconds: number;
   offlineSeconds: number;

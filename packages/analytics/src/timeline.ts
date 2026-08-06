@@ -35,6 +35,8 @@ import type {
   WorkSession,
 } from "@aems/types";
 
+import type { Productivity } from "./categorize.js";
+
 import { clamp, difference, merge, toInterval, totalSeconds, type Interval } from "./intervals.js";
 
 /**
@@ -143,6 +145,15 @@ export interface DayTimelineInput {
   sessions?: readonly SessionRow[];
   /** Already resolved and signed by the route — analytics never touches Storage. */
   screenshots?: readonly TimelineScreenshot[];
+  /**
+   * Maps a stored category to its productivity, so active time can be split three ways.
+   *
+   * Injected rather than imported: the rule set is per company and lives in the
+   * database, and analytics must stay a pure function of what it is handed. Omitted,
+   * every worked second reports as neutral — which is the honest answer for a caller
+   * that has not supplied any rules, not a silent zero.
+   */
+  productivityOf?: (category: string | null) => Productivity;
   /** True when a row cap was hit upstream, so every number here is a floor. */
   truncated?: boolean;
 }
@@ -561,6 +572,7 @@ export function buildDayTimeline(input: DayTimelineInput): DayTimeline {
   const idleSeconds = totalSeconds(idle);
   const breakSeconds = totalSeconds(breaks);
   const trackedSeconds = activeSeconds + idleSeconds + breakSeconds;
+  const split = splitByProductivity(apps, input.productivityOf, activeSeconds);
   const windowSeconds = Math.round((windowEnd - windowStart) / 1000);
 
   return {
@@ -573,6 +585,7 @@ export function buildDayTimeline(input: DayTimelineInput): DayTimeline {
     markers: buildMarkers(input, window),
     totals: {
       activeSeconds,
+      ...split,
       idleSeconds,
       breakSeconds,
       offlineSeconds: Math.max(0, windowSeconds - trackedSeconds),
@@ -814,4 +827,52 @@ function insertSorted(queue: KeyedSpan[], span: KeyedSpan, from: number): void {
   let index = from;
   while (index < queue.length && queue[index]!.start <= span.start) index += 1;
   queue.splice(index, 0, span);
+}
+
+/**
+ * Splits active time three ways by what the work was.
+ *
+ * Apportioned from `apps`, which is already disjoint per application, rather than
+ * re-walking the raw events — so the three parts cannot drift from `activeSeconds`.
+ * Whatever active time no application accounts for (a gap between a rule firing and
+ * an app name being read) lands in `neutral`, which keeps the identity
+ * `productive + neutral + unproductive === activeSeconds` exact.
+ *
+ * Uncategorised goes to neutral rather than unproductive, matching
+ * `UNCATEGORIZED_RESULT`. An application nobody wrote a rule for is evidence of
+ * nothing, and counting "we don't know" against someone is the framing this product
+ * refuses.
+ */
+function splitByProductivity(
+  apps: readonly AppInterval[],
+  productivityOf: ((category: string | null) => Productivity) | undefined,
+  activeSeconds: number,
+): { productiveSeconds: number; neutralSeconds: number; unproductiveSeconds: number } {
+  if (productivityOf === undefined) {
+    // No rule set supplied: every worked second is "we cannot say", which is neutral.
+    return { productiveSeconds: 0, neutralSeconds: activeSeconds, unproductiveSeconds: 0 };
+  }
+
+  let productive = 0;
+  let unproductive = 0;
+
+  for (const app of apps) {
+    // `appIntervals` has already subtracted idle and breaks, so these are disjoint
+    // slices of active time and can simply be summed.
+    const seconds = Math.round((app.end - app.start) / 1000);
+    const verdict = productivityOf(app.category);
+    if (verdict === "productive") productive += seconds;
+    else if (verdict === "unproductive") unproductive += seconds;
+  }
+
+  // Clamped so a rounding disagreement between the per-app sums and the merged active
+  // ranges can never make a part exceed the whole or go negative.
+  productive = Math.min(productive, activeSeconds);
+  unproductive = Math.min(unproductive, Math.max(0, activeSeconds - productive));
+
+  return {
+    productiveSeconds: productive,
+    unproductiveSeconds: unproductive,
+    neutralSeconds: activeSeconds - productive - unproductive,
+  };
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import type { Productivity } from "./categorize.js";
+
 import type { ActivityEvent, BreakEvent, IdleEvent, TimelineScreenshot, WorkSession } from "@aems/types";
 
 import type { Interval } from "./intervals.js";
@@ -708,5 +710,62 @@ describe("buildDayTimeline", () => {
 
     expect(timeline.slots).toHaveLength(1440);
     expect(elapsed).toBeLessThan(1500);
+  });
+});
+
+/**
+ * Splitting active time three ways.
+ *
+ * `docs/inspiration.md` argues that forcing every worked second into productive-or-idle
+ * is unfair, and that neutral is the honest bucket for "in use, and we cannot call it
+ * either way". The property that makes it safe to display is that the three parts are
+ * a partition of `activeSeconds` — a breakdown that does not add up to its own total
+ * is worse than no breakdown, because a reader cannot tell which number to believe.
+ */
+describe("productivity split", () => {
+  const at = (m: number) => new Date(Date.UTC(2026, 7, 6, 9, m)).toISOString();
+
+  const build = (productivityOf?: (c: string | null) => Productivity) =>
+    buildDayTimeline({
+      profileId: "p1",
+      periodStart: at(0),
+      periodEnd: at(60),
+      activity: [
+        { app_name: "Code", window_title: null, category: "Development", started_at: at(0), ended_at: at(20) },
+        { app_name: "Chrome", window_title: null, category: "Social", started_at: at(20), ended_at: at(30) },
+        { app_name: "Notes", window_title: null, category: null, started_at: at(30), ended_at: at(40) },
+      ],
+      idle: [],
+      // Active time is clipped to work sessions — activity observed while clocked out
+      // is not the employee's time. Without this the whole window reports as offline.
+      sessions: [{ clock_in_at: at(0), clock_out_at: at(60) }],
+      productivityOf,
+    });
+
+  const rules = (c: string | null): Productivity =>
+    c === "Development" ? "productive" : c === "Social" ? "unproductive" : "neutral";
+
+  it("partitions active time exactly", () => {
+    const { totals } = build(rules);
+    expect(totals.productiveSeconds + totals.neutralSeconds + totals.unproductiveSeconds).toBe(
+      totals.activeSeconds,
+    );
+  });
+
+  it("credits each category to its own bucket", () => {
+    const { totals } = build(rules);
+    expect(totals.productiveSeconds).toBe(20 * 60);
+    expect(totals.unproductiveSeconds).toBe(10 * 60);
+    // Notes has no category, and uncategorised is never counted against anyone.
+    expect(totals.neutralSeconds).toBe(10 * 60);
+  });
+
+  it("reports everything as neutral when no rules are supplied", () => {
+    // The honest answer for a caller with no rule set — not a silent zero, which would
+    // read as "nobody did any productive work today".
+    const { totals } = build();
+    expect(totals.neutralSeconds).toBe(totals.activeSeconds);
+    expect(totals.productiveSeconds).toBe(0);
+    expect(totals.unproductiveSeconds).toBe(0);
   });
 });
