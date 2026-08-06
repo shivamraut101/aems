@@ -1,10 +1,11 @@
 import { Feather } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 
 import AemsUsage from "../../modules/aems-usage";
+import { ListRow, ListSection } from "../components/List";
 import { PressableScale } from "../components/PressableScale";
+import { Screen } from "../components/Screen";
 import type { DayTotals } from "../day";
 import type { AgentStatus } from "../state";
 import { useTheme } from "../theme";
@@ -65,207 +66,168 @@ export function HomeScreen({
   const statusIsLive = status.collecting && !status.onBreak && !status.dayEnded;
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.headerContainer}>
-          <View style={styles.profileRow}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{initials(status.fullName)}</Text>
-            </View>
-            <View style={styles.headerInfo}>
-              <Text style={styles.greeting}>{status.greeting}</Text>
-              <Text style={styles.largeTitle}>{status.fullName ?? "Welcome"}</Text>
-            </View>
+    <Screen
+      title={status.fullName ?? "Welcome"}
+      subtitle={status.greeting}
+      accessory={
+        <View style={[styles.statusBadge, statusIsLive ? styles.badgeWorking : styles.badgePaused]}>
+          <View style={[styles.badgeDot, statusIsLive ? styles.dotWorking : styles.dotPaused]} />
+          <Text style={statusIsLive ? styles.badgeTextWorking : styles.badgeTextPaused}>
+            {statusLabel}
+          </Text>
+        </View>
+      }
+    >
+      {status.dayEnded ? (
+        <Banner
+          theme={theme}
+          icon="check-circle"
+          title="You have finished for today"
+          body="Nothing further is being recorded. Start again below whenever you carry on."
+        />
+      ) : status.onBreak ? (
+        <Banner
+          theme={theme}
+          icon="pause-circle"
+          title="You are on a break"
+          body="App usage and working time are not being recorded until you end the break."
+        />
+      ) : null}
+
+      {/* Hero: today's work */}
+      <View style={styles.heroCard}>
+        <View style={styles.heroHeader}>
+          <View>
+            <Text style={styles.heroLabel}>TODAY&rsquo;S ACTIVE TIME</Text>
+            <Text style={styles.heroValue}>{formatDuration(totals.activeSeconds)}</Text>
           </View>
-          <View style={[styles.statusBadge, statusIsLive ? styles.badgeWorking : styles.badgePaused]}>
-            <View style={[styles.badgeDot, statusIsLive ? styles.dotWorking : styles.dotPaused]} />
-            <Text style={statusIsLive ? styles.badgeTextWorking : styles.badgeTextPaused}>
-              {statusLabel}
-            </Text>
+          <View style={styles.heroIconBox}>
+            <Feather name="clock" size={24} color={theme.colors.indigo} />
           </View>
         </View>
 
-        {status.dayEnded ? (
-          <Banner
-            theme={theme}
-            icon="check-circle"
-            title="You have finished for today"
-            body="Nothing further is being recorded. Start again below whenever you carry on."
-          />
-        ) : status.onBreak ? (
-          <Banner
-            theme={theme}
-            icon="pause-circle"
-            title="You are on a break"
-            body="App usage and working time are not being recorded until you end the break."
-          />
-        ) : null}
-
-        {/* Hero: today's work */}
-        <View style={[styles.heroCard, theme.shadow]}>
-          <View style={styles.heroHeader}>
-            <View>
-              <Text style={styles.heroLabel}>TODAY&rsquo;S ACTIVE TIME</Text>
-              <Text style={styles.heroValue}>{formatDuration(totals.activeSeconds)}</Text>
-            </View>
-            <View style={styles.heroIconBox}>
-              <Feather name="clock" size={24} color={theme.colors.indigo} />
-            </View>
+        <View style={styles.progressContainer}>
+          <View style={styles.progressBarBackground}>
+            <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
           </View>
-
-          <View style={styles.progressContainer}>
-            <View style={styles.progressBarBackground}>
-              <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
-            </View>
-            <View style={styles.progressLabels}>
-              <Text style={styles.progressLabelText}>Daily Goal Progress</Text>
-              <Text style={styles.progressPercentText}>{progressPercent}% of 8h</Text>
-            </View>
+          <View style={styles.progressLabels}>
+            <Text style={styles.progressLabelText}>Daily Goal Progress</Text>
+            <Text style={styles.progressPercentText}>{progressPercent}% of 8h</Text>
           </View>
         </View>
+      </View>
 
-        {/*
-          The four-way split `docs/scope.md` §2.2 is written around. Shown as durations
-          rather than as one percentage, per `docs/design.md`: "Focused time 7h 20m"
-          reads as insight, "86%" reads as a score.
-        */}
-        <View style={styles.section}>
-          <Text style={styles.sectionHeader}>YOUR DAY</Text>
-          <View style={[styles.splitCard, theme.shadow]}>
-            <Split theme={theme} label="Total" value={split.total} tone="foreground" />
-            <Split theme={theme} label="Active" value={split.active} tone="emerald" />
-            <Split theme={theme} label="Idle" value={split.idle} tone="muted" />
-            <Split theme={theme} label="Break" value={split.breakTime} tone="amber" />
-          </View>
+      {/*
+        The four-way split `docs/scope.md` §2.2 is written around. Shown as durations
+        rather than as one percentage, per `docs/design.md`: "Focused time 7h 20m"
+        reads as insight, "86%" reads as a score.
+      */}
+      <View style={styles.section}>
+        <Text style={styles.sectionHeader}>YOUR DAY</Text>
+        <View style={styles.splitCard}>
+          <Split theme={theme} label="Total" value={split.total} tone="foreground" />
+          <Split theme={theme} label="Active" value={split.active} tone="emerald" />
+          <Split theme={theme} label="Idle" value={split.idle} tone="muted" />
+          <Split theme={theme} label="Break" value={split.breakTime} tone="amber" />
         </View>
+      </View>
 
-        {/* Controls */}
-        {!status.revoked ? (
-          <View style={styles.controls}>
-            {status.dayStarted && !status.dayEnded ? (
-              <PressableScale
-                onPress={() => void run("break", status.onBreak ? onEndBreak : onStartBreak)}
-                disabled={busy !== null}
-                accessibilityRole="button"
-                style={[styles.secondaryButton, busy !== null && styles.buttonDisabled]}
-              >
-                {busy === "break" ? (
-                  <ActivityIndicator size="small" color={theme.colors.foreground} />
-                ) : (
-                  <>
-                    <Feather
-                      name={status.onBreak ? "play" : "pause"}
-                      size={16}
-                      color={theme.colors.foreground}
-                    />
-                    <Text style={styles.secondaryButtonText}>
-                      {status.onBreak ? "End break" : "Take a break"}
-                    </Text>
-                  </>
-                )}
-              </PressableScale>
-            ) : null}
-
+      {/* Controls */}
+      {!status.revoked ? (
+        <View style={styles.controls}>
+          {status.dayStarted && !status.dayEnded ? (
             <PressableScale
-              onPress={() =>
-                void run("day", status.dayStarted && !status.dayEnded ? onEndDay : onStartDay)
-              }
+              onPress={() => void run("break", status.onBreak ? onEndBreak : onStartBreak)}
               disabled={busy !== null}
               accessibilityRole="button"
-              style={[styles.primaryButton, busy !== null && styles.buttonDisabled]}
+              style={[styles.secondaryButton, busy !== null && styles.buttonDisabled]}
             >
-              {busy === "day" ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
+              {busy === "break" ? (
+                <ActivityIndicator size="small" color={theme.colors.foreground} />
               ) : (
                 <>
                   <Feather
-                    name={status.dayStarted && !status.dayEnded ? "log-out" : "log-in"}
+                    name={status.onBreak ? "play" : "pause"}
                     size={16}
-                    color="#FFFFFF"
+                    color={theme.colors.foreground}
                   />
-                  <Text style={styles.primaryButtonText}>
-                    {status.dayStarted && !status.dayEnded ? "End day" : "Start working"}
+                  <Text style={styles.secondaryButtonText}>
+                    {status.onBreak ? "End break" : "Take a break"}
                   </Text>
                 </>
               )}
             </PressableScale>
-          </View>
-        ) : null}
+          ) : null}
 
-        {/* Connection */}
-        <View style={styles.section}>
-          <Text style={styles.sectionHeader}>CONNECTION &amp; SYNC</Text>
-          <View style={[styles.card, theme.shadow]}>
-            <View style={styles.row}>
-              <View style={styles.rowLabelBox}>
-                <Feather name="play-circle" size={16} color={theme.colors.muted} />
-                <Text style={styles.rowLabel}>Agent Status</Text>
-              </View>
-              <View style={styles.rowValueWrap}>
-                <View
-                  style={[
-                    styles.indicatorDot,
-                    { backgroundColor: statusIsLive ? theme.colors.emerald : theme.colors.muted },
-                  ]}
-                />
-                <Text style={styles.rowValue}>{statusIsLive ? "Working" : "Paused"}</Text>
-              </View>
-            </View>
-
-            <View style={styles.rowDivider} />
-
-            <View style={styles.row}>
-              <View style={styles.rowLabelBox}>
-                <Feather name="refresh-cw" size={16} color={theme.colors.muted} />
-                <Text style={styles.rowLabel}>Device Sync</Text>
-              </View>
-              <Text style={styles.rowValue}>{formatLastSync(status.lastSync)}</Text>
-            </View>
-
-            {/*
-              Shown only when there is something waiting. A permanent "0 events" row
-              would train the reader to ignore the one number that matters when the
-              phone has been offline.
-            */}
-            {status.pendingEvents > 0 ? (
+          <PressableScale
+            onPress={() =>
+              void run("day", status.dayStarted && !status.dayEnded ? onEndDay : onStartDay)
+            }
+            disabled={busy !== null}
+            accessibilityRole="button"
+            style={[styles.primaryButton, busy !== null && styles.buttonDisabled]}
+          >
+            {busy === "day" ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
               <>
-                <View style={styles.rowDivider} />
-                <View style={styles.row}>
-                  <View style={styles.rowLabelBox}>
-                    <Feather name="upload-cloud" size={16} color={theme.colors.muted} />
-                    <Text style={styles.rowLabel}>Waiting to sync</Text>
-                  </View>
-                  <Text style={styles.rowValue}>
-                    {status.pendingEvents} {status.pendingEvents === 1 ? "event" : "events"}
-                  </Text>
-                </View>
+                <Feather
+                  name={status.dayStarted && !status.dayEnded ? "log-out" : "log-in"}
+                  size={16}
+                  color="#FFFFFF"
+                />
+                <Text style={styles.primaryButtonText}>
+                  {status.dayStarted && !status.dayEnded ? "End day" : "Start working"}
+                </Text>
               </>
-            ) : null}
-          </View>
+            )}
+          </PressableScale>
         </View>
+      ) : null}
 
-        {!hasUsageAccess ? (
-          <View style={[styles.noticeCard, theme.shadow]}>
-            <View style={styles.noticeHeader}>
-              <Feather name="alert-circle" size={20} color={theme.colors.amber} />
-              <Text style={styles.noticeTitle}>Permission Required</Text>
+      <ListSection heading="Connection & sync">
+        <ListRow
+          icon="play-circle"
+          label="Agent status"
+          accessory={
+            <View style={styles.rowValueWrap}>
+              <View
+                style={[
+                  styles.indicatorDot,
+                  { backgroundColor: statusIsLive ? theme.colors.emerald : theme.colors.muted },
+                ]}
+              />
+              <Text style={styles.rowValue}>{statusIsLive ? "Working" : "Paused"}</Text>
             </View>
-            <Text style={styles.noticeText}>
-              Android requires usage access permission in settings to detect active
-              applications and log time accurately.
-            </Text>
-            <PressableScale
-              onPress={() => AemsUsage.requestUsageAccess()}
-              accessibilityRole="button"
-              style={styles.noticeButton}
-            >
-              <Text style={styles.noticeButtonText}>Enable Usage Access</Text>
-              <Feather name="chevron-right" size={16} color={theme.colors.amber} />
-            </PressableScale>
-          </View>
+          }
+        />
+        <ListRow icon="refresh-cw" label="Device sync" value={formatLastSync(status.lastSync)} />
+        {/*
+          Shown only when there is something waiting. A permanent "0 events" row would
+          train the reader to ignore the one number that matters when the phone has
+          been offline.
+        */}
+        {status.pendingEvents > 0 ? (
+          <ListRow
+            icon="upload-cloud"
+            label="Waiting to sync"
+            value={`${status.pendingEvents} ${status.pendingEvents === 1 ? "event" : "events"}`}
+          />
         ) : null}
-      </ScrollView>
-    </SafeAreaView>
+      </ListSection>
+
+      {!hasUsageAccess ? (
+        <ListSection heading="Action needed">
+          <ListRow
+            icon="alert-circle"
+            iconColor={theme.colors.amber}
+            label="Enable usage access"
+            detail="Android requires usage access to detect active applications and log time accurately."
+            onPress={() => AemsUsage.requestUsageAccess()}
+          />
+        </ListSection>
+      ) : null}
+    </Screen>
   );
 }
 
@@ -353,16 +315,6 @@ function Split({
       <Text style={styles.splitLabel}>{label}</Text>
     </View>
   );
-}
-
-function initials(name?: string | null): string {
-  if (!name) return "W";
-  return name
-    .split(" ")
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
 }
 
 /**

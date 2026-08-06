@@ -291,6 +291,7 @@ until they confirm the edit.
 | --- | --- | --- |
 | 2026-08-05 | **Website restriction is in scope.** The admin panel can set rules that block sites, enforced by a managed browser extension. | `docs/scope.md` §8 lists control features under *Later — not part of MVP* |
 | 2026-08-05 | **The dashboard may go beyond `docs/design.md`** where a change demonstrably improves the product. Asked for by name: "if you can improve the design rather than just docs/design.md and if you have better ideas according to this project please proceed." | `docs/design.md` was previously followed to the letter |
+| 2026-08-06 | **The Android agent's tab bar may be translucent.** Asked for by name ("make the tab bar like ios liquid glass"), and confined to `apps/android-agent/src/components/TabBar.tsx` — chosen over glass everywhere, which was offered and declined. The rest of the app takes iOS *structure* only: collapsing large titles, grouped inset lists, hairline separators, spring presses. | `docs/design.md` lists **glassmorphism** under *Avoid*, and the 2026-08-05 permission above named only the dashboard |
 
 Two parts of the design direction are **not** loosened by that, because neither is a
 style preference:
@@ -300,7 +301,10 @@ style preference:
   someone is treated fairly. Spending it on a button would be a legibility regression.
 - **The compliance surfaces keep their wording and prominence** — consent, the visible
   indicator, what-is-collected. Those answer to the *Non-negotiables* above, not to
-  taste.
+  taste. This is also the limit on the translucency exception: the *Avoid* rule it
+  bends is a legibility rule, so nothing a reader has to actually read — consent, the
+  privacy list, the break/finished/revoked notices — sits on a translucent surface.
+  A navigation bar carries four words the reader already knows; a disclosure does not.
 
 Two things that decision does **not** do, and must not be allowed to drift into:
 
