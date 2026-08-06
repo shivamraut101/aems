@@ -40,10 +40,17 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { RelativeTime } from "@/components/relative-time";
 import { PageHeader } from "@/components/page-header";
-import { ErrorState, FilterBarSkeleton, StaleNotice, queryViewState } from "@/components/states";
+import {
+  EmptyState,
+  ErrorState,
+  FilterBarSkeleton,
+  StaleNotice,
+  queryViewState,
+} from "@/components/states";
 import { describeError, useApiQuery, useSession, type EmployeeRow } from "@/lib/api";
 import { isDeactivated } from "@/lib/queries/employees-form";
 import {
+  EMPTY_PEOPLE_FILTERS,
   UNASSIGNED_DEPARTMENT,
   compareLastSeen,
   departmentOptions,
@@ -91,6 +98,62 @@ export function PeopleView() {
 }
 
 const columnHelper = createColumnHelper<EmployeeRow>();
+
+/** What the page is, for as long as it cannot say anything more useful than that. */
+const ROSTER_SUBTITLE = "Everyone in your company, with the devices assigned to them.";
+
+interface RosterHealth {
+  /** Off-boarded accounts excluded — they are history, not headcount. */
+  people: number;
+  withoutDevice: number;
+  paused: number;
+}
+
+/**
+ * The roster's own "is this okay?" question, answered before the table.
+ *
+ * A list of names is not a conclusion. The thing a super admin actually opens this page
+ * to find out is whether the rollout is complete — and the honest gap is people whose
+ * account exists but whose agent never got installed, because for them the product is
+ * doing nothing at all while the roster reads as if it were.
+ *
+ * Deactivated people are skipped throughout: including them would make "12 people" mean
+ * something different depending on whether the Include-deactivated box happened to be
+ * ticked, and a headline number that moves with a filter is not a headline number.
+ */
+function rosterHealth(rows: readonly EmployeeRow[]): RosterHealth {
+  let people = 0;
+  let withoutDevice = 0;
+  let paused = 0;
+
+  for (const row of rows) {
+    if (isDeactivated(row)) continue;
+    people += 1;
+    if (row.devices.length === 0) withoutDevice += 1;
+    if (!row.monitoring_enabled) paused += 1;
+  }
+
+  return { people, withoutDevice, paused };
+}
+
+function rosterSentence({ people, withoutDevice, paused }: RosterHealth): string {
+  const clauses: string[] = [];
+
+  if (withoutDevice > 0) {
+    clauses.push(
+      `${withoutDevice} ${withoutDevice === 1 ? "has" : "have"} no device enrolled, so nothing is being collected for them yet`,
+    );
+  }
+  if (paused > 0) {
+    clauses.push(`${paused} ${paused === 1 ? "has" : "have"} monitoring paused`);
+  }
+
+  if (clauses.length === 0) {
+    return `All ${people} ${people === 1 ? "person has" : "people have"} a device enrolled and monitoring on.`;
+  }
+
+  return `${people} ${people === 1 ? "person" : "people"}. Of those, ${clauses.join(", and ")}.`;
+}
 
 function PeopleScreen() {
   const router = useRouter();
@@ -144,30 +207,95 @@ function PeopleScreen() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
+  /**
+   * Undo every narrowing in one go, including the deactivated toggle.
+   *
+   * One control rather than two, because a reader looking at an unexpectedly short list
+   * does not care which of the four parameters shortened it — and leaving "Include
+   * deactivated" behind after a "Clear" is exactly the sort of residue that makes
+   * somebody reload the page to be sure.
+   */
+  function clearFilters() {
+    const query = mergeQuery(search, {
+      ...peopleFilterParams(EMPTY_PEOPLE_FILTERS),
+      deactivated: null,
+    });
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
   const departments = useMemo(() => departmentOptions(rows), [rows]);
   const filtered = useMemo(
     () => rows.filter((person) => matchesPeopleFilter(person, filters)),
     [rows, filters],
   );
+  const health = useMemo(() => rosterHealth(rows), [rows]);
+
+  /**
+   * What is currently narrowing the list, in words.
+   *
+   * "Showing 4 of 12" says a filter is on; it does not say *which*, and the control
+   * holding it may be scrolled off a phone screen or — in the case of the search box —
+   * hold text the reader typed several minutes ago. Naming them is the difference
+   * between a short list and a short list somebody can explain.
+   */
+  const activeFilterLabels = useMemo(() => {
+    const labels: string[] = [];
+    if (filters.search) labels.push(`“${filters.search}”`);
+    if (filters.department !== null) {
+      labels.push(
+        filters.department === UNASSIGNED_DEPARTMENT ? "no department" : filters.department,
+      );
+    }
+    if (filters.monitoring !== "all") {
+      labels.push(filters.monitoring === "on" ? "monitoring on" : "monitoring paused");
+    }
+    if (showDeactivated) labels.push("including deactivated");
+    return labels;
+  }, [filters, showDeactivated]);
 
   const columns = useMemo(
     () => [
       columnHelper.accessor((row) => row.full_name || row.email, {
         id: "name",
         header: "Name",
-        cell: (context) => (
-          <>
+        cell: (context) => {
+          const person = context.row.original;
+          const name = context.getValue();
+
+          return (
+            /*
+             * The whole primary cell is the door, not the few characters of the name.
+             * A roster row exists to be opened, and a 38px cell offers a thumb far more
+             * to aim at than a text run does. The negative margins push the hit area
+             * back out over the cell's own padding, which a plain block link would
+             * otherwise leave dead.
+             *
+             * Both lines truncate with the full value on `title`: a long name and a
+             * long address are the two strings on this page capable of widening the
+             * table past the phone it is read on.
+             */
             <Link
-              href={`/people/${context.row.original.id}`}
-              className="rounded font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              href={`/people/${person.id}`}
+              className="group -mx-2 -my-1 block rounded px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {context.getValue()}
+              <span
+                className={cn(
+                  "block truncate font-medium group-hover:underline",
+                  // The subtle half of the off-boarded marker. The Monitoring column
+                  // says what happened; dimming says this row is not a live one, which
+                  // is the part a reader needs while scanning rather than reading.
+                  isDeactivated(person) && "text-muted-foreground",
+                )}
+                title={name}
+              >
+                {name}
+              </span>
+              <span className="block truncate text-xs text-muted-foreground" title={person.email}>
+                {person.email}
+              </span>
             </Link>
-            <p className="truncate text-xs text-muted-foreground">
-              {context.row.original.email}
-            </p>
-          </>
-        ),
+          );
+        },
       }),
       columnHelper.accessor((row) => row.department ?? UNASSIGNED_DEPARTMENT, {
         id: "department",
@@ -191,16 +319,32 @@ function PeopleScreen() {
       columnHelper.accessor((row) => row.monitoring_enabled, {
         id: "monitoring",
         header: "Monitoring",
-        // A deactivated person is always paused, so "Paused" would be true and
-        // uninformative — it reads as a choice somebody made this morning rather than
-        // as an account that has been off-boarded.
+        /*
+         * Only the states worth stopping on get a badge.
+         *
+         * Monitoring is on for very nearly everybody, so a pill in every row drew a
+         * wall of identical green down a column that was, in practice, constant — and a
+         * badge that never varies is decoration competing with the two rows that do.
+         * The ordinary case is plain text; the exceptions keep the pill and the dot,
+         * which is what the dot is for.
+         *
+         * The column keeps its width because it keeps its job: it still sorts, still
+         * toggles, and still reads as a value rather than a blank to a screen reader.
+         * What it answers is the *setting* — whether collection is permitted. Whether
+         * anything is actually arriving is the Last seen column's question, and the two
+         * compose: "On" beside "No device" is the whole story in one row.
+         *
+         * A deactivated person is always paused, so "Paused" would be true and
+         * uninformative — it reads as a choice somebody made this morning rather than
+         * as an account that has been off-boarded.
+         */
         cell: (context) =>
           isDeactivated(context.row.original) ? (
-            <Badge variant="revoked">Deactivated</Badge>
+            <Badge variant="revoked" dot>Deactivated</Badge>
+          ) : context.getValue() ? (
+            <span className="text-muted-foreground">On</span>
           ) : (
-            <Badge variant={context.getValue() ? "online" : "offline"}>
-              {context.getValue() ? "On" : "Paused"}
-            </Badge>
+            <Badge variant="offline" dot>Paused</Badge>
           ),
       }),
       columnHelper.accessor((row) => peopleLastSeen(row), {
@@ -212,9 +356,28 @@ function PeopleScreen() {
             a.getValue<string | null>("lastSeen"),
             b.getValue<string | null>("lastSeen"),
           ),
-        cell: (context) => (
-          <RelativeTime iso={context.getValue()} className="tabular text-muted-foreground" />
-        ),
+        cell: (context) => {
+          /*
+           * "Never" is a statement about a device that has not checked in. Somebody
+           * with no device has never been asked to, and rendering both as "never" made
+           * a company that simply has not rolled the agent out yet look like a fleet of
+           * dead agents — the two need completely different actions from a reader, so
+           * they must not be the same word.
+           *
+           * Both still sort as the oldest possible instant, which is what they are; the
+           * comparator above is untouched.
+           */
+          if (context.row.original.devices.length === 0) {
+            return <span className="text-muted-foreground">No device</span>;
+          }
+
+          const iso = context.getValue();
+          if (iso === null) {
+            return <span className="text-muted-foreground">Never reported</span>;
+          }
+
+          return <RelativeTime iso={iso} className="tabular text-muted-foreground" />;
+        },
       }),
     ],
     [],
@@ -234,15 +397,17 @@ function PeopleScreen() {
     getSortedRowModel: getSortedRowModel(),
   });
 
-  const filtersActive =
-    filters.search !== "" || filters.department !== null || filters.monitoring !== "all";
+  const filtersActive = activeFilterLabels.length > 0;
   const visibleColumns = table.getVisibleFlatColumns();
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-7">
+    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-7">
       <PageHeader
         title="People"
-        subtitle="Everyone in your company, with the devices assigned to them."
+        // The conclusion in the place a description used to be. Until there is a roster
+        // to conclude anything about — loading, failed, or a company with nobody in it
+        // — the standing description of the page is the more useful sentence.
+        subtitle={health.people === 0 ? ROSTER_SUBTITLE : rosterSentence(health)}
         actions={
           canManage ? (
             <Button type="button" onClick={() => setAddOpen(true)}>
@@ -285,10 +450,25 @@ function PeopleScreen() {
           ) : null}
 
           {state !== "loading" && rows.length > 0 ? (
-            <p className="mb-2 text-xs text-muted-foreground">
-              Showing <span className="tabular">{filtered.length}</span> of{" "}
-              <span className="tabular">{rows.length}</span>
-            </p>
+            <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                Showing <span className="tabular text-foreground">{filtered.length}</span> of{" "}
+                <span className="tabular">{rows.length}</span>
+              </span>
+              {filtersActive ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="min-w-0">filtered by {activeFilterLabels.join(", ")}</span>
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="rounded font-medium text-foreground underline underline-offset-4 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Clear
+                  </button>
+                </>
+              ) : null}
+            </div>
           ) : null}
 
           {/* The table scrolls inside its own box; the page body never scrolls
@@ -336,35 +516,33 @@ function PeopleScreen() {
                 <LoadingRows columnIds={visibleColumns.map((column) => column.id)} />
               ) : filtered.length === 0 ? (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={visibleColumns.length} className="px-4 py-12 text-center">
-                    <p className="text-sm font-medium">
-                      {rows.length === 0 ? "No employees yet" : "No one matches these filters"}
-                    </p>
-                    <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-                      {rows.length > 0
-                        ? "Try a different name, department or monitoring state."
-                        : canManage
-                          ? "Add the first person and their account is created from here. Nothing is collected until they sign in on a device and accept the monitoring policy."
-                          : "Nobody has been added to this company yet. A super admin can add people from this screen; they appear here as soon as the account exists, before any device enrols."}
-                    </p>
-                    {rows.length === 0 && canManage ? (
-                      <Button type="button" onClick={() => setAddOpen(true)} className="mt-4">
-                        <Plus className="h-4 w-4" aria-hidden />
-                        Add person
-                      </Button>
-                    ) : null}
-                    {filtersActive && rows.length > 0 ? (
-                      <Button
-                        type="button"
-                        variant="link"
-                        className="mt-3"
-                        onClick={() =>
-                          setFilters({ search: "", department: null, monitoring: "all" })
-                        }
-                      >
-                        Clear filters
-                      </Button>
-                    ) : null}
+                  {/* The shared empty surface rather than a fourth hand-rolled one.
+                      `bordered={false}` because the table already draws the panel, and
+                      `p-0` so the cell does not pad it a second time. */}
+                  <TableCell colSpan={visibleColumns.length} className="p-0">
+                    <EmptyState
+                      bordered={false}
+                      title={rows.length === 0 ? "No employees yet" : "No one matches these filters"}
+                      body={
+                        rows.length > 0
+                          ? `Nothing here matches ${activeFilterLabels.join(", ")}. Widen one of them, or clear them all and start again.`
+                          : canManage
+                            ? "Add the first person and their account is created from here. Nothing is collected until they sign in on a device and accept the monitoring policy."
+                            : "Nobody has been added to this company yet. A super admin can add people from this screen; they appear here as soon as the account exists, before any device enrols."
+                      }
+                      action={
+                        rows.length === 0 && canManage ? (
+                          <Button type="button" onClick={() => setAddOpen(true)}>
+                            <Plus className="h-4 w-4" aria-hidden />
+                            Add person
+                          </Button>
+                        ) : filtersActive && rows.length > 0 ? (
+                          <Button type="button" variant="outline" onClick={clearFilters}>
+                            Clear filters
+                          </Button>
+                        ) : undefined
+                      }
+                    />
                   </TableCell>
                 </TableRow>
               ) : (
@@ -637,11 +815,8 @@ function LoadingRows({ columnIds, rows = 6 }: { columnIds: readonly string[]; ro
  */
 function PeopleFallback() {
   return (
-    <div className="mx-auto max-w-6xl px-6 py-7">
-      <PageHeader
-        title="People"
-        subtitle="Everyone in your company, with the devices assigned to them."
-      />
+    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-7">
+      <PageHeader title="People" subtitle={ROSTER_SUBTITLE} />
       <span className="sr-only" role="status">
         Loading the roster
       </span>

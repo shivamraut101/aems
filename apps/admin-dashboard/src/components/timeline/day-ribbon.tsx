@@ -1,6 +1,7 @@
 "use client";
 
 import type { DayTimeline } from "@aems/types";
+import { cn } from "@aems/ui";
 
 import { duration, timeOfDay } from "@/lib/format";
 
@@ -11,11 +12,46 @@ import {
   buildRibbon,
   hourTicks,
   timelineSummary,
+  type RailEvent,
 } from "./model";
 
 /** viewBox-free rendering: `x` and `width` become percentages of the container. */
 function percent(value: number): string {
   return `${(value / RIBBON_WIDTH) * 100}%`;
+}
+
+/**
+ * Where each moment from the rail falls along the ribbon.
+ *
+ * This is what ties the two halves of the screen together. Without it the ribbon says
+ * how the day was spent and the list beneath says what happened in it, and a reader
+ * has to hold two unrelated pictures in their head to work out that the capture at
+ * 10:15 sits in the middle of the long emerald stretch. A notch per moment costs one
+ * hairline each and answers that by pointing at it.
+ *
+ * Instants outside the window are dropped rather than clamped to its edge: a mark on
+ * the boundary would claim something happened at a time it did not.
+ */
+function momentNotches(
+  moments: readonly RailEvent[],
+  window: { from: string; to: string },
+): { key: string; x: number; title: string }[] {
+  const start = Date.parse(window.from);
+  const totalMs = Date.parse(window.to) - start;
+  if (!Number.isFinite(totalMs) || totalMs <= 0) return [];
+
+  const notches: { key: string; x: number; title: string }[] = [];
+  for (const moment of moments) {
+    const at = Date.parse(moment.at);
+    if (!Number.isFinite(at) || at < start || at > start + totalMs) continue;
+
+    notches.push({
+      key: moment.key,
+      x: ((at - start) / totalMs) * RIBBON_WIDTH,
+      title: `${timeOfDay(moment.at)} · ${moment.label}`,
+    });
+  }
+  return notches;
 }
 
 /**
@@ -30,11 +66,19 @@ function percent(value: number): string {
  * stops is not accessibility; the summary sentence, the visually-hidden table below
  * and the event rail beside it are what actually make the day readable without sight.
  */
-export function DayRibbon({ timeline }: { timeline: DayTimeline }) {
+export function DayRibbon({
+  timeline,
+  moments = [],
+}: {
+  timeline: DayTimeline;
+  /** The rail's moments, marked on the ribbon's lower edge. See {@link momentNotches}. */
+  moments?: readonly RailEvent[];
+}) {
   const window = { from: timeline.periodStart, to: timeline.periodEnd };
   const segments = buildRibbon(timeline.spans, window);
   const ticks = hourTicks(window);
   const summary = timelineSummary(timeline);
+  const notches = momentNotches(moments, window);
 
   // Narrow segments last: the minimum-width rule makes a sliver overlap its
   // neighbour, and it has to win that overlap or the clamp achieves nothing.
@@ -135,6 +179,25 @@ export function DayRibbon({ timeline }: { timeline: DayTimeline }) {
                 opacity="0.7"
               />
             ))}
+
+            {/* Lower edge only, so a notch never covers the state fill it points into.
+                Drawn last: on a busy day these overlap the labels' band, and the mark
+                that says "something happened here" has to survive that. */}
+            {notches.map((notch) => (
+              <line
+                key={`moment-${notch.key}`}
+                x1={percent(notch.x)}
+                x2={percent(notch.x)}
+                y1="70%"
+                y2="100%"
+                stroke="hsl(var(--foreground))"
+                strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
+                opacity="0.6"
+              >
+                <title>{notch.title}</title>
+              </line>
+            ))}
           </svg>
 
           {/*
@@ -218,9 +281,16 @@ const LEGEND = [
 ] as const;
 
 /** Names the fills. Without it the ribbon is a colour code nobody was given a key to. */
-export function RibbonLegend() {
+export function RibbonLegend({
+  className,
+  showMoments = false,
+}: {
+  className?: string;
+  /** Names the notches too. Off when the ribbon has none, so the key matches the picture. */
+  showMoments?: boolean;
+}) {
   return (
-    <ul className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+    <ul className={cn("flex flex-wrap items-center gap-x-4 gap-y-1.5", className)}>
       {LEGEND.map((entry) => (
         <li key={entry.label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span
@@ -231,6 +301,18 @@ export function RibbonLegend() {
           {entry.label}
         </li>
       ))}
+
+      {showMoments ? (
+        <li className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          {/* Drawn as the mark itself rather than as a square of colour: the notch is a
+              shape, and a swatch would describe the wrong thing. */}
+          <span
+            className="h-2.5 w-0.5 rounded-[1px] bg-foreground/60"
+            aria-hidden
+          />
+          Moment listed below
+        </li>
+      ) : null}
     </ul>
   );
 }

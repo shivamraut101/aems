@@ -15,9 +15,10 @@ import {
 } from "recharts";
 
 import { AiInsight } from "@/components/ai-insight";
-import { KpiRow } from "@/components/kpi-row";
 import { LiveWorkforce } from "@/components/live-workforce";
-import { queryViewState } from "@/components/states";
+import { RelativeTime } from "@/components/relative-time";
+import { EmptyState, queryViewState } from "@/components/states";
+import { VerdictBlock } from "@/components/verdict-block";
 import {
   appUsageBars,
   describeError,
@@ -41,7 +42,9 @@ import {
   useInsights,
 } from "@/lib/queries/insights";
 
-import { overviewQuery } from "./home-queries";
+import { computeVerdict } from "@/lib/verdict";
+
+import { liveWorkforceQuery, overviewQuery } from "./home-queries";
 
 /** How much history the trend answers "compared to what?" with. */
 const TREND_DAYS = 7;
@@ -65,6 +68,9 @@ function axisTick(seconds: number): string {
 /** SVG cannot read a Tailwind class, so the tokens are named here as CSS variables. */
 const INK_MUTED = "hsl(var(--muted-foreground))";
 const SURFACE = "hsl(var(--card))";
+
+/** SVG paint servers are referenced by id, and only one work-pattern chart exists. */
+const MISSING_DAY_PATTERN = "work-pattern-missing-day";
 
 /**
  * The work pattern's three bands, in stack order.
@@ -162,6 +168,15 @@ export function OverviewView() {
   const overviewState = queryViewState(overview);
   const todayPattern = useCompanyWorkPattern(today);
 
+  // Both were warmed on the server by page.tsx, so the verdict is in the first paint
+  // rather than swapped in a beat later. `now` gates it for the same reason the
+  // greeting is gated: the staleness threshold is measured against the reader clock.
+  const live = useApiQuery(liveWorkforceQuery);
+  const verdict = useMemo(
+    () => (now ? computeVerdict(overview.data, live.data, now.getTime()) : null),
+    [overview.data, live.data, now],
+  );
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-7">
       <header className="mb-6">
@@ -180,14 +195,24 @@ export function OverviewView() {
         // identical, and the zeros read as a statement about the business.
         <Failure error={overview.error} onRetry={() => void overview.refetch()} />
       ) : (
-        <KpiRow
-          loading={overviewState === "loading"}
-          items={[
-            { label: "Employees", value: String(overview.data?.totalEmployees ?? 0) },
-            { label: "Active now", value: String(overview.data?.activeNow ?? 0) },
+        /*
+         * The verdict, not a row of five equal numbers.
+         *
+         * The figures survive underneath it — leading with a conclusion is not the
+         * same as hiding the evidence — but the sentence above them is what a manager
+         * actually opens this page for. `KpiRow` is unused here as a result; it is
+         * still the right component for the employee tabs, where the reader has
+         * already chosen who they are looking at and wants the measurements.
+         */
+        <VerdictBlock
+          loading={overviewState === "loading" || now === null}
+          verdict={verdict}
+          figures={[
+            { label: "Active right now", value: String(overview.data?.activeNow ?? 0) },
+            { label: "Tracked today", value: `${overview.data?.totalHoursToday ?? 0}h` },
+            focusedFigure(todayPattern.data, todayPattern.isError),
             { label: "Working today", value: String(overview.data?.workingToday ?? 0) },
-            { label: "Hours tracked", value: `${overview.data?.totalHoursToday ?? 0}h` },
-            focusedTile(todayPattern.data, todayPattern.isError),
+            { label: "People", value: String(overview.data?.totalEmployees ?? 0) },
           ]}
         />
       )}
@@ -225,18 +250,18 @@ export function OverviewView() {
  * something a manager can act on. It is the merged active total from the same
  * aggregation the reports and the CSV export quote, so the three cannot drift.
  */
-function focusedTile(
+/**
+ * Focused time, as one of the verdict's supporting figures.
+ *
+ * An em dash rather than "0m" when the report could not be read: zero is a claim that
+ * nobody did any focused work today, and an outage must not be allowed to make it.
+ */
+function focusedFigure(
   document: Parameters<typeof reportTotal>[0],
   failed: boolean,
-): { label: string; value: string; hint: string } {
-  if (failed) return { label: "Focused time", value: "—", hint: "Could not be read" };
-  if (!document) return { label: "Focused time", value: "—", hint: "Active time today" };
-
-  return {
-    label: "Focused time",
-    value: duration(reportTotal(document, "active")),
-    hint: "Active time today",
-  };
+): { label: string; value: string } {
+  if (failed || !document) return { label: "Focused", value: "—" };
+  return { label: "Focused", value: duration(reportTotal(document, "active")) };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -261,7 +286,10 @@ function AppUsagePanel({
       ) : query.isLoading || period === null ? (
         <ChartSkeleton />
       ) : bars.length === 0 ? (
-        <Empty body="No application time has been recorded in this period. The desktop agent reports it as people work." />
+        <Empty
+          title="No application time yet"
+          body={`The desktop agent reports which application is in front as people work. Nothing has arrived in the last ${TREND_DAYS} days.`}
+        />
       ) : (
         // A single hue, because this is one measure compared across categories —
         // a colour per application would encode identity nobody needs to read.
@@ -295,7 +323,10 @@ function AppUsagePanel({
             <Tooltip cursor={{ fill: "hsl(var(--secondary))" }} content={<AppTooltip />} />
             <Bar
               dataKey="seconds"
-              fill="hsl(var(--primary))"
+              // Held back from full-strength navy. At 100% these six bars were the
+              // heaviest ink on the page, which put reference data above the verdict
+              // and the live board in the reading order.
+              fill="hsl(var(--primary)/0.72)"
               radius={[0, 4, 4, 0]}
               barSize={12}
               isAnimationActive={false}
@@ -330,6 +361,22 @@ function WorkPatternPanel({
   const days = useMemo(() => workPatternDays(query.data), [query.data]);
   const empty = days.every((day) => day.trackedSeconds === 0);
 
+  /*
+   * A day nobody worked stacks to zero, so it draws nothing at all — and a week with
+   * one working day in it rendered as one bar beside six blank columns, which reads as
+   * a chart that failed rather than as a company that did not work. The stub is a
+   * fixed fraction of the tallest day so it scales with the axis: too short to be
+   * mistaken for a measurement, tall enough to say "we looked, there was nothing".
+   */
+  const plotted = useMemo(() => {
+    const tallest = days.reduce((max, day) => Math.max(max, day.trackedSeconds), 0);
+    return days.map((day) => ({
+      ...day,
+      missingSeconds: day.trackedSeconds === 0 ? tallest * 0.05 : 0,
+    }));
+  }, [days]);
+  const anyMissing = plotted.some((day) => day.missingSeconds > 0);
+
   return (
     <Panel title="Work pattern" subtitle={`Last ${TREND_DAYS} days`}>
       {query.isError ? (
@@ -337,11 +384,40 @@ function WorkPatternPanel({
       ) : query.isLoading || period === null ? (
         <ChartSkeleton />
       ) : days.length === 0 || empty ? (
-        <Empty body="No tracked time in this period. Days appear here as agents report them." />
+        <Empty
+          title="No tracked time yet"
+          body={`A day appears here once an agent has reported work on it. None of the last ${TREND_DAYS} days has any.`}
+        />
       ) : (
         <>
           <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-            <BarChart data={days} margin={{ top: 4, right: 4, left: 0, bottom: 0 }} barCategoryGap="30%">
+            <BarChart
+              data={plotted}
+              margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
+              barCategoryGap="30%"
+            >
+              <defs>
+                {/* Hatching rather than a flat grey: a solid stub of any colour is a
+                    fourth band, and a reader would have to be told it means nothing.
+                    A hatch is not a quantity anywhere on this page. */}
+                <pattern
+                  id={MISSING_DAY_PATTERN}
+                  width={5}
+                  height={5}
+                  patternUnits="userSpaceOnUse"
+                  patternTransform="rotate(45)"
+                >
+                  <line
+                    x1={0}
+                    y1={0}
+                    x2={0}
+                    y2={5}
+                    stroke={INK_MUTED}
+                    strokeWidth={1.5}
+                    strokeOpacity={0.4}
+                  />
+                </pattern>
+              </defs>
               <CartesianGrid vertical={false} stroke="hsl(var(--border))" strokeDasharray="2 4" />
               <XAxis
                 dataKey="label"
@@ -374,6 +450,15 @@ function WorkPatternPanel({
                   isAnimationActive={false}
                 />
               ))}
+              {/* Last in the stack, and only ever non-zero when the other three are
+                  zero, so it never sits on top of a real reading. */}
+              <Bar
+                dataKey="missingSeconds"
+                name="No tracked time"
+                stackId="day"
+                fill={`url(#${MISSING_DAY_PATTERN})`}
+                isAnimationActive={false}
+              />
             </BarChart>
           </ResponsiveContainer>
 
@@ -389,6 +474,18 @@ function WorkPatternPanel({
                 {series.label}
               </li>
             ))}
+            {anyMissing ? (
+              <li className="flex items-center gap-1.5">
+                <span
+                  aria-hidden
+                  className="h-2 w-2 rounded-[2px]"
+                  style={{
+                    backgroundImage: `repeating-linear-gradient(45deg, ${INK_MUTED} 0 1px, transparent 1px 3px)`,
+                  }}
+                />
+                No tracked time
+              </li>
+            ) : null}
           </ul>
 
           <PatternTable days={days} />
@@ -453,6 +550,12 @@ function PatternTooltip({ active, payload }: TooltipProps<number, string>) {
 
   const day = payload[0]?.payload as WorkPatternDay | undefined;
   if (!day) return null;
+
+  // Matches the hatched stub: three zeroes would read as three measurements that all
+  // came out at nothing, which is a different claim from "no agent reported that day".
+  if (day.trackedSeconds === 0) {
+    return <TooltipCard title={day.label}>No tracked time</TooltipCard>;
+  }
 
   return (
     <TooltipCard title={day.label}>
@@ -521,8 +624,10 @@ function AiPanel() {
       <AiInsight
         summary=""
         notice={{
-          title: "No company insight yet",
-          body: "One reading is written per week from recorded activity. The first appears after the summary worker's next scheduled run.",
+          // "No company insight yet" was true and told the reader nothing they could
+          // act on: not what produces one, not what it needs, not when to look again.
+          title: "The first weekly insight has not been written yet",
+          body: "One reading is written per week from the activity your agents have already recorded — so a week with tracked time in it produces one, and an empty week does not. The next scheduled run of the summary worker writes it.",
         }}
       />
     );
@@ -548,8 +653,11 @@ function AiPanel() {
         observation={view.observation}
         recommendation={view.recommendation}
       />
+      {/* When it was written, not only which period it covers. A weekly reading is
+          only actionable if the reader knows whether it is three hours or three weeks
+          old, and the two are indistinguishable from the period label alone. */}
       <p className="mt-2 text-xs text-muted-foreground">
-        Written by {latest.provider} · {latest.model} for{" "}
+        Written <RelativeTime iso={latest.created_at} /> by {latest.provider} · {latest.model} for{" "}
         {periodLabel(latest.kind, latest.period_start, latest.period_end)}.{" "}
         <Link
           href="/insights"
@@ -576,7 +684,7 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-lg border bg-card p-4">
+    <section className="rounded-lg border bg-card p-4 shadow-[var(--shadow-sm)]">
       <div className="mb-3 flex items-baseline justify-between gap-3">
         <h3 className="text-[13px] font-semibold tracking-tight">{title}</h3>
         <p className="text-xs text-muted-foreground">{subtitle}</p>
@@ -633,13 +741,17 @@ function ChartSkeleton() {
   );
 }
 
-function Empty({ body }: { body: string }) {
+/**
+ * The shared empty state, held to the chart's own height.
+ *
+ * `EmptyState` sizes to its content, and a panel that collapses from 188px to 130px the
+ * moment an empty answer lands is the layout shift the skeletons exist to prevent — so
+ * the box is fixed here and the copy comes from the shared component.
+ */
+function Empty({ title, body }: { title: string; body: string }) {
   return (
-    <div
-      className="flex items-center justify-center rounded-md border border-dashed px-4"
-      style={{ height: CHART_HEIGHT }}
-    >
-      <p className="max-w-xs text-center text-sm text-muted-foreground">{body}</p>
+    <div className="flex rounded-md border border-dashed" style={{ height: CHART_HEIGHT }}>
+      <EmptyState bordered={false} className="m-auto py-0" title={title} body={body} />
     </div>
   );
 }

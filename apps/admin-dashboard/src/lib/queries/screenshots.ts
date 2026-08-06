@@ -507,3 +507,73 @@ export function useTimelineSlots(
     staleTime: 5 * 60_000,
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* Filtering the review by what the block was spent on                         */
+/* -------------------------------------------------------------------------- */
+
+/** The four things a ten-minute block can mostly have been. */
+export type BlockState = "active" | "idle" | "break" | "offline";
+
+export const BLOCK_STATE_LABELS: Record<BlockState, string> = {
+  active: "Active",
+  idle: "Idle",
+  break: "On a break",
+  offline: "Offline",
+};
+
+/**
+ * The state that took the largest share of the block, or null if nothing was recorded.
+ *
+ * Dominant share rather than "contains any", and the reason is that the counts have to
+ * add up. A block that is 60% active and 40% idle is one block; if it appeared under
+ * both filters then "Active 5 · Idle 3" would exceed the 6 blocks actually on screen,
+ * and a reviewer checking whether a day is evidenced cannot trust a total that
+ * double-counts. Each block belongs to exactly one bucket.
+ *
+ * Ties go to the earlier key in `ORDER`, which puts active first — a block split evenly
+ * between working and idling is more usefully found under "Active", because that is the
+ * one a reviewer is looking for when they are checking what was done.
+ */
+const ORDER: readonly BlockState[] = ["active", "idle", "break", "offline"];
+
+export function dominantState(activity: BlockActivity): BlockState | null {
+  let best: BlockState | null = null;
+  let share = 0;
+
+  for (const state of ORDER) {
+    const value = activity.bar[state];
+    // Strictly greater, so the ORDER above breaks ties rather than the last key winning.
+    if (value > share) {
+      share = value;
+      best = state;
+    }
+  }
+
+  return share > 0 ? best : null;
+}
+
+/**
+ * How many blocks fall in each bucket, for the filter's own labels.
+ *
+ * Shown on the control because a filter that leads to an empty list is a dead end — a
+ * reviewer should be able to see there are no break blocks without selecting "On a
+ * break" and finding out the hard way.
+ */
+export function blockStateCounts(rows: readonly ReviewRow[]): Record<BlockState, number> {
+  const counts: Record<BlockState, number> = { active: 0, idle: 0, break: 0, offline: 0 };
+  for (const row of rows) {
+    const state = dominantState(row.activity);
+    if (state !== null) counts[state] += 1;
+  }
+  return counts;
+}
+
+/** Narrows the review to one state. `"all"` is the identity, so callers need no branch. */
+export function filterRowsByState(
+  rows: readonly ReviewRow[],
+  state: BlockState | "all",
+): ReviewRow[] {
+  if (state === "all") return [...rows];
+  return rows.filter((row) => dominantState(row.activity) === state);
+}

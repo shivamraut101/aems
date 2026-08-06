@@ -23,7 +23,7 @@ import { AlertTriangle, Loader2, Plus } from "lucide-react";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 
-import { TableSkeletonRows, type SkeletonColumn } from "@/components/states";
+import { ErrorState, TableSkeletonRows, type SkeletonColumn } from "@/components/states";
 import { describeError, useSession } from "@/lib/api";
 import {
   useCategoryRules,
@@ -89,8 +89,10 @@ export function CategoriesSection() {
 
   return (
     <Section
+      id="categories"
       title="Category rules"
       description="How applications and websites are classified. Rules are evaluated in priority order and the first one that matches wins; anything unmatched is recorded as Uncategorized and counted as neutral."
+      affects="every report, for everyone — including days already recorded, because reports are recomputed from the rules in force rather than from the labels stored at the time."
       actions={
         canEdit && !creating ? (
           <Button
@@ -109,9 +111,11 @@ export function CategoriesSection() {
       }
     >
       {query.isError ? (
-        <Notice tone="error" title="Could not load the category rules">
-          <p>{describeError(query.error)}</p>
-        </Notice>
+        <ErrorState
+          title="Could not load the category rules"
+          message={`${describeError(query.error)} Classification carries on running on the server from the rules already stored — this panel could not read them, not stop them.`}
+          onRetry={() => void query.refetch()}
+        />
       ) : (
         <>
           {rejectedCount > 0 ? (
@@ -137,6 +141,13 @@ export function CategoriesSection() {
                 onCancel={() => setCreating(false)}
               />
             </div>
+          ) : null}
+
+          {!query.isLoading && rows.length > 0 ? (
+            <p className="mb-2 text-sm text-muted-foreground">
+              <span className="tabular font-medium text-foreground">{rows.length}</span>{" "}
+              {rows.length === 1 ? "rule" : "rules"}, evaluated top to bottom.
+            </p>
           ) : null}
 
           <Table

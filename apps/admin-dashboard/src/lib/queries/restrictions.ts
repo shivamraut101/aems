@@ -343,6 +343,43 @@ export const MATCH_KIND_LABEL: Record<RestrictionMatchKind, string> = {
   url_pattern: "URL pattern",
 };
 
+/**
+ * What this rule will do, in the sentence an employee would experience — before it is
+ * saved.
+ *
+ * The dialog collects six decisions and, until this existed, described none of their
+ * combined effect: an *allow* rule written under a block list does nothing visible
+ * until some other rule blocks the same site, and a *block* rule written under an
+ * allow list narrows something already refused by default. Those two are the
+ * combinations people get wrong, and they are silent — a rule that quietly does
+ * nothing looks exactly like a rule that works.
+ *
+ * Returns null while the pattern is not yet usable, because a preview built from half
+ * a hostname reads as a statement about a site nobody named.
+ */
+export function rulePreview(
+  mode: RestrictionMode,
+  rule: Pick<RestrictionRule, "action" | "matchKind" | "pattern">,
+): string | null {
+  if (patternProblem(rule.matchKind, rule.pattern) !== null) return null;
+
+  const reach = ruleReach(rule);
+
+  if (rule.action === "block") {
+    return mode === "allowlist"
+      ? `${capitalise(reach)} stays refused, and this rule keeps it refused even if an allow rule above it would have permitted it.`
+      : `Employees will not be able to open ${reach}.`;
+  }
+
+  return mode === "allowlist"
+    ? `Employees will be able to open ${reach}. Everything not allowed by some rule stays refused.`
+    : `${capitalise(reach)} stays available even if a block rule above it would have refused it.`;
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** What one rule does, said from the employee's side rather than the rule's. */
 export function actionEffect(action: RestrictionAction): string {
   return action === "block" ? "Blocked" : "Allowed";

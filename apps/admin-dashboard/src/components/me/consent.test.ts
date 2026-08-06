@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   WITHDRAWAL_TAKES_EFFECT,
+  collectionStatus,
   consentForDevice,
   consentIsBehindPolicy,
   consentKey,
@@ -120,6 +121,66 @@ describe("consentIsBehindPolicy", () => {
 
     expect(consentIsBehindPolicy(withdrawn, "2026.08.4")).toBe(false);
     expect(consentIsBehindPolicy({ state: "none" }, "2026.08.4")).toBe(false);
+  });
+});
+
+describe("collectionStatus", () => {
+  const active = { id: "d1", status: "active" };
+  const second = { id: "d2", status: "active" };
+
+  it("counts a device with a live consent record as collecting", () => {
+    expect(collectionStatus([active], [row({ device_id: "d1" })], true)).toEqual({
+      enrolled: 1,
+      collecting: 1,
+      accountPaused: false,
+    });
+  });
+
+  it("does not count a device whose consent has been withdrawn", () => {
+    const rows = [row({ device_id: "d1", revoked_at: "2026-08-05T09:12:12.000Z" })];
+    expect(collectionStatus([active, second], rows, true)).toMatchObject({
+      enrolled: 2,
+      collecting: 0,
+    });
+  });
+
+  /**
+   * `requireDevice` 403s a revoked device before it looks at consent, so a stale live
+   * consent row on one must not make this page claim it is still collecting.
+   */
+  it("does not count a revoked device even with consent on file", () => {
+    const revoked = { id: "d1", status: "revoked" };
+    expect(collectionStatus([revoked], [row({ device_id: "d1" })], true)).toMatchObject({
+      collecting: 0,
+    });
+  });
+
+  it("reports nothing collecting when an administrator has paused the account", () => {
+    expect(collectionStatus([active], [row({ device_id: "d1" })], false)).toEqual({
+      enrolled: 1,
+      collecting: 0,
+      accountPaused: true,
+    });
+  });
+
+  /**
+   * The case worth having the function for. A failed consent read defaulting to zero
+   * would print "nothing is being collected" over a machine that is reporting — an
+   * outage turned into a reassurance, on the one screen where that is a legal problem.
+   */
+  it("refuses to answer when the consent records could not be read", () => {
+    expect(collectionStatus([active], undefined, true)).toEqual({
+      enrolled: 1,
+      collecting: null,
+      accountPaused: false,
+    });
+  });
+
+  it("still reports the account pause when consent is unreadable, because that alone stops everything", () => {
+    expect(collectionStatus([active], undefined, false)).toMatchObject({
+      collecting: 0,
+      accountPaused: true,
+    });
   });
 });
 

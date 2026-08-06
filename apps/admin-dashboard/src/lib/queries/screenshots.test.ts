@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  blockStateCounts,
   buildReviewRows,
   dayWindow,
   describeBlockActivity,
+  dominantState,
   durationWords,
+  filterRowsByState,
   flattenCaptures,
   noteImageFailure,
   resignAfterMs,
   stepCapture,
+  type BlockActivity,
+  type ReviewRow,
   type ScreenshotBlock,
   type ScreenshotCapture,
   type TimelineSlotView,
@@ -334,5 +339,73 @@ describe("noteImageFailure", () => {
     const other = noteImageFailure(first.state, 8);
 
     expect(other.action).toBe("refetch");
+  });
+});
+
+/**
+ * Filtering the screenshot review by what each block was spent on.
+ *
+ * The property that matters is not "the filter filters" — it is that the buckets
+ * partition the rows. A reviewer uses this tab to decide whether a day is evidenced,
+ * and a filter whose counts overlapped would let "Active 5 · Idle 3" sit above six
+ * blocks, which is a worse answer than no filter at all.
+ */
+describe("block state filtering", () => {
+  const row = (bar: Partial<BlockActivity["bar"]>, key = "k"): ReviewRow => ({
+    key,
+    start: "2026-08-06T09:00:00.000Z",
+    end: "2026-08-06T09:10:00.000Z",
+    timeLabel: "09:00 – 09:10",
+    captures: [],
+    hasCapture: false,
+    monitorCount: 0,
+    activity: {
+      headline: "Chrome",
+      split: "",
+      bar: { active: 0, idle: 0, break: 0, offline: 0, ...bar },
+      apps: [],
+    },
+  });
+
+  it("names the largest share", () => {
+    expect(dominantState(row({ active: 0.7, idle: 0.3 }).activity)).toBe("active");
+    expect(dominantState(row({ active: 0.2, break: 0.8 }).activity)).toBe("break");
+  });
+
+  it("is null when the block recorded nothing", () => {
+    // Not "offline" — a block with no record at all is a different claim from one the
+    // agent positively reported as offline, and lumping them together would invent data.
+    expect(dominantState(row({}).activity)).toBeNull();
+  });
+
+  it("gives an even split to active", () => {
+    // A block half worked and half idle is the one a reviewer wants under "Active".
+    expect(dominantState(row({ active: 0.5, idle: 0.5 }).activity)).toBe("active");
+  });
+
+  it("partitions the rows — every block in exactly one bucket", () => {
+    const rows = [
+      row({ active: 1 }, "a"),
+      row({ active: 0.6, idle: 0.4 }, "b"),
+      row({ idle: 0.9, active: 0.1 }, "c"),
+      row({ break: 1 }, "d"),
+      row({}, "e"),
+    ];
+
+    const counts = blockStateCounts(rows);
+    expect(counts).toEqual({ active: 2, idle: 1, break: 1, offline: 0 });
+
+    // The sum of the buckets plus the unrecorded block accounts for every row, and
+    // filtering by each state reproduces exactly those counts.
+    const total = Object.values(counts).reduce((n, v) => n + v, 0);
+    expect(total).toBe(rows.length - 1);
+    expect(filterRowsByState(rows, "active")).toHaveLength(2);
+    expect(filterRowsByState(rows, "break")).toHaveLength(1);
+    expect(filterRowsByState(rows, "offline")).toHaveLength(0);
+  });
+
+  it("passes everything through for \"all\"", () => {
+    const rows = [row({ active: 1 }, "a"), row({}, "b")];
+    expect(filterRowsByState(rows, "all")).toHaveLength(2);
   });
 });

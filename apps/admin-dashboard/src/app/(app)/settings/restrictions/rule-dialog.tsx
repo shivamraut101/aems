@@ -34,6 +34,7 @@ import {
   restrictionRuleFormFrom,
   restrictionRuleSchema,
   restrictionRuleToInput,
+  rulePreview,
   useCreateRestrictionRule,
   useUpdateRestrictionRule,
   type RestrictionMode,
@@ -61,11 +62,14 @@ import {
  */
 export function RuleDialog({
   mode,
+  enforcing,
   rule,
   rules,
   onClose,
 }: {
   mode: RestrictionMode;
+  /** The company's master switch, so the preview cannot promise an effect nothing has. */
+  enforcing: boolean;
   /** Null to create. */
   rule: RestrictionRule | null;
   /** The rules already in the policy, for the duplicate check. */
@@ -91,11 +95,13 @@ export function RuleDialog({
   const matchKind = watch("matchKind");
   const action = watch("action");
   const typedPattern = watch("pattern");
+  const enabled = watch("enabled");
   const canonical = matchKind === "domain" ? canonicalDomain(typedPattern) : null;
   // Legal, compiles, matches nothing — the one mistake this form can see and the API
   // cannot. A caution rather than an error, because `intranet` is a real host.
   const caution = errors.pattern ? null : patternCaution(matchKind, typedPattern);
   const noteLength = watch("note").trim().length;
+  const preview = rulePreview(mode, { action, matchKind, pattern: typedPattern });
 
   return (
     <Dialog
@@ -220,6 +226,43 @@ export function RuleDialog({
               <span className="min-w-0">{caution}</span>
             </p>
           ) : null}
+
+          {/*
+           * The effect, restated as it is typed.
+           *
+           * The three controls above are each individually clear and jointly are not:
+           * "allow" under a block list and "block" under an allow list both produce a
+           * rule that does nothing until another rule contradicts it, and the table
+           * cannot tell that apart from a rule that works. This is the one place the
+           * combination can be shown before it is saved.
+           */}
+          <div className="-mt-2 rounded-md border bg-secondary/40 px-3 py-2.5">
+            <p className="text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+              What this rule will do
+            </p>
+            <div className="mt-1 min-w-0 break-words text-sm" aria-live="polite">
+              <p className={preview ? undefined : "text-muted-foreground"}>
+                {preview ??
+                  "Fill in the box above and this will say, in words, what employees will and will not be able to open."}
+              </p>
+
+              {/* Two reasons a correct rule still refuses nothing. Both are switches
+                  elsewhere on the screen, so neither is visible from inside the dialog
+                  unless it is said here. */}
+              {preview && !enabled ? (
+                <p className="mt-1 text-muted-foreground">
+                  Not yet — the rule is parked by the switch below and is not applied until
+                  it is turned on.
+                </p>
+              ) : null}
+              {preview && enabled && !enforcing ? (
+                <p className="mt-1 text-muted-foreground">
+                  Not yet — website enforcement is switched off for the whole company, so no
+                  rule refuses anything until it is switched on.
+                </p>
+              ) : null}
+            </div>
+          </div>
 
           <Field
             label="Reason employees see"

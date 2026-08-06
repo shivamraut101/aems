@@ -20,10 +20,15 @@ import { cn } from "@aems/ui";
  * the specific thing the reader is likely to want next ("My devices and consent"),
  * which says why to go rather than only where.
  *
- * ## 375px
+ * ## Width
  *
- * `max-w-5xl` with a 16px gutter on a phone: these screens are prose and definition
- * lists rather than dense tables, and prose at full desktop width is unreadable.
+ * `max-w-6xl` and the same gutters as `overview-view.tsx`, so moving between Overview
+ * and this section does not resize the page under the reader. The prose-width argument
+ * that once made this `max-w-5xl` is answered where it actually applies — every
+ * paragraph below carries `max-w-prose` — rather than by narrowing panels and tables
+ * that are not prose.
+ *
+ * At 375px it is a 16px gutter and nothing else.
  */
 export function MeShell({
   title,
@@ -37,11 +42,11 @@ export function MeShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-7">
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-7">
       <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p>
+          <h1 className="text-2xl font-semibold tracking-[-0.02em]">{title}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
         </div>
         {control}
       </header>
@@ -72,11 +77,13 @@ export function MePanel({
   className?: string;
 }) {
   return (
-    <section className={cn("rounded-lg border bg-card", className)}>
+    <section className={cn("rounded-lg border bg-card shadow-[var(--shadow-sm)]", className)}>
       {title ? (
         <div className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3 sm:px-5">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
+            {/* 13px, matching `Panel` in overview-view.tsx — a panel heading is a label
+                for the block, not a heading in the page's type scale. */}
+            <h2 className="text-[13px] font-semibold tracking-tight">{title}</h2>
             {description ? (
               <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</p>
             ) : null}
@@ -107,7 +114,10 @@ export function Fact({
   return (
     <div className="grid gap-0.5 sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:items-baseline sm:gap-x-4">
       <dt className="text-xs font-medium text-muted-foreground sm:text-sm">{label}</dt>
-      <dd className="min-w-0 text-sm">
+      {/* `break-words` on the value, once: a company name, a CPU model or a device label
+          is arbitrary text, and one long token here is the whole page's horizontal
+          overflow at 390px. */}
+      <dd className="min-w-0 break-words text-sm">
         {children}
         {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
       </dd>

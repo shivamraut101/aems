@@ -102,7 +102,9 @@ export function WithdrawConsentDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
+          {/* `break-words`: a device name is arbitrary text and this title interpolates
+              it, so one long machine name would otherwise widen the dialog past a phone. */}
+          <DialogTitle className="break-words">
             {done ? "Consent withdrawn" : `Withdraw consent for ${deviceTitle}`}
           </DialogTitle>
           <DialogDescription>
@@ -149,7 +151,7 @@ export function WithdrawConsentDialog({
             {failed ? (
               <p
                 role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
+                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive-muted px-3 py-2 text-sm"
               >
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden />
                 <span>{describeError(withdraw.error)}</span>

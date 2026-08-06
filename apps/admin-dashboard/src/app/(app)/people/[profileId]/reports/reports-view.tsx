@@ -1,6 +1,17 @@
 "use client";
 
-import { Badge } from "@aems/ui";
+import {
+  Badge,
+  Button,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableSortButton,
+  cn,
+} from "@aems/ui";
 import {
   flexRender,
   getCoreRowModel,
@@ -8,7 +19,7 @@ import {
   useReactTable,
   type ColumnDef,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Download, Loader2 } from "lucide-react";
+import { Download, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useMemo } from "react";
 
@@ -30,6 +41,10 @@ import {
   useReportDownload,
   type PersonReportRow,
 } from "@/lib/queries/usage";
+
+/** Shared by the header action and the empty state, so the two cannot drift apart. */
+const runLinkClass =
+  "inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
  * Reports tab — scope §5, narrowed to one person.
@@ -91,7 +106,11 @@ export function ReportsTabView({ profileId }: { profileId: string }) {
         accessorFn: (row) => row.status,
         cell: ({ row }) => (
           <>
-            <Badge variant={reportBadgeVariant(row.original.status)}>{row.original.status}</Badge>
+            {/* A dot, because this is a state the row is in rather than a label it
+                carries — the same signal the device and presence pills use. */}
+            <Badge variant={reportBadgeVariant(row.original.status)} dot>
+              {row.original.status}
+            </Badge>
             {/* A bare "failed" tells nobody what to do about it. */}
             {row.original.failure_reason ? (
               <p className="mt-1 max-w-[16rem] text-xs text-muted-foreground">
@@ -118,11 +137,15 @@ export function ReportsTabView({ profileId }: { profileId: string }) {
           }
 
           return (
-            <button
+            // `h-9` over the `sm` size's 32px: a download in a dense table is still a
+            // thing a thumb has to hit.
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
+              className="h-9"
               disabled={busy}
               onClick={() => download.mutate(report.id, { onSuccess: ({ url }) => openInNewTab(url) })}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -130,7 +153,7 @@ export function ReportsTabView({ profileId }: { profileId: string }) {
                 <Download className="h-3.5 w-3.5" aria-hidden="true" />
               )}
               {busy ? "Preparing" : "Download"}
-            </button>
+            </Button>
           );
         },
       },
@@ -152,10 +175,7 @@ export function ReportsTabView({ profileId }: { profileId: string }) {
         hint="Exports generated for this person. Download links are signed and expire after five minutes."
         action={
           canRunReports ? (
-            <Link
-              href="/reports"
-              className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
+            <Link href="/reports" className={runLinkClass}>
               Run a report
             </Link>
           ) : null
@@ -191,10 +211,7 @@ export function ReportsTabView({ profileId }: { profileId: string }) {
               }
               action={
                 canRunReports ? (
-                  <Link
-                    href="/reports"
-                    className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
+                  <Link href="/reports" className={runLinkClass}>
                     Run the first one
                   </Link>
                 ) : null
@@ -202,80 +219,105 @@ export function ReportsTabView({ profileId }: { profileId: string }) {
             />
           </Panel>
         ) : (
-          <Panel className="overflow-hidden p-0">
-            {/* Wide content scrolls inside its own container; the page body never does. */}
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[42rem] text-sm">
-                <caption className="sr-only">Reports generated for this person</caption>
-                <thead>
-                  {table.getHeaderGroups().map((group) => (
-                    <tr
-                      key={group.id}
-                      className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground"
-                    >
-                      {group.headers.map((header) => {
-                        const sorted = header.column.getIsSorted();
+          <>
+            <Lead rows={rows} />
 
-                        return (
-                          <th
-                            key={header.id}
-                            scope="col"
-                            aria-sort={
-                              sorted === "asc"
-                                ? "ascending"
-                                : sorted === "desc"
-                                  ? "descending"
-                                  : "none"
-                            }
-                            className="px-4 py-2 font-medium"
-                          >
-                            {header.column.getCanSort() ? (
-                              <button
-                                type="button"
-                                onClick={header.column.getToggleSortingHandler()}
-                                className="inline-flex items-center gap-1 rounded-sm uppercase tracking-wide transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              >
-                                {flexRender(header.column.columnDef.header, header.getContext())}
-                                <SortIcon state={sorted} />
-                              </button>
-                            ) : (
-                              <span className="sr-only">Download</span>
-                            )}
-                          </th>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </thead>
-                <tbody>
-                  {table.getRowModel().rows.map((row) => (
-                    <tr
-                      key={row.id}
-                      className="border-b align-top transition-colors last:border-0 hover:bg-secondary/40"
-                    >
-                      {row.getVisibleCells().map((cell) => (
-                        <td
-                          key={cell.id}
-                          className={`px-4 py-2.5 ${
-                            cell.column.id === "rows" || cell.column.id === "created"
-                              ? "tabular text-muted-foreground"
-                              : cell.column.id === "period"
-                                ? "text-muted-foreground"
-                                : ""
-                          }`}
+            {/* Six columns; it scrolls inside its own container rather than pushing the
+                page sideways. */}
+            <Table containerClassName="rounded-lg border bg-card" className="min-w-[42rem]">
+              <caption className="sr-only">Reports generated for this person</caption>
+
+              <TableHeader>
+                {table.getHeaderGroups().map((group) => (
+                  <TableRow key={group.id} className="hover:bg-transparent">
+                    {group.headers.map((header) => {
+                      const sorted = header.column.getIsSorted();
+                      const direction = sorted === false ? null : sorted;
+
+                      return (
+                        <TableHead
+                          key={header.id}
+                          scope="col"
+                          // Undefined, not `null`, on the download column: `null` would
+                          // announce `aria-sort="none"` on a column that cannot sort.
+                          sortDirection={header.column.getCanSort() ? direction : undefined}
                         >
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Panel>
+                          {header.column.getCanSort() ? (
+                            <TableSortButton
+                              direction={direction}
+                              onClick={header.column.getToggleSortingHandler()}
+                            >
+                              {flexRender(header.column.columnDef.header, header.getContext())}
+                            </TableSortButton>
+                          ) : (
+                            <span className="sr-only">Download</span>
+                          )}
+                        </TableHead>
+                      );
+                    })}
+                  </TableRow>
+                ))}
+              </TableHeader>
+
+              <TableBody>
+                {table.getRowModel().rows.map((row) => (
+                  <TableRow key={row.id}>
+                    {row.getVisibleCells().map((cell) => (
+                      <TableCell
+                        key={cell.id}
+                        className={cn(
+                          // Top, not middle: the Report and Status cells run to two
+                          // lines, and a failure reason centred against a one-line
+                          // neighbour reads as a different row.
+                          "align-top",
+                          cell.column.id === "rows" || cell.column.id === "created"
+                            ? "tabular text-muted-foreground"
+                            : cell.column.id === "period" && "text-muted-foreground",
+                        )}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </>
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Whether anything here is waiting on the worker, before the table of rows.
+ *
+ * The question this tab gets opened with is "is my export ready yet?", and the answer
+ * was previously only available by reading down a status column. A run that failed is
+ * named in the same line, because a failure nobody notices is a report nobody re-runs.
+ */
+function Lead({ rows }: { rows: PersonReportRow[] }) {
+  const pending = rows.filter((row) => row.status === "pending").length;
+  const failed = rows.filter((row) => row.status === "failed").length;
+
+  return (
+    <p className="text-sm">
+      <span className="tabular font-medium">{rows.length}</span>{" "}
+      {rows.length === 1 ? "report" : "reports"} for this person
+      {pending > 0 ? (
+        <>
+          {" · "}
+          <span className="tabular">{pending}</span> still generating
+        </>
+      ) : null}
+      {failed > 0 ? (
+        <>
+          {" · "}
+          <span className="tabular text-destructive">{failed}</span> failed
+        </>
+      ) : null}
+      {pending === 0 && failed === 0 ? " — all ready to download." : "."}
+    </p>
   );
 }
 
@@ -293,11 +335,4 @@ function openInNewTab(url: string): void {
   document.body.append(link);
   link.click();
   link.remove();
-}
-
-function SortIcon({ state }: { state: false | "asc" | "desc" }) {
-  const className = "h-3 w-3 shrink-0";
-  if (state === "asc") return <ArrowUp className={className} aria-hidden="true" />;
-  if (state === "desc") return <ArrowDown className={className} aria-hidden="true" />;
-  return <ChevronsUpDown className={`${className} opacity-40`} aria-hidden="true" />;
 }

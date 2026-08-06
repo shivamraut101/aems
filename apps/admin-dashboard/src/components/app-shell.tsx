@@ -30,6 +30,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { RouteSkeleton } from "@/components/states/page-loading";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { useSession } from "@/lib/api";
 import {
   activeNavHref,
@@ -479,13 +480,20 @@ function SessionCard({ session }: { session: Session | null }) {
 
   return (
     <div className="border-t px-2 pt-4">
-      <p className="truncate text-sm font-medium leading-tight" title={session.email}>
-        {session.fullName}
-      </p>
-      <p className="mt-0.5 truncate text-xs text-muted-foreground">
-        {roleLabel(session.role)}
-        {context ? ` · ${context}` : ""}
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium leading-tight" title={session.email}>
+            {session.fullName}
+          </p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {roleLabel(session.role)}
+            {context ? ` · ${context}` : ""}
+          </p>
+        </div>
+        {/* Beside the account rather than in the header: theme is a preference about
+            the person, and it belongs with the other things that are about them. */}
+        <ThemeToggle />
+      </div>
       <SignOutButton />
     </div>
   );

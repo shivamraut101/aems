@@ -65,7 +65,9 @@ export function AccountView() {
           <FactList>
             <Fact label="Name">{profile.data?.full_name || session?.fullName || "—"}</Fact>
             <Fact label="Work email">
-              <span className="break-all">{profile.data?.email || session?.email || "—"}</span>
+              <span className="break-all" title={profile.data?.email || session?.email || undefined}>
+                {profile.data?.email || session?.email || "—"}
+              </span>
             </Fact>
             <Fact label="Role" hint={roleSummary(profile.data?.role ?? session?.role ?? "employee")}>
               <Badge variant="secondary" className="font-normal">
@@ -80,18 +82,11 @@ export function AccountView() {
               <ManagerValue manager={manager} />
             </Fact>
             <Fact label="In the system since">{longDate(profile.data?.created_at)}</Fact>
+            {/* A state, so it carries the dot; Role above is a label, so it does not. */}
             <Fact label="Monitoring" hint={monitoring.detail}>
-              <span className="inline-flex items-center gap-1.5">
-                <span
-                  aria-hidden
-                  className={
-                    monitoring.tone === "success"
-                      ? "h-2 w-2 rounded-full bg-success"
-                      : "h-2 w-2 rounded-full bg-muted-foreground/50"
-                  }
-                />
+              <Badge variant={monitoring.tone === "success" ? "success" : "secondary"} dot>
                 {monitoring.label}
-              </span>
+              </Badge>
             </Fact>
           </FactList>
 
@@ -124,8 +119,11 @@ export function AccountView() {
 function ManagerValue({ manager }: { manager: ReturnType<typeof resolveManager> }) {
   if (manager.state === "named") {
     return (
-      <span>
-        {manager.name} <span className="text-muted-foreground">· {manager.email}</span>
+      <span className="break-words">
+        {manager.name}{" "}
+        <span className="break-all text-muted-foreground" title={manager.email}>
+          · {manager.email}
+        </span>
       </span>
     );
   }

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
+import { THEME_INIT_SCRIPT } from "@/components/theme-toggle";
 import {
   PATHNAME_HEADER,
   isPublicPath,
@@ -70,6 +71,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <html lang="en" className={inter.variable} suppressHydrationWarning>
+      <head>
+        {/*
+          Sets the theme class before the first paint. Without it the page paints
+          light and then swaps, which is a white flash on every load for anyone who
+          chose dark — the same class of defect the prefetching and the relative-time
+          fix were built to remove.
+        */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>
         {/*
           One clock reading per request, shared with every relative timestamp below.

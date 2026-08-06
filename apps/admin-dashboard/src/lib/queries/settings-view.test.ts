@@ -17,6 +17,7 @@ import {
   monitoringConsequence,
   parseRulePath,
   parseTrackedCategories,
+  policyChanges,
   policyDraftFrom,
   policyDraftToInput,
   policyState,
@@ -258,6 +259,56 @@ describe("policyDraftFrom", () => {
     expect(seeded.idleThresholdSeconds).toBe(300);
     expect(seeded.trackedCategories).toBe("");
     expect(seeded.name).not.toBe("");
+  });
+});
+
+describe("policyChanges", () => {
+  it("lists only the fields that actually move", () => {
+    const draft = { ...policyDraftFrom(policy), screenshotIntervalSeconds: 60 };
+    const changes = policyChanges(draft, policy);
+
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toEqual({
+      label: "Screenshot interval",
+      from: "5 min",
+      to: "1 min",
+    });
+  });
+
+  /**
+   * The point of the confirmation. Re-publishing an unchanged draft still mints a
+   * version, and a diff that invented changes would make every publish look alarming —
+   * which is how a person learns to click through the one that is not.
+   */
+  it("is empty when nothing an agent reads has changed", () => {
+    expect(policyChanges(policyDraftFrom(policy), policy)).toEqual([]);
+  });
+
+  /**
+   * The version label is deliberately absent: it is usually the server's to mint, so
+   * quoting it would either be blank or be a guess, and it is the one field that always
+   * differs.
+   */
+  it("says nothing about the version, which the server assigns", () => {
+    const draft = { ...policyDraftFrom(policy), version: "2026.99" };
+    expect(policyChanges(draft, policy)).toEqual([]);
+  });
+
+  it("presents the first policy as new rather than as a change from nothing", () => {
+    const changes = policyChanges(policyDraftFrom(null), null);
+    expect(changes.every((change) => change.from === null)).toBe(true);
+    expect(changes.map((change) => change.label)).toContain("Screenshot interval");
+  });
+
+  it("names an emptied category list rather than showing a blank", () => {
+    // "All activity" and "nothing is tracked" are opposite facts, and an empty list
+    // means the first one.
+    const tracked: PolicyRecord = { ...policy, tracked_categories: ["Development"] };
+    const changes = policyChanges({ ...policyDraftFrom(tracked), trackedCategories: "" }, tracked);
+
+    expect(changes).toEqual([
+      { label: "Tracked categories", from: "Development", to: "All activity" },
+    ]);
   });
 });
 

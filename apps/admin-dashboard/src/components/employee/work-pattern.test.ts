@@ -37,6 +37,9 @@ function timeline(over: Partial<DayTimeline> = {}): DayTimeline {
     markers: [],
     totals: {
       activeSeconds: 0,
+      productiveSeconds: 0,
+      neutralSeconds: 0,
+      unproductiveSeconds: 0,
       idleSeconds: 0,
       breakSeconds: 0,
       offlineSeconds: 0,
@@ -176,6 +179,9 @@ describe("buildWorkPattern", () => {
     ],
     totals: {
       activeSeconds: 7500,
+      productiveSeconds: 0,
+      neutralSeconds: 7500,
+      unproductiveSeconds: 0,
       idleSeconds: 900,
       breakSeconds: 600,
       offlineSeconds: 0,
@@ -239,6 +245,9 @@ describe("buildWorkPattern", () => {
         spans: [appSpan("Work > Development", 3600)],
         totals: {
           activeSeconds: 3600,
+          productiveSeconds: 0,
+          neutralSeconds: 3600,
+          unproductiveSeconds: 0,
           idleSeconds: 60,
           breakSeconds: 0,
           offlineSeconds: 0,
@@ -265,6 +274,9 @@ describe("buildWorkPattern", () => {
         spans: [appSpan(null, 3600)],
         totals: {
           activeSeconds: 3600,
+          productiveSeconds: 0,
+          neutralSeconds: 3600,
+          unproductiveSeconds: 0,
           idleSeconds: 0,
           breakSeconds: 0,
           offlineSeconds: 0,
@@ -290,6 +302,9 @@ describe("buildWorkPattern", () => {
         spans: [],
         totals: {
           activeSeconds: 1800,
+          productiveSeconds: 0,
+          neutralSeconds: 1800,
+          unproductiveSeconds: 0,
           idleSeconds: 0,
           breakSeconds: 0,
           offlineSeconds: 0,

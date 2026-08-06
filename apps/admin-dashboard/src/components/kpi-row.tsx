@@ -41,7 +41,9 @@ export function KpiRow({ items, loading }: { items: Kpi[]; loading?: boolean }) 
     // which a border on each cell cannot do without doubling where two meet.
     <dl
       className={cn(
-        "grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+        // `--shadow-sm` rather than a literal rgba: the token is redefined for the dark
+        // theme, where a navy shadow at 4% is a shadow nobody can see.
+        "grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border shadow-[var(--shadow-sm)]",
         WIDE_COLUMNS[items.length] ?? "lg:grid-cols-4",
       )}
     >

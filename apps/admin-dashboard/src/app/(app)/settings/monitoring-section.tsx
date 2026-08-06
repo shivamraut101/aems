@@ -16,7 +16,7 @@ import { Loader2, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useId, useState } from "react";
 
-import { TableSkeletonRows, type SkeletonColumn } from "@/components/states";
+import { ErrorState, TableSkeletonRows, type SkeletonColumn } from "@/components/states";
 import { describeError, useApiQuery, useSession, type EmployeeRow } from "@/lib/api";
 import {
   EMPTY_PEOPLE_FILTERS,
@@ -27,7 +27,7 @@ import { useSetMonitoring } from "@/lib/queries/settings";
 import { employeesQuery } from "@/lib/queries/settings-specs";
 import { monitoringChangeConfirmation, monitoringConsequence } from "@/lib/queries/settings-view";
 
-import { ConfirmPanel, Confirmation, Notice, Section } from "./section";
+import { ConfirmPanel, Confirmation, Section } from "./section";
 
 /**
  * Per-employee monitoring, `docs/scope.md` §4.2's "enable/disable monitoring".
@@ -57,8 +57,8 @@ export function MonitoringSection() {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<string | null>(null);
 
+  const { data, isLoading, isError, error, refetch } = useApiQuery(employeesQuery);
   const { data: session } = useSession();
-  const { data, isLoading, isError, error } = useApiQuery(employeesQuery);
   const mutation = useSetMonitoring();
 
   const canEdit = session?.role === "super_admin";
@@ -70,8 +70,10 @@ export function MonitoringSection() {
 
   return (
     <Section
+      id="monitoring"
       title="Employee monitoring"
       description="Collection is per person. Pausing stops the agent on that employee's devices; it does not delete anything already recorded."
+      affects="one person at a time — every device that person has enrolled stops or resumes collecting at its next check-in."
       actions={
         <>
           <Label htmlFor={searchId} className="sr-only">
@@ -88,23 +90,43 @@ export function MonitoringSection() {
       }
     >
       {isError ? (
-        <Notice tone="error" title="Could not load the roster">
-          <p>{describeError(error)}</p>
-        </Notice>
+        <ErrorState
+          title="Could not load the roster"
+          message={`${describeError(error)} Nobody's monitoring has changed — this panel could not read the roster, not alter it.`}
+          onRetry={() => void refetch()}
+        />
       ) : (
         <>
           {confirmed ? <Confirmation>{confirmed}</Confirmation> : null}
 
           {!isLoading && rows.length > 0 ? (
-            <p className="mb-2 text-sm text-muted-foreground">
-              <span className="tabular font-medium text-foreground">{summary.enabled}</span> of{" "}
-              <span className="tabular">{summary.total}</span> monitored
-              {summary.paused > 0 ? (
-                <>
-                  {" · "}
-                  <span className="tabular font-medium text-foreground">{summary.paused}</span>{" "}
-                  paused
-                </>
+            <p className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm text-muted-foreground">
+              <span>
+                <span className="tabular font-medium text-foreground">{summary.enabled}</span> of{" "}
+                <span className="tabular">{summary.total}</span> monitored
+                {summary.paused > 0 ? (
+                  <>
+                    {" · "}
+                    <span className="tabular font-medium text-foreground">{summary.paused}</span>{" "}
+                    paused
+                  </>
+                ) : null}
+              </span>
+
+              {/* A filtered table that does not say it is filtered is how someone
+                  concludes a colleague has been removed from the company. */}
+              {search.trim() ? (
+                <span>
+                  · showing <span className="tabular">{filtered.length}</span> matching “
+                  <span className="break-all">{search.trim()}</span>”{" "}
+                  <button
+                    type="button"
+                    onClick={() => setSearch("")}
+                    className="rounded font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Clear
+                  </button>
+                </span>
               ) : null}
             </p>
           ) : null}
@@ -154,9 +176,19 @@ export function MonitoringSection() {
                         </Link>
                       </>
                     ) : (
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        Try a different name, email or department.
-                      </p>
+                      <>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {rows.length} {rows.length === 1 ? "person is" : "people are"} on the
+                          roster. Try a different name, email or department.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setSearch("")}
+                          className="mt-3 inline-flex h-9 items-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                        >
+                          Clear the search
+                        </button>
+                      </>
                     )}
                   </TableCell>
                 </TableRow>
@@ -232,13 +264,25 @@ function MonitoringRow({
     <>
       <TableRow>
         <TableCell>
-          <span className="font-medium">{person.full_name || person.email}</span>
-          <p className="text-xs text-muted-foreground">{person.email}</p>
+          {/* The row is about a person who has a page, and "who is this and are they
+              actually reporting" is the next question after pausing someone. The name
+              is the link rather than a trailing icon, per the table rule elsewhere. */}
+          <Link
+            href={`/people/${person.id}`}
+            className="rounded font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {person.full_name || person.email}
+          </Link>
+          {/* An address is the longest string in this table and the one that will not
+              wrap sensibly; the full value stays reachable on hover and to a reader. */}
+          <p className="truncate text-xs text-muted-foreground" title={person.email}>
+            {person.email}
+          </p>
         </TableCell>
         <TableCell className="text-muted-foreground">{person.department ?? "—"}</TableCell>
         <TableCell className="tabular text-muted-foreground">{person.devices.length}</TableCell>
         <TableCell>
-          <Badge variant={person.monitoring_enabled ? "online" : "offline"}>
+          <Badge variant={person.monitoring_enabled ? "online" : "offline"} dot>
             {person.monitoring_enabled ? "On" : "Paused"}
           </Badge>
         </TableCell>

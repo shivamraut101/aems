@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReportDocument, ReportKind, ReportRow } from "@aems/analytics";
+import type { Grouping, ReportDocument, ReportKind, ReportRow } from "@aems/analytics";
 import {
   Badge,
   Button,
@@ -38,10 +38,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 
 import { PageHeader } from "@/components/page-header";
+import { RelativeTime } from "@/components/relative-time";
 import {
   EmptyState,
   ErrorState,
   SkeletonBar,
+  TableSkeleton,
   TableSkeletonRows,
   queryViewState,
   type ViewState,
@@ -60,6 +62,7 @@ import {
   useExportCsv,
   useQueueReport,
   useRunReport,
+  type ReportColumnDto,
   type ReportFormValues,
   type ReportHistoryRow,
   type ReportTypeDto,
@@ -86,6 +89,15 @@ import { reportHistoryQuery, reportTypesQuery } from "./queries";
  * whole form fit at 375px.
  */
 
+/**
+ * How often a screen with an outstanding export re-asks.
+ *
+ * Slower than the live workforce strip's 20s on purpose: rendering a PDF is a job
+ * measured in seconds to a minute, and a manager who has just queued one is watching
+ * the row rather than the clock.
+ */
+const PENDING_POLL_MS = 5_000;
+
 const GROUPING_LABEL: Record<string, string> = {
   employee: "Employee",
   date: "Date",
@@ -110,7 +122,19 @@ export function ReportsView({
 
   const session = useSession();
   const types = useApiQuery(reportTypesQuery);
-  const history = useApiQuery(reportHistoryQuery);
+  /**
+   * Polled only while the worker still owes us a file.
+   *
+   * A queued PDF used to sit on "Pending" until someone reloaded the page: the row
+   * appeared, nothing about it ever moved, and the only way to learn it had finished
+   * was to guess and refresh. The interval is conditional rather than constant so a
+   * screen with nothing outstanding — which is most of the time — makes no requests at
+   * all. Same spec, same key, same path as the server prefetch; only the cadence.
+   */
+  const history = useApiQuery(reportHistoryQuery, {
+    refetchInterval: (query) =>
+      query.state.data?.some((row) => row.status === "pending") ? PENDING_POLL_MS : false,
+  });
 
   const run = useRunReport();
   const exportCsv = useExportCsv();
@@ -388,7 +412,17 @@ export function ReportsView({
           </form>
         )}
 
-        {run.data ? <Result document={run.data} /> : <NotRunYet loading={run.isPending} />}
+        {run.data ? (
+          <Result document={run.data} />
+        ) : (
+          // The columns of the report being built, so the wait shows the shape of the
+          // answer rather than a grey box. They are already in the catalogue — this
+          // costs no request.
+          <NotRunYet
+            loading={run.isPending}
+            columns={activeType?.columnsByGrouping[grouping as Grouping] ?? []}
+          />
+        )}
 
         <ExportHistory
           rows={history.data ?? []}
@@ -545,22 +579,56 @@ function DocumentTable({
   );
 }
 
-function NotRunYet({ loading }: { loading: boolean }) {
-  if (loading) {
+/**
+ * The area under the filters when there is no document in it.
+ *
+ * Two states, and the loading one is the reason this grew a prop. A month of activity
+ * takes the API several seconds, and "Building the report…" centred in an empty box
+ * gave a manager one static line and no sense that anything was happening — the same
+ * failure mode as a frozen job. `columns` is the catalogue's own column list for the
+ * type and grouping on screen, so the wait is the header of the table that is coming.
+ */
+function NotRunYet({
+  loading,
+  columns,
+}: {
+  loading: boolean;
+  columns: readonly ReportColumnDto[];
+}) {
+  if (!loading) {
     return (
-      <div className="rounded-lg border bg-card px-4 py-10 text-center">
-        <p className="text-sm text-muted-foreground" role="status">
-          Building the report…
-        </p>
-      </div>
+      <EmptyState
+        title="No report on screen yet"
+        body="Choose a type and a period, then press Run. Export writes the same numbers to a file."
+      />
     );
   }
 
   return (
-    <EmptyState
-      title="No report on screen yet"
-      body="Choose a type and a period, then press Run. Export writes the same numbers to a file."
-    />
+    <section aria-label="Report" className="min-w-0">
+      <span className="sr-only" role="status">
+        Building the report
+      </span>
+      {columns.length === 0 ? (
+        // Reachable only if the catalogue does not describe this grouping — the API
+        // still answers, so the wait has to say something rather than nothing.
+        <div className="rounded-lg border bg-card px-4 py-10 text-center" aria-busy="true">
+          <p className="text-sm text-muted-foreground">Building the report…</p>
+        </div>
+      ) : (
+        <TableSkeleton
+          caption="Building the report"
+          minWidthClass="min-w-[44rem]"
+          rows={6}
+          columns={columns.map((column) => ({
+            key: column.id,
+            label: column.label,
+            align: column.align,
+            width: column.align === "right" ? "w-16" : "w-32",
+          }))}
+        />
+      )}
+    </section>
   );
 }
 
@@ -587,9 +655,24 @@ function ExportHistory({
   error: string | null;
   onRetry: () => void;
 }) {
+  const pending = rows.filter((row) => row.status === "pending").length;
+
   return (
     <section aria-label="Export history" className="min-w-0 space-y-3">
-      <h2 className="text-base font-semibold tracking-tight">Exports</h2>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h2 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+          Exports
+        </h2>
+        {/* The count, and — the part that matters — whether anything is still being
+            written. A manager who queued a PDF should not have to read down the
+            Status column to find out that the wait is normal. */}
+        {rows.length > 0 ? (
+          <p className="tabular text-xs text-muted-foreground" role="status">
+            {rows.length} {rows.length === 1 ? "file" : "files"}
+            {pending > 0 ? ` · ${pending} still being written` : ""}
+          </p>
+        ) : null}
+      </div>
 
       {state === "error" && error ? (
         <ErrorState title="The export history could not be loaded" message={error} onRetry={onRetry} />
@@ -659,9 +742,26 @@ function HistoryRow({ row }: { row: ReportHistoryRow }) {
       </TableCell>
       <TableCell className="uppercase text-muted-foreground">{row.format}</TableCell>
       <TableCell>
-        <Badge variant={view.tone}>{view.label}</Badge>
+        {/* `dot`, because Ready / Pending / Failed is a state the row is in rather than
+            a label it carries — the same distinction the format column deliberately
+            does not draw. */}
+        <Badge variant={view.tone} dot>
+          {view.label}
+        </Badge>
         {view.detail ? <p className="mt-0.5 text-xs text-muted-foreground">{view.detail}</p> : null}
-        {failed ? <p className="mt-0.5 text-xs text-muted-foreground">{failed}</p> : null}
+        {/* A pending row with nothing under it looks stuck within a minute of being
+            queued. This ages on its own — `RelativeTime` runs its own 30s clock — so
+            the row keeps moving between the five-second polls above. */}
+        {row.status === "pending" ? (
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Queued <RelativeTime iso={row.created_at} />
+          </p>
+        ) : null}
+        {/* Destructive, not muted: a download that failed sat in the same grey as the
+            row count beside it, so the one line saying the click did not work read as
+            another detail about the file. The button stays enabled — pressing it again
+            is the retry. */}
+        {failed ? <p className="mt-0.5 text-xs text-destructive">{failed}</p> : null}
       </TableCell>
       <TableCell className="text-right">
         {view.downloadable ? (

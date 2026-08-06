@@ -39,11 +39,35 @@
     --success: 160 84% 39%; /* emerald */
     --warning: 38 92% 50%; /* amber */
 
+    /*
+     * Tinted grounds for the status pills.
+     *
+     * Added because every badge in the app was mixing its own — `bg-emerald-50`,
+     * `bg-[hsl(var(--success)/0.1)]`, a hard-coded hex — which meant four greens on
+     * one screen and no way to retune them for dark mode in one place. A pill is a
+     * fill plus an ink, so the fill gets a token like the ink already had.
+     */
+    --success-muted: 152 76% 95%;
+    --warning-muted: 48 96% 95%;
+    --destructive-muted: 0 86% 97%;
+    --accent-muted: 226 100% 97%;
+
     --border: 214 32% 91%;
     --input: 214 32% 91%;
     --ring: 239 84% 67%;
 
     --radius: 0.5rem; /* 8px */
+
+    /*
+     * Elevation, as tokens rather than Tailwind's defaults, because the default
+     * shadow is a neutral black that turns muddy over a navy-tinted ground — and is
+     * invisible in dark mode, where a black shadow on a near-black background says
+     * nothing at all. The dark values below are re-tuned rather than reused.
+     */
+    --shadow-sm: 0 1px 2px 0 hsl(222 47% 11% / 0.05);
+    --shadow-md:
+      0 4px 12px -2px hsl(222 47% 11% / 0.08), 0 2px 4px -2px hsl(222 47% 11% / 0.04);
+    --shadow-lg: 0 16px 40px -8px hsl(222 47% 11% / 0.18);
   }
 
   .dark {
@@ -65,18 +89,38 @@
     --muted: 217 33% 14%;
     --muted-foreground: 215 20% 65%;
 
-    --accent: 239 84% 67%;
-    --accent-foreground: 0 0% 100%;
+    /*
+     * Not the light values reused.
+     *
+     * Indigo at 67% lightness is the AI signal, and on a #020617 ground it goes muddy
+     * — which matters more here than anywhere else, because indigo is the one thing
+     * that tells a reader "a model wrote this" rather than "this was recorded".
+     * Emerald and amber are lifted for the same reason: a status pill that cannot be
+     * read at a glance is not a status pill.
+     */
+    --accent: 234 89% 74%;
+    --accent-foreground: 222 47% 11%;
 
-    --destructive: 0 63% 45%;
+    --destructive: 0 63% 55%;
     --destructive-foreground: 210 40% 98%;
 
-    --success: 160 84% 39%;
-    --warning: 38 92% 50%;
+    --success: 158 64% 52%;
+    --warning: 43 96% 56%;
+
+    /* Deep, low-chroma grounds — a light tint at this scale reads as a white box. */
+    --success-muted: 162 60% 12%;
+    --warning-muted: 36 60% 12%;
+    --destructive-muted: 0 50% 14%;
+    --accent-muted: 234 47% 16%;
 
     --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 239 84% 67%;
+    --input: 217 33% 20%;
+    --ring: 234 89% 74%;
+
+    /* Black, not navy: a navy shadow over a near-black page is not a shadow. */
+    --shadow-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.35);
+    --shadow-md: 0 4px 14px -2px hsl(0 0% 0% / 0.5);
+    --shadow-lg: 0 20px 48px -10px hsl(0 0% 0% / 0.7);
   }
 
   * {

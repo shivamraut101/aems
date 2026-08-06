@@ -399,6 +399,59 @@ export function policyDraftToInput(draft: PolicyDraft): PolicyPublishInput {
   };
 }
 
+export interface PolicyChange {
+  label: string;
+  /** What the policy in force says. Null when this is the first version. */
+  from: string | null;
+  to: string;
+}
+
+/**
+ * What publishing this draft changes, field by field.
+ *
+ * Publishing is the one control on this screen that changes what is collected from
+ * every person in the company, and the form gave no account of itself before sending:
+ * it showed the draft, not the difference, so "I only meant to rename it" and "I have
+ * just quadrupled the screenshot rate on forty laptops" looked identical at the moment
+ * of clicking Publish.
+ *
+ * The version label is deliberately absent. It is usually the server's to mint, so
+ * quoting a change to it here would either be blank or be a guess — and it is the one
+ * field that always differs, which would make an unchanged policy look like a change.
+ */
+export function policyChanges(
+  draft: PolicyDraft,
+  current: PolicyRecord | null | undefined,
+): PolicyChange[] {
+  const categories = parseTrackedCategories(draft.trackedCategories);
+
+  const fields: PolicyChange[] = [
+    { label: "Policy name", from: current?.name ?? null, to: draft.name.trim() },
+    {
+      label: "Screenshot interval",
+      from: current ? intervalLabel(current.screenshot_interval_seconds) : null,
+      to: intervalLabel(draft.screenshotIntervalSeconds),
+    },
+    {
+      label: "Idle threshold",
+      from: current ? intervalLabel(current.idle_threshold_seconds) : null,
+      to: intervalLabel(draft.idleThresholdSeconds),
+    },
+    {
+      label: "Tracked categories",
+      from: current ? trackedCategoriesLabel(current.tracked_categories) : null,
+      to: trackedCategoriesLabel(categories),
+    },
+  ];
+
+  return fields.filter((field) => field.from !== field.to);
+}
+
+/** Empty means "record everything", which is the common case and not the same as nothing. */
+export function trackedCategoriesLabel(categories: readonly string[]): string {
+  return categories.length === 0 ? "All activity" : categories.join(", ");
+}
+
 /**
  * When a published policy actually reaches an agent.
  *

@@ -1,6 +1,15 @@
 "use client";
 
-import { Badge } from "@aems/ui";
+import {
+  Badge,
+  Button,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@aems/ui";
 import { Laptop, ShieldOff, Smartphone } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -24,6 +33,23 @@ import { describeError, useApiQuery, useSession, type DeviceRow } from "@/lib/ap
 import { devicesForProfile, gigabytes, osLabel, platformLabel } from "@/lib/queries/usage";
 
 import { sortApplications, useDeviceApplications, useRevokeDevice } from "./device-queries";
+
+/**
+ * Presence, once.
+ *
+ * The variant and the label used to be two parallel three-branch ternaries in the
+ * panel header, which is two places for the same three states to disagree. Every one
+ * of them is a *state* the machine is in rather than a category it belongs to, so all
+ * three carry the leading dot.
+ */
+const DEVICE_STATUS: Record<
+  DeviceRow["status"],
+  { variant: "online" | "offline" | "revoked"; label: string }
+> = {
+  active: { variant: "online", label: "Online" },
+  offline: { variant: "offline", label: "Offline" },
+  revoked: { variant: "revoked", label: "Revoked" },
+};
 
 /**
  * Devices tab — scope §7.
@@ -53,13 +79,6 @@ export function DevicesTabView({ profileId }: { profileId: string }) {
       <SectionHeading
         title="Devices"
         hint="Company hardware assigned to this person, and when each machine last reported in."
-        action={
-          devices.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              {devices.length} {devices.length === 1 ? "device" : "devices"}
-            </p>
-          ) : null
-        }
       />
 
       {state === "error" ? (
@@ -79,11 +98,12 @@ export function DevicesTabView({ profileId }: { profileId: string }) {
         <Panel>
           <EmptyState
             title="No devices assigned"
-            body="Nothing is being collected for this person. Install the desktop agent and sign in on the machine to enrol it, or install the Android app on a company phone."
+            body="Nothing is being collected for this person. Install the desktop agent and sign in on the machine to enrol it, or install the Android app on a company phone — a device appears here as soon as it has been enrolled and the monitoring policy accepted."
           />
         </Panel>
       ) : (
         <div className="space-y-3">
+          <Lead devices={devices} />
           {devices.map((device) => (
             <DevicePanel key={device.id} device={device} />
           ))}
@@ -93,8 +113,45 @@ export function DevicesTabView({ profileId }: { profileId: string }) {
   );
 }
 
+/**
+ * Whether this person's hardware is still checking in, before the specifications.
+ *
+ * The count alone ("2 devices") sat beside the heading and answered a question nobody
+ * has. The one worth answering here is whether anything has gone quiet, and a revoked
+ * machine is counted separately from an offline one because it is *meant* to be
+ * silent — folding the two together would raise an alarm about a decision somebody
+ * deliberately took.
+ */
+function Lead({ devices }: { devices: DeviceRow[] }) {
+  const reporting = devices.filter((device) => device.status === "active").length;
+  const revoked = devices.filter((device) => device.status === "revoked").length;
+  const offline = devices.length - reporting - revoked;
+
+  const allWell = offline === 0 && revoked === 0;
+
+  const parts = [
+    // "0 reporting, 1 offline" says the same thing twice for a person with one
+    // machine, so the count only appears when there is something to contrast it with.
+    ...(allWell
+      ? [devices.length === 1 ? "reporting now" : "all reporting now"]
+      : reporting > 0
+        ? [`${reporting} reporting`]
+        : []),
+    ...(offline > 0 ? [`${offline} offline`] : []),
+    ...(revoked > 0 ? [`${revoked} revoked`] : []),
+  ];
+
+  return (
+    <p className="text-sm">
+      <span className="tabular font-medium">{devices.length}</span>{" "}
+      {devices.length === 1 ? "device" : "devices"} assigned — {parts.join(", ")}.
+    </p>
+  );
+}
+
 function DevicePanel({ device }: { device: DeviceRow }) {
   const Icon = device.platform === "android" ? Smartphone : Laptop;
+  const status = DEVICE_STATUS[device.status];
 
   const { data: session } = useSession();
   const [revoking, setRevoking] = useState(false);
@@ -115,7 +172,7 @@ function DevicePanel({ device }: { device: DeviceRow }) {
         <div className="flex min-w-0 items-center gap-2.5">
           <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold">
+            <h3 className="truncate text-sm font-semibold" title={device.device_name || device.label}>
               {device.device_name || device.label}
             </h3>
             <p className="truncate text-xs text-muted-foreground">
@@ -127,30 +184,14 @@ function DevicePanel({ device }: { device: DeviceRow }) {
           <span className="tabular text-xs text-muted-foreground">
             Last heartbeat <RelativeTime iso={device.last_seen_at} />
           </span>
-          <Badge
-            variant={
-              device.status === "active"
-                ? "online"
-                : device.status === "revoked"
-                  ? "revoked"
-                  : "offline"
-            }
-          >
-            {device.status === "active"
-              ? "Online"
-              : device.status === "revoked"
-                ? "Revoked"
-                : "Offline"}
+          <Badge variant={status.variant} dot>
+            {status.label}
           </Badge>
           {canRevoke ? (
-            <button
-              type="button"
-              onClick={() => setRevoking(true)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input bg-card px-2.5 text-xs font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
+            <Button type="button" variant="outline" size="sm" className="h-9" onClick={() => setRevoking(true)}>
               <ShieldOff className="h-3.5 w-3.5" aria-hidden />
               Revoke
-            </button>
+            </Button>
           ) : null}
         </div>
       </header>
@@ -206,6 +247,9 @@ function DevicePanel({ device }: { device: DeviceRow }) {
  * developer laptop reports a few hundred rows and this is not the primary content of
  * the tab — `<details>` is the browser's own expand/collapse, with correct keyboard
  * behaviour and no state to get wrong.
+ *
+ * `max-h-72` on the table's own scroller is what makes its sticky header earn its
+ * keep: three hundred rows scroll past inside the box, and the column names stay.
  */
 function InstalledApplications({ rows }: { rows: ReturnType<typeof sortApplications> }) {
   return (
@@ -215,37 +259,38 @@ function InstalledApplications({ rows }: { rows: ReturnType<typeof sortApplicati
       </summary>
       {/* Both axes scroll inside this box: the list is long, and on a phone the three
           columns are wider than the panel. Neither may reach the page body. */}
-      <div className="max-h-72 overflow-auto border-t">
-        <table className="w-full min-w-[22rem] text-sm">
-          <caption className="sr-only">Applications reported by this device</caption>
-          <thead>
-            <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-              <th scope="col" className="px-4 py-2 font-medium sm:px-5">
-                Application
-              </th>
-              <th scope="col" className="hidden px-4 py-2 font-medium sm:table-cell sm:px-5">
-                Version
-              </th>
-              <th scope="col" className="px-4 py-2 text-right font-medium sm:px-5">
-                Last seen
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.id} className="border-b last:border-0">
-                <td className="px-4 py-2 sm:px-5">{row.name}</td>
-                <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell sm:px-5">
-                  {row.version?.trim() || "—"}
-                </td>
-                <td className="tabular px-4 py-2 text-right text-muted-foreground sm:px-5">
-                  <RelativeTime iso={row.last_seen_at} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <Table
+        containerClassName="max-h-72 overflow-y-auto border-t"
+        className="min-w-[22rem]"
+      >
+        <caption className="sr-only">Applications reported by this device</caption>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead scope="col" className="sm:px-5">
+              Application
+            </TableHead>
+            <TableHead scope="col" className="hidden sm:table-cell sm:px-5">
+              Version
+            </TableHead>
+            <TableHead scope="col" className="text-right sm:px-5">
+              Last seen
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={row.id}>
+              <TableCell className="sm:px-5">{row.name}</TableCell>
+              <TableCell className="hidden text-muted-foreground sm:table-cell sm:px-5">
+                {row.version?.trim() || "—"}
+              </TableCell>
+              <TableCell className="tabular whitespace-nowrap text-right text-muted-foreground sm:px-5">
+                <RelativeTime iso={row.last_seen_at} />
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </details>
   );
 }

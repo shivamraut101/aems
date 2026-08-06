@@ -37,14 +37,20 @@ const ICON: Record<RailEventKind, LucideIcon> = {
  * The screenshot bubble is `secondary` — it used to be `bg-accent`, which is the
  * indigo `docs/design.md` reserves for AI output, and a camera icon is a recorded
  * fact rather than a model's opinion.
+ *
+ * `text-slate-900` is the one raw palette colour in this file and it is deliberate:
+ * emerald and amber hold the same value in both themes, so the ink on them must *not*
+ * flip with the theme. `text-foreground` would turn near-white in dark mode and put
+ * white on amber. It is the same navy as `--primary` in the light theme, which is why
+ * it matches; `SPAN_LABEL_FILL` in model.ts pins the same value for the same reason.
  */
 const TONE: Record<RailEventKind, string> = {
-  "clock-in": "bg-[hsl(var(--success))] text-slate-900",
+  "clock-in": "bg-success text-slate-900",
   "clock-out": "bg-secondary text-foreground",
   "break-start": "bg-secondary text-muted-foreground",
   "break-end": "bg-secondary text-muted-foreground",
-  "idle-start": "bg-[hsl(var(--warning))] text-slate-900",
-  "active-again": "bg-[hsl(var(--success))] text-slate-900",
+  "idle-start": "bg-warning text-slate-900",
+  "active-again": "bg-success text-slate-900",
   screenshot: "bg-secondary text-foreground",
   "no-data": "border border-dashed bg-background text-muted-foreground",
   app: "bg-secondary text-muted-foreground",

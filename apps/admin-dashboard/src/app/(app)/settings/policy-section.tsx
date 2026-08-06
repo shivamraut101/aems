@@ -15,6 +15,7 @@ import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 
+import { ErrorState } from "@/components/states";
 import { describeError, useSession } from "@/lib/api";
 import { useCompanyPolicy, usePublishPolicy } from "@/lib/queries/settings";
 import {
@@ -23,17 +24,20 @@ import {
   SCREENSHOT_INTERVAL_OPTIONS,
   intervalLabel,
   intervalOptionsWith,
+  policyChanges,
   policyDraftFrom,
   policyDraftToInput,
   policyFormSchema,
   policyState,
   screenshotIntervalChoices,
   screenshotsPerDay,
+  trackedCategoriesLabel,
   type PolicyDraft,
   type PolicyRecord,
 } from "@/lib/queries/settings-view";
 
 import {
+  ConfirmPanel,
   Confirmation,
   DefinitionList,
   DefinitionRow,
@@ -77,8 +81,10 @@ export function PolicySection() {
 
   return (
     <Section
+      id="policy"
       title="Monitoring policy"
       description="What the desktop and Android agents are configured to collect. Publishing creates a new version; the previous one stays as history."
+      affects="every person in this company — it is the terms their agent collects under, and what they are asked to consent to."
       actions={
         canPublish && state === "ready" && !editing ? (
           <Button variant="outline" size="sm" className="h-9" onClick={() => setEditing(true)}>
@@ -138,9 +144,11 @@ export function PolicySection() {
       ) : null}
 
       {state === "error" ? (
-        <Notice tone="error" title="Could not load the monitoring policy">
-          <p>{describeError(query.error)}</p>
-        </Notice>
+        <ErrorState
+          title="Could not load the monitoring policy"
+          message={`${describeError(query.error)} Nothing has changed on anyone's device — this panel could not read the policy, not alter it.`}
+          onRetry={() => void query.refetch()}
+        />
       ) : null}
 
       {state === "ready" && query.data ? <PolicyFacts policy={query.data} /> : null}
@@ -207,11 +215,13 @@ function PolicyFacts({ policy }: { policy: PolicyRecord }) {
             : undefined
         }
       >
-        {policy.tracked_categories.length === 0 ? (
-          <span className="text-muted-foreground">All activity</span>
-        ) : (
-          <span>{policy.tracked_categories.join(", ")}</span>
-        )}
+        {/* Shares its wording with the publish confirmation, so the row and the diff
+            cannot describe the same empty list two different ways. */}
+        <span
+          className={policy.tracked_categories.length === 0 ? "text-muted-foreground" : undefined}
+        >
+          {trackedCategoriesLabel(policy.tracked_categories)}
+        </span>
       </DefinitionRow>
 
       <DefinitionRow term="Reaches agents">
@@ -240,6 +250,8 @@ function PolicyForm({
   onPublished: (version: string | null) => void;
 }) {
   const mutation = usePublishPolicy();
+  /** The draft the reader has asked to publish and is being shown the effect of. */
+  const [confirming, setConfirming] = useState<PolicyDraft | null>(null);
 
   const {
     control,
@@ -257,6 +269,15 @@ function PolicyForm({
   const screenshotOptions = screenshotIntervalChoices(screenshotSeconds);
   const idleOptions = intervalOptionsWith(IDLE_THRESHOLD_OPTIONS, idleSeconds);
 
+  const publish = (draft: PolicyDraft) => {
+    // The version in the confirmation comes from the stored row, never from the
+    // draft: it is usually the server's to mint, and echoing back what was typed
+    // would print a version that does not exist.
+    mutation.mutate(policyDraftToInput(draft), {
+      onSuccess: (policy) => onPublished(policy?.version ?? null),
+    });
+  };
+
   return (
     <FormPanel
       title={firstVersion ? "Publish the first policy" : "Publish a new version"}
@@ -265,13 +286,13 @@ function PolicyForm({
           ? "These are the terms every agent enforces and every employee consents to. They can be changed later by publishing another version."
           : "The version in force stays as history. Consent already recorded is against the version it was given, not this one."
       }
+      // Validate first, then show what the draft changes and ask. Every publish is
+      // confirmed, including one that only renames the policy: the name is what an
+      // employee reads when they are asked to consent, so there is no edit here that is
+      // purely cosmetic to the person it is about.
       onSubmit={handleSubmit((draft) => {
-        // The version in the confirmation comes from the stored row, never from the
-        // draft: it is usually the server's to mint, and echoing back what was typed
-        // would print a version that does not exist.
-        mutation.mutate(policyDraftToInput(draft), {
-          onSuccess: (policy) => onPublished(policy?.version ?? null),
-        });
+        mutation.reset();
+        setConfirming(draft);
       })}
     >
       <div className="mt-4">
@@ -374,36 +395,117 @@ function PolicyForm({
 
       <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">{POLICY_ROLLOUT_NOTE}</p>
 
-      {mutation.isError ? (
+      {mutation.isError && !confirming ? (
         <p role="alert" className="mt-2 text-sm text-destructive">
           {describeError(mutation.error)}
         </p>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap justify-end gap-2">
-        {onCancel ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-9"
-            onClick={onCancel}
-            disabled={mutation.isPending}
+      {confirming ? (
+        <div className="mt-3 rounded-lg border border-warning/40 bg-warning/5 px-4 py-3.5">
+          <ConfirmPanel
+            title={
+              firstVersion
+                ? "Publish this as the company's first monitoring policy?"
+                : "Publish this as the policy in force?"
+            }
+            detail={<PolicyDiff draft={confirming} current={current} />}
+            error={mutation.isError ? describeError(mutation.error) : null}
           >
-            Cancel
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-9"
+              onClick={() => setConfirming(null)}
+              disabled={mutation.isPending}
+            >
+              Go back
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-9"
+              disabled={mutation.isPending}
+              onClick={() => publish(confirming)}
+            >
+              {mutation.isPending ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  Publishing
+                </>
+              ) : (
+                "Publish this version"
+              )}
+            </Button>
+          </ConfirmPanel>
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          {onCancel ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-9"
+              onClick={onCancel}
+              disabled={mutation.isPending}
+            >
+              Cancel
+            </Button>
+          ) : null}
+          <Button type="submit" size="sm" className="h-9" disabled={mutation.isPending}>
+            Review and publish
           </Button>
-        ) : null}
-        <Button type="submit" size="sm" className="h-9" disabled={mutation.isPending}>
-          {mutation.isPending ? (
-            <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-              Publishing
-            </>
-          ) : (
-            "Publish"
-          )}
-        </Button>
-      </div>
+        </div>
+      )}
     </FormPanel>
+  );
+}
+
+/**
+ * The difference between the policy in force and the one about to replace it.
+ *
+ * The draft on its own is not an answer to "what am I about to do to forty laptops" —
+ * it looks the same whether one field moved or all of them did. Only the fields that
+ * actually change are listed, so a rename reads as a rename.
+ */
+function PolicyDiff({ draft, current }: { draft: PolicyDraft; current: PolicyRecord | null }) {
+  const changes = policyChanges(draft, current);
+
+  return (
+    <>
+      {changes.length === 0 ? (
+        <p>
+          Nothing an agent reads is changing. A new version is still recorded, and it is the
+          version consent will be taken against from now on.
+        </p>
+      ) : (
+        <>
+          <p>
+            {current
+              ? "This replaces the policy in force. Consent already given stays recorded against the version it was given for."
+              : "Devices can enrol once this exists. Every employee is asked to consent to it."}
+          </p>
+          <ul className="mt-2 space-y-1">
+            {changes.map((change) => (
+              <li key={change.label} className="flex flex-wrap items-baseline gap-x-2 break-words">
+                <span className="text-foreground">{change.label}</span>
+                {change.from === null ? (
+                  <span className="tabular font-medium text-foreground">{change.to}</span>
+                ) : (
+                  <span className="tabular">
+                    <span className="line-through">{change.from}</span>
+                    {" → "}
+                    <span className="font-medium text-foreground">{change.to}</span>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <p className="mt-2">{POLICY_ROLLOUT_NOTE}</p>
+    </>
   );
 }

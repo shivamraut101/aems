@@ -30,9 +30,19 @@ export function SectionHeading({
   );
 }
 
-/** A bordered panel — the container every section on this page sits in. */
+/**
+ * A bordered panel — the container every section on this page sits in.
+ *
+ * The shadow is the token, not a value: `--shadow-sm` is defined for both themes, so
+ * the panels here sit at the same elevation as the cards on Overview and `/me` instead
+ * of reading as the one flat surface in the product.
+ */
 export function Panel({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <section className={cn("rounded-lg border bg-card p-5", className)}>{children}</section>;
+  return (
+    <section className={cn("rounded-lg border bg-card p-5 shadow-[var(--shadow-sm)]", className)}>
+      {children}
+    </section>
+  );
 }
 
 /**

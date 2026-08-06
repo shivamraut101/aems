@@ -137,7 +137,14 @@ export function InsightsView() {
         </div>
 
         {showPersonPicker ? (
-          <Field label="Person" className="w-full min-w-0 sm:w-56">
+          <Field
+            label="Person"
+            className="w-full min-w-0 sm:w-56"
+            // Without this the roster failing renders as a picker with no options
+            // beside a body reading "Choose a person" — an outage wearing the empty
+            // state's clothes, and a reader with no way to tell they are stuck.
+            {...(employees.isError ? { error: describeError(employees.error) } : {})}
+          >
             {(field) => (
               <Select
                 value={request.profileId ?? ""}
@@ -305,9 +312,11 @@ function Insight({ row }: { row: AiSummaryRow }) {
 function Recorded({ measured }: { measured: InsightMeasured }) {
   return (
     <section aria-labelledby="recorded-heading">
+      {/* The section-heading size the Overview uses, not the 11px a table header takes —
+          this labels a whole half of the page, and it was reading as a column name. */}
       <h2
         id="recorded-heading"
-        className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground"
+        className="mb-2 text-[13px] font-semibold uppercase tracking-[0.06em] text-muted-foreground"
       >
         Recorded activity
       </h2>
@@ -412,11 +421,23 @@ function InsightBodySkeleton() {
           <SkeletonBar className="w-11/12" />
           <SkeletonBar className="w-3/4" />
         </div>
-        <div className="mt-5 flex flex-wrap gap-x-8 gap-y-3">
+        {/* Three stacked label/bar/figure rows, matching what the breakdown became.
+            A skeleton that is not the shape of its content is a layout shift with a
+            pulse on it — see the header of `states/skeletons.tsx`. */}
+        <div className="mt-4 space-y-2">
           {[0, 1, 2].map((index) => (
-            <div key={index}>
-              <SkeletonBar className="h-3 w-20" />
-              <SkeletonBar className="mt-2 h-5 w-12" />
+            <div key={index} className="flex items-center gap-3">
+              <SkeletonBar className="h-3 w-24 shrink-0 sm:w-32" />
+              <SkeletonBar className="h-1.5 min-w-0 flex-1" />
+              <SkeletonBar className="h-3 w-10 shrink-0" />
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 space-y-3">
+          {[0, 1].map((index) => (
+            <div key={index} className="border-l-2 border-accent/40 pl-3">
+              <SkeletonBar className="h-3 w-24" />
+              <SkeletonBar className="mt-1.5 h-3.5 w-11/12" />
             </div>
           ))}
         </div>

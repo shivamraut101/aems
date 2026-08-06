@@ -74,7 +74,16 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
         </DialogHeader>
 
         {code ? (
-          <CodeStep code={code.code} expiresAt={code.expiresAt} who={code.fullName || code.email} onClose={onClose} />
+          <CodeStep
+            code={code.code}
+            expiresAt={code.expiresAt}
+            who={code.fullName || code.email}
+            // Back to the picker rather than straight to a second mint: `mutate` leaves
+            // the dead code on screen while the new one is in flight, and the person a
+            // code is being reissued for is exactly the thing worth re-confirming.
+            onRegenerate={() => mint.reset()}
+            onClose={onClose}
+          />
         ) : (
           <>
             {canChoose ? (
@@ -142,11 +151,13 @@ function CodeStep({
   code,
   expiresAt,
   who,
+  onRegenerate,
   onClose,
 }: {
   code: string;
   expiresAt: string;
   who: string;
+  onRegenerate: () => void;
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -174,11 +185,14 @@ function CodeStep({
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm text-muted-foreground">
+      <p className="break-words text-sm text-muted-foreground">
         For <span className="font-medium text-foreground">{who}</span>
       </p>
 
       <div className="rounded-lg border bg-secondary/40 p-4 text-center sm:p-5">
+        {/* `select-all` so one click takes the whole code, `break-all` so a 390px phone
+            wraps it rather than widening the dialog, and the clamp so it stays large
+            enough to read aloud down a phone line at either width. */}
         <p className="tabular select-all break-all text-[clamp(22px,7vw,30px)] font-semibold tracking-[0.12em]">{code}</p>
         <p className={`mt-2 text-xs ${expired ? "text-destructive" : "text-muted-foreground"}`}>
           {expiryLabel(expiresAt, now)}
@@ -186,7 +200,7 @@ function CodeStep({
       </div>
 
       <ol className="space-y-1.5 text-sm text-muted-foreground">
-        <li>1. Open the AEMS agent on the employee's computer.</li>
+        <li>1. Open the AEMS agent on the employee&apos;s computer.</li>
         <li>2. Type the code above into the sign-in box.</li>
         <li>3. They read the monitoring policy and accept it there.</li>
       </ol>
@@ -196,19 +210,35 @@ function CodeStep({
         another if it is lost or expires.
       </p>
 
+      {/* An expired code is offered neither Copy nor Done: copying a dead credential is
+          a trap, and closing the dialog was the only way back to a live one — the
+          refresh icon on "Done" promised a reissue the button never performed. */}
       <DialogFooter className="mt-2">
-        <Button type="button" variant="outline" onClick={() => void copy()}>
-          {copied ? (
-            <Check className="h-4 w-4 text-[hsl(var(--success))]" aria-hidden />
-          ) : (
-            <Copy className="h-4 w-4" aria-hidden />
-          )}
-          {copied ? "Copied" : "Copy"}
-        </Button>
-        <Button type="button" onClick={onClose}>
-          {expired ? <RefreshCw className="h-4 w-4" aria-hidden /> : null}
-          Done
-        </Button>
+        {expired ? (
+          <>
+            <Button type="button" variant="outline" onClick={onClose}>
+              Close
+            </Button>
+            <Button type="button" onClick={onRegenerate}>
+              <RefreshCw className="h-4 w-4" aria-hidden />
+              Generate another
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button type="button" variant="outline" onClick={() => void copy()}>
+              {copied ? (
+                <Check className="h-4 w-4 text-success" aria-hidden />
+              ) : (
+                <Copy className="h-4 w-4" aria-hidden />
+              )}
+              {copied ? "Copied" : "Copy"}
+            </Button>
+            <Button type="button" onClick={onClose}>
+              Done
+            </Button>
+          </>
+        )}
       </DialogFooter>
     </div>
   );

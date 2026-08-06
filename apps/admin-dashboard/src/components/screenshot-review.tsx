@@ -8,24 +8,30 @@ import {
   DialogTitle,
   cn,
 } from "@aems/ui";
-import { ChevronLeft, ChevronRight, ImageOff, Monitor } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ChevronLeft, ChevronRight, ImageOff, Monitor } from "lucide-react";
+import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
+import { useCallback, useMemo, useState } from "react";
 
 import { employeeQuery } from "@/components/employee/employee-queries";
 import { displayName } from "@/components/employee/identity";
+import { dayHref } from "@/components/employee/tabs";
+import { useDayWindow } from "@/components/employee/use-day-window";
+import { EmptyState, ErrorState, StaleNotice } from "@/components/states";
 import { describeError, useApiQuery } from "@/lib/api";
 import {
+  BLOCK_STATE_LABELS,
+  blockStateCounts,
   buildReviewRows,
   dayWindow,
+  filterRowsByState,
   flattenCaptures,
-  localDateString,
   noteImageFailure,
-  shiftDate,
   stepCapture,
   useScreenshotBlocks,
   useTimelineSlots,
   type FlatCapture,
+  type BlockState,
   type ImageFailures,
   type ReviewCapture,
   type ReviewRow,
@@ -43,22 +49,17 @@ import {
  * Blocks with nothing in them are rendered, not skipped. "Nothing was captured
  * between 11:20 and 11:30" is a fact about the day, and a screen that collapses gaps
  * cannot show one.
+ *
+ * **The day comes from `useDayWindow`, like every other tab on this page.** It used to
+ * be local state seeded by a server prop, which made this the one tab where the day
+ * control in the employee header did nothing: that control writes `?date=` and this
+ * component never read it back, so the header said one day and the captures showed
+ * another. Reading the URL deletes the duplicate stepper that used to sit here, the
+ * hydration-correction effect underneath it, and the disagreement.
  */
-export function ScreenshotReview({
-  profileId,
-  date: initialDate,
-  today: initialToday,
-  dateWasExplicit = false,
-}: {
-  profileId: string;
-  /** `YYYY-MM-DD`, resolved on the server so the first paint has a window. */
-  date: string;
-  /** The server's calendar day, corrected to the viewer's after hydration. */
-  today: string;
-  /** True when the day came from the URL, so the browser must not second-guess it. */
-  dateWasExplicit?: boolean;
-}) {
-  const router = useRouter();
+export function ScreenshotReview({ profileId }: { profileId: string }) {
+  const pathname = usePathname();
+  const search = useSearchParams();
 
   // The name for the lightbox caption, read from the entry the route layout already
   // prefetched. This page used to fetch `/api/employees/:id` a second time, server
@@ -67,21 +68,19 @@ export function ScreenshotReview({
   // disagree about who is being reviewed.
   const person = useApiQuery(employeeQuery(profileId), { enabled: Boolean(profileId) });
   const personName = person.data ? displayName(person.data) : null;
-  const [date, setDate] = useState(initialDate);
-  const [today, setToday] = useState(initialToday);
 
-  // Both dates start as the server's, because deriving them from the browser clock
-  // during render is a hydration mismatch. The correction runs after hydration, so a
-  // viewer whose calendar day differs from the API host's does not open on an empty
-  // day — and does not see the "next day" arrow enabled on their own today.
-  useEffect(() => {
-    const local = localDateString();
-    if (local === initialToday) return;
-    setToday(local);
-    if (!dateWasExplicit) setDate(local);
-  }, [dateWasExplicit, initialToday]);
+  const day = useDayWindow();
+  const date = day?.date ?? null;
 
-  const { from, to } = useMemo(() => dayWindow(date), [date]);
+  // Memoised on the date string rather than recomputed per render, and that matters:
+  // `dayWindow` closes a day in progress at the *current* ten-minute block, so an
+  // unmemoised call would mint a fresh `to` — and a fresh query key — as the clock
+  // rolled over, blanking the screen to its skeleton mid-review. Empty strings before
+  // the day is known, which is what leaves both queries disabled for that first frame.
+  const { from, to } = useMemo(
+    () => (date ? dayWindow(date) : { from: "", to: "" }),
+    [date],
+  );
 
   const blocks = useScreenshotBlocks(profileId, from, to);
   const timeline = useTimelineSlots(profileId, from, to);
@@ -91,6 +90,19 @@ export function ScreenshotReview({
     [blocks.data, timeline.data],
   );
   const captures = useMemo(() => flattenCaptures(rows), [rows]);
+
+  /**
+   * Which kind of block the reviewer is looking for.
+   *
+   * Local state rather than a URL param: the day IS a URL on this page, because it is
+   * worth linking to and coming back to. A transient "show me only the breaks" is not
+   * — putting it in the address bar would mean a shared link silently hid most of the
+   * evidence from whoever opened it.
+   */
+  const [stateFilter, setStateFilter] = useState<BlockState | "all">("all");
+
+  const counts = useMemo(() => blockStateCounts(rows), [rows]);
+  const visibleRows = useMemo(() => filterRowsByState(rows, stateFilter), [rows, stateFilter]);
 
   const [failures, setFailures] = useState<ImageFailures>({});
   const [lightbox, setLightbox] = useState<number>(-1);
@@ -109,91 +121,123 @@ export function ScreenshotReview({
     [refetchBlocks],
   );
 
-  function goToDate(next: string) {
-    setDate(next);
-    // The window is part of what the URL identifies, so a link to a day is a link to
-    // that day rather than to "whenever you happen to open it".
-    router.replace(`?date=${next}`, { scroll: false });
-  }
-
-  const isToday = date >= today;
+  const isToday = day?.isToday ?? true;
   const captureCount = blocks.data?.screenshotCount ?? 0;
+  // The denominator matters more than the count: "12 captures" says nothing without
+  // how many blocks of the day went past uncaptured.
+  const blocksWithCapture = rows.filter((row) => row.hasCapture).length;
 
   return (
     <section aria-labelledby="screenshot-review-heading">
-      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 id="screenshot-review-heading" className="text-base font-semibold tracking-tight">
-            Screenshots
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {blocks.isSuccess
-              ? captureCount === 0
-                ? "No captures recorded for this day."
-                : `${captureCount} capture${captureCount === 1 ? "" : "s"} across ${rows.length} ten-minute blocks.`
-              : "Captures are grouped into ten-minute blocks, beside the activity they belong to."}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          <DayStepButton
-            label="Previous day"
-            onClick={() => goToDate(shiftDate(date, -1))}
-            icon={ChevronLeft}
-          />
-          <input
-            type="date"
-            value={date}
-            max={today}
-            onChange={(event) => event.target.value && goToDate(event.target.value)}
-            aria-label="Day to review"
-            className="h-9 rounded-md border bg-card px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          <DayStepButton
-            label="Next day"
-            onClick={() => goToDate(shiftDate(date, 1))}
-            icon={ChevronRight}
-            disabled={isToday}
-          />
-        </div>
+      <header className="mb-5">
+        <h2 id="screenshot-review-heading" className="text-base font-semibold tracking-tight">
+          Screenshots
+        </h2>
+        {/* The lead is the coverage, not the total. A reviewer opens this tab to find
+            out whether the day is evidenced, and "12 captures" cannot answer that on
+            its own — "in 12 of 48 blocks" can. The day it counts is named because the
+            control that changes it sits in the header, above this heading. */}
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          {blocks.isSuccess
+            ? captureCount === 0
+              ? `No captures recorded${day ? ` on ${day.label}` : ""}.`
+              : `${captureCount} capture${captureCount === 1 ? "" : "s"}${day ? ` on ${day.label}` : ""}, in ${blocksWithCapture} of ${rows.length} ten-minute blocks.`
+            : "Captures are grouped into ten-minute blocks, beside the activity they belong to."}
+        </p>
       </header>
 
       {blocks.isError ? (
-        <Panel tone="error">
-          <p className="text-sm font-medium">Screenshots could not be loaded</p>
-          <p className="mt-1 text-sm text-muted-foreground">{describeError(blocks.error)}</p>
-        </Panel>
+        // A retry, not a dead end. Every other failure surface in the dashboard offers
+        // one, and a signed-URL page is exactly the kind that recovers on a second ask.
+        <ErrorState
+          title="Screenshots could not be loaded"
+          message={describeError(blocks.error)}
+          onRetry={() => void blocks.refetch()}
+        />
       ) : blocks.isPending ? (
-        <SkeletonTable />
+        <ReviewSkeleton />
       ) : rows.length === 0 || captureCount === 0 ? (
-        <Panel>
-          <p className="text-sm font-medium">No captures on this day</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {isToday
+        <EmptyState
+          title="No captures on this day"
+          body={
+            isToday
               ? "Captures appear here as the agent reports them, at the interval your company policy sets."
-              : "Nothing was captured — the device may have been offline, clocked out, or on a declared break all day."}
-          </p>
-        </Panel>
+              : "Nothing was captured — the device may have been offline, clocked out, or on a declared break all day."
+          }
+          action={
+            // The commonest cause of an empty day is looking at the wrong one, and the
+            // day control is up in the page header — far enough away that the way out
+            // belongs here too. A link rather than a button, because the day is a URL
+            // on this page and a link can be opened in a new tab.
+            day ? (
+              <Link
+                href={dayHref(pathname, search.toString(), day.previous)}
+                scroll={false}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-card px-3 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+                Try the previous day
+              </Link>
+            ) : null
+          }
+        />
       ) : (
         <>
           {blocks.data?.truncated ? (
-            <p className="mb-3 rounded-md border border-[hsl(var(--warning))]/40 bg-[hsl(var(--warning))]/10 px-3 py-2 text-sm">
-              Showing the first {captureCount} captures of this day. Narrow the range to see the rest.
+            // `border-warning/40` rather than `border-[hsl(var(--warning))]/40`:
+            // Tailwind cannot inject an alpha channel into an arbitrary `hsl(var(--x))`,
+            // so the old form rendered a full-strength border and no tint at all.
+            <p className="mb-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden />
+              <span>
+                Showing the first {captureCount} captures of this day. Narrow the range to
+                see the rest.
+              </span>
             </p>
           ) : null}
 
+          {/* The captures still render when the timeline is unavailable — that is why
+              they are two queries — so this is a stale notice over a working screen
+              rather than an error that replaces it. */}
           {timeline.isError ? (
-            <p className="mb-3 text-sm text-muted-foreground">
-              Activity for these blocks is unavailable — {describeError(timeline.error)}
-            </p>
+            <StaleNotice
+              className="mb-3 rounded-md border border-warning/40"
+              message={`Activity for these blocks is unavailable — ${describeError(timeline.error)}`}
+              onRetry={() => void timeline.refetch()}
+            />
           ) : null}
 
-          <ReviewTable
-            rows={rows}
+          <BlockFilter
+            value={stateFilter}
+            counts={counts}
+            total={rows.length}
+            onChange={setStateFilter}
+          />
+
+          {visibleRows.length === 0 ? (
+            // A filter that empties the screen has to say so and offer the way back,
+            // or it reads as a day with no captures rather than a choice the reviewer made.
+            <EmptyState
+              title={`No ${BLOCK_STATE_LABELS[stateFilter as BlockState].toLowerCase()} blocks on this day`}
+              body="Every ten-minute block was spent on something else."
+              action={
+                <button
+                  type="button"
+                  onClick={() => setStateFilter("all")}
+                  className="inline-flex h-9 items-center rounded-md border bg-card px-3 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Show all blocks
+                </button>
+              }
+            />
+          ) : (
+          <ReviewList
+            rows={visibleRows}
             failures={failures}
             onImageError={handleImageError}
             onOpen={setLightbox}
           />
+          )}
         </>
       )}
 
@@ -210,11 +254,105 @@ export function ScreenshotReview({
   );
 }
 
+/**
+ * Narrows the review to blocks that were mostly one thing.
+ *
+ * A segmented control rather than a dropdown: there are four options, they are always
+ * the same four, and a reviewer scanning a day wants to move between them repeatedly.
+ * A select would put two clicks between "show me the active blocks" and "show me the
+ * breaks", on the screen where that comparison is the entire job.
+ *
+ * The counts are on the buttons, and an option with none is disabled. Selecting a
+ * filter to discover there is nothing behind it is a dead end the control can simply
+ * prevent — and seeing "On a break 0" is itself an answer about the day.
+ *
+ * Buckets are exclusive (see `dominantState`), so the four counts plus the blocks with
+ * nothing recorded add up to the total. A reviewer can trust the arithmetic.
+ */
+function BlockFilter({
+  value,
+  counts,
+  total,
+  onChange,
+}: {
+  value: BlockState | "all";
+  counts: Record<BlockState, number>;
+  total: number;
+  onChange: (next: BlockState | "all") => void;
+}) {
+  const options: { key: BlockState | "all"; label: string; count: number }[] = [
+    { key: "all", label: "All blocks", count: total },
+    ...(["active", "idle", "break", "offline"] as const).map((state) => ({
+      key: state,
+      label: BLOCK_STATE_LABELS[state],
+      count: counts[state],
+    })),
+  ];
+
+  return (
+    <div
+      role="group"
+      aria-label="Filter blocks by activity"
+      // Wraps rather than scrolls: five short chips fit two rows on a phone, and a
+      // horizontally scrolled filter hides options a reviewer does not know to look for.
+      className="mb-4 flex flex-wrap items-center gap-1.5"
+    >
+      {options.map((option) => {
+        const selected = option.key === value;
+        const empty = option.count === 0 && option.key !== "all";
+
+        return (
+          <button
+            key={option.key}
+            type="button"
+            aria-pressed={selected}
+            disabled={empty}
+            onClick={() => onChange(option.key)}
+            className={cn(
+              "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              selected
+                ? "border-transparent bg-primary text-primary-foreground"
+                : "bg-card hover:bg-secondary",
+              empty && "cursor-not-allowed opacity-45 hover:bg-card",
+            )}
+          >
+            {option.label}
+            <span
+              className={cn(
+                "tabular text-[11px]",
+                selected ? "text-primary-foreground/70" : "text-muted-foreground",
+              )}
+            >
+              {option.count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Table
+// The blocks
 // ---------------------------------------------------------------------------
 
-function ReviewTable({
+/**
+ * The day, one ten-minute block at a time.
+ *
+ * **Not a `<table>`, and not the shared `Table` primitive.** It was one, three columns
+ * wide with a `min-w-[40rem]` and its own horizontal scroller, which meant that on a
+ * phone the captures — the entire point of the screen — sat off the right edge behind
+ * a sideways drag most people never find. A table cannot fold, and this content has to:
+ * `docs/design.md` reserves tables for operations and this is history, closer to the
+ * timeline than to the people roster.
+ *
+ * So it is a list of blocks that reflows instead. One column on a phone (block, then
+ * activity, then captures, in reading order), block beside activity from `sm`, and all
+ * three abreast from `lg` — the desktop reading the table used to give, without the
+ * price the phone was paying for it.
+ */
+function ReviewList({
   rows,
   failures,
   onImageError,
@@ -229,91 +367,68 @@ function ReviewTable({
   let cursor = 0;
 
   return (
-    // Two boxes, and the inner one is the fix. The outer `overflow-hidden` exists only
-    // to clip the table's corners to the panel's radius — on its own it *cropped* this
-    // table, because three columns of block time, activity and capture tiles do not
-    // fit in 375px and clipping is not scrolling. The inner scroller gives the table a
-    // width of its own; the page body keeps its.
-    <div className="overflow-hidden rounded-lg border bg-card">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[40rem] text-sm">
-          <caption className="sr-only">
-            Screen captures grouped into ten-minute blocks, with the activity recorded in each block.
-          </caption>
-          <thead>
-            <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-              {/* Proportions, not pixels: the two narrow columns take a share of
-                  whatever width the scroller settles on rather than pinning 448px of
-                  it and leaving the captures whatever is left. */}
-              <th scope="col" className="w-[22%] px-4 py-2 font-medium">
-                Block
-              </th>
-              <th scope="col" className="w-[34%] px-4 py-2 font-medium">
-                Activity
-              </th>
-              <th scope="col" className="px-4 py-2 font-medium">
-                Captures
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const start = cursor;
-              cursor += row.captures.length;
+    <ul className="space-y-2.5" aria-label="Ten-minute blocks, each with the activity recorded in it">
+      {rows.map((row) => {
+        const start = cursor;
+        cursor += row.captures.length;
 
-              return (
-                <tr key={row.key} className="border-b align-top last:border-0">
-                  <th scope="row" className="px-4 py-3 text-left font-normal">
-                    <span className="tabular text-sm font-medium">{row.timeLabel}</span>
-                    {row.monitorCount > 1 ? (
-                      <span
-                        className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"
-                        title={`${row.monitorCount} displays captured`}
-                      >
-                        <Monitor className="h-3.5 w-3.5" aria-hidden />
-                        {row.monitorCount} displays
-                      </span>
-                    ) : null}
-                  </th>
+        return (
+          <li
+            key={row.key}
+            className="grid gap-x-4 gap-y-3 rounded-lg border bg-card p-3 shadow-[var(--shadow-sm)] sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:p-4 lg:grid-cols-[9.5rem_minmax(0,17rem)_minmax(0,1fr)]"
+          >
+            <div className="min-w-0">
+              <h3 className="tabular text-sm font-medium">{row.timeLabel}</h3>
+              {row.monitorCount > 1 ? (
+                <p
+                  className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"
+                  title={`${row.monitorCount} displays captured`}
+                >
+                  <Monitor className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  {row.monitorCount} displays
+                </p>
+              ) : null}
+            </div>
 
-                  <td className="px-4 py-3">
-                    <p className="truncate font-medium">{row.activity.headline}</p>
-                    {/* Words, never a percentage — docs/design.md: a bare score beside
-                        a person's name is the framing this product refuses. */}
-                    <p className="mt-0.5 text-xs text-muted-foreground">{row.activity.split}</p>
-                    <ActivityBar bar={row.activity.bar} />
-                  </td>
+            <div className="min-w-0">
+              {/* `title` carries what the truncation drops — an application name is
+                  routinely longer than the column it lands in. */}
+              <p className="truncate text-sm font-medium" title={row.activity.headline}>
+                {row.activity.headline}
+              </p>
+              {/* Words, never a percentage — docs/design.md: a bare score beside
+                  a person's name is the framing this product refuses. */}
+              <p className="tabular mt-0.5 text-xs text-muted-foreground">{row.activity.split}</p>
+              <ActivityBar bar={row.activity.bar} />
+            </div>
 
-                  <td className="px-4 py-3">
-                    {row.hasCapture ? (
-                      // Wraps rather than scrolling. A strip with its own horizontal
-                      // scrollbar inside a table that now has one too is two nested
-                      // scroll gestures on the same axis, and on a phone neither is
-                      // discoverable. Height is the axis this screen can spare.
-                      <div className="flex flex-wrap gap-2 pb-1">
-                        {row.captures.map((capture, offset) => (
-                          <CaptureTile
-                            key={capture.id}
-                            capture={capture}
-                            failed={(failures[capture.id] ?? 0) > 1}
-                            onError={() => onImageError(capture.id)}
-                            onOpen={() => onOpen(start + offset)}
-                          />
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="rounded-md border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
-                        No capture in this block
-                      </p>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
+            {/* Full width until there is room for a third column, so the captures get
+                the whole line on the two narrower layouts rather than a sliver of one. */}
+            <div className="min-w-0 sm:col-span-2 lg:col-span-1">
+              {row.hasCapture ? (
+                // Wraps rather than scrolling: height is the axis this screen can spare,
+                // and a strip with its own sideways gesture is not discoverable on a phone.
+                <div className="flex flex-wrap gap-2">
+                  {row.captures.map((capture, offset) => (
+                    <CaptureTile
+                      key={capture.id}
+                      capture={capture}
+                      failed={(failures[capture.id] ?? 0) > 1}
+                      onError={() => onImageError(capture.id)}
+                      onOpen={() => onOpen(start + offset)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-md border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
+                  No capture in this block
+                </p>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -330,8 +445,11 @@ function ActivityBar({ bar }: { bar: { active: number; idle: number; break: numb
 
   return (
     <span className="mt-2 flex h-1 w-full max-w-56 overflow-hidden rounded-full bg-muted" aria-hidden>
-      <span style={{ width: `${bar.active * 100}%` }} className="bg-[hsl(var(--success))]" />
-      <span style={{ width: `${bar.idle * 100}%` }} className="bg-[hsl(var(--warning))]" />
+      {/* `bg-success` / `bg-warning` are real utilities now that status is in the
+          token layer — an arbitrary `hsl(var(--x))` was how these were written before
+          the preset carried them. */}
+      <span style={{ width: `${bar.active * 100}%` }} className="bg-success" />
+      <span style={{ width: `${bar.idle * 100}%` }} className="bg-warning" />
       <span style={{ width: `${bar.break * 100}%` }} className="bg-muted-foreground/50" />
       <span
         style={{
@@ -514,60 +632,51 @@ function Lightbox({
 // Shell pieces
 // ---------------------------------------------------------------------------
 
-function DayStepButton({
-  label,
-  onClick,
-  icon: Icon,
-  disabled,
-}: {
-  label: string;
-  onClick: () => void;
-  icon: typeof ChevronLeft;
-  disabled?: boolean;
-}) {
+/**
+ * The whole screen before its day is known.
+ *
+ * The page's Suspense fallback: `useDayWindow` reads `useSearchParams`, so the review
+ * cannot render during prerender. Carries the heading's shape as well as the list's,
+ * because a fallback that omits the header makes the real one shove the page down.
+ */
+export function ScreenshotReviewSkeleton() {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      className="grid h-9 w-9 place-items-center rounded-md border bg-card hover:bg-secondary disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <Icon className="h-4 w-4" aria-hidden />
-    </button>
-  );
-}
-
-function Panel({ children, tone }: { children: React.ReactNode; tone?: "error" }) {
-  return (
-    <div
-      className={cn(
-        "rounded-lg border bg-card px-4 py-10 text-center",
-        tone === "error" && "border-destructive/30 bg-destructive/5",
-      )}
-    >
-      {children}
-    </div>
+    <section aria-busy="true">
+      <header className="mb-5">
+        <span className="block h-5 w-28 animate-pulse rounded bg-muted" />
+        <span className="mt-1.5 block h-4 w-72 max-w-full animate-pulse rounded bg-muted" />
+      </header>
+      <ReviewSkeleton />
+      <span className="sr-only">Loading screen captures</span>
+    </section>
   );
 }
 
 /**
- * The shape of the table before it has one.
+ * The shape of the list before it has one.
  *
- * Sized in fractions rather than in the pixels the real columns happen to occupy: the
- * old version laid out 32 + 48 + 28 + 28 rem of fixed bars inside an `overflow-hidden`
- * box, so on a phone the loading state was itself cropped — the first thing a reader
- * saw was already broken.
+ * Reflows on exactly the breakpoints the real blocks do, so the loading state and the
+ * content it stands in for occupy the same space. The version before this laid out
+ * 32 + 48 + 28 + 28 rem of fixed bars inside an `overflow-hidden` box, so on a phone
+ * the loading state was itself cropped — the first thing a reader saw was broken.
  */
-function SkeletonTable() {
+function ReviewSkeleton() {
   return (
-    <div className="overflow-hidden rounded-lg border bg-card" aria-busy="true">
+    <div className="space-y-2.5" aria-busy="true">
       {Array.from({ length: 6 }, (_, i) => (
-        <div key={i} className="flex items-center gap-4 border-b px-4 py-3.5 last:border-0">
-          <span className="h-4 w-16 shrink-0 animate-pulse rounded bg-muted sm:w-32" />
-          <span className="h-4 min-w-0 flex-1 animate-pulse rounded bg-muted" />
-          <span className="h-[4.5rem] w-28 shrink-0 animate-pulse rounded-md bg-muted" />
-          <span className="hidden h-[4.5rem] w-28 shrink-0 animate-pulse rounded-md bg-muted sm:block" />
+        <div
+          key={i}
+          className="grid gap-x-4 gap-y-3 rounded-lg border bg-card p-3 shadow-[var(--shadow-sm)] sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:p-4 lg:grid-cols-[9.5rem_minmax(0,17rem)_minmax(0,1fr)]"
+        >
+          <span className="h-4 w-28 animate-pulse rounded bg-muted" />
+          <div className="space-y-2">
+            <span className="block h-4 w-2/3 animate-pulse rounded bg-muted" />
+            <span className="block h-3 w-1/2 animate-pulse rounded bg-muted" />
+          </div>
+          <div className="flex gap-2 sm:col-span-2 lg:col-span-1">
+            <span className="h-[4.5rem] w-28 animate-pulse rounded-md bg-muted" />
+            <span className="hidden h-[4.5rem] w-28 animate-pulse rounded-md bg-muted sm:block" />
+          </div>
         </div>
       ))}
       <span className="sr-only">Loading screen captures</span>

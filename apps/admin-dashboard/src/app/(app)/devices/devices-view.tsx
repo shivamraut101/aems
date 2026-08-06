@@ -34,6 +34,7 @@ import {
   type VisibilityState,
 } from "@tanstack/react-table";
 import { Loader2, MonitorSmartphone, SlidersHorizontal } from "lucide-react";
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
@@ -43,6 +44,7 @@ import {
   EmptyState,
   ErrorState,
   FilterBarSkeleton,
+  SkeletonBar,
   StaleNotice,
   queryViewState,
 } from "@/components/states";
@@ -50,6 +52,7 @@ import { apiFetch, describeError, useApiQuery, useSession, type DeviceRow } from
 import {
   compareLastSeen,
   deviceFilterParams,
+  EMPTY_DEVICE_FILTERS,
   gigabytes,
   matchesDeviceFilter,
   parseDeviceFilters,
@@ -94,6 +97,18 @@ const PLATFORM_LABEL: Record<DeviceRow["platform"], string> = {
   windows: "Windows",
   macos: "macOS",
   android: "Android",
+};
+
+/**
+ * Status, as a sentence-cased word rather than the wire value.
+ *
+ * The badge printed `active` in the same lower-case the column stores, which is the only
+ * place in the product where a reader is shown a database value verbatim.
+ */
+const STATUS_LABEL: Record<DeviceRow["status"], string> = {
+  active: "Active",
+  offline: "Offline",
+  revoked: "Revoked",
 };
 
 /* -------------------------------------------------------------------------- */
@@ -193,16 +208,50 @@ function useLatestTelemetry(deviceIds: readonly string[]) {
   });
 }
 
+/**
+ * What an empty telemetry cell means, which an em dash on its own cannot say.
+ *
+ * These three columns read as "Android-only fields dashed out on every desktop row",
+ * and that is not what they are: `desktop-agent/src/main/telemetry.ts` reports battery,
+ * network and free storage on Windows and macOS as well, on the heartbeat cadence. So a
+ * blank cell is never "the wrong column for this platform" — it is one of two separate
+ * facts, and the table used to print the same character for both.
+ *
+ * A device that has sent no sample at all gets the dash, and the row says so once in
+ * {@link telemetryTitle} rather than three times across three columns. A device that
+ * sent a sample with no battery in it is a desktop PC or a Mac mini, and "No battery" is
+ * the honest reading of that — the agent goes out of its way not to claim a charging
+ * state for a machine with nothing to charge, and the dashboard should not undo it by
+ * showing the same gap it shows for silence.
+ */
 function batteryLabel(snapshot: TelemetrySnapshot | undefined): string {
-  if (!snapshot || snapshot.batteryLevel === null) return "—";
+  if (!snapshot) return "—";
+  if (snapshot.batteryLevel === null) return "No battery";
   return snapshot.batteryCharging === true
     ? `${snapshot.batteryLevel}% · charging`
     : `${snapshot.batteryLevel}%`;
 }
 
 function networkLabel(snapshot: TelemetrySnapshot | undefined): string {
-  if (!snapshot || !snapshot.networkType) return "—";
+  if (!snapshot) return "—";
+  // The agent answers `null` when the adapter's name does not prove what the link is,
+  // deliberately — see the note on `networkTypeFrom`. That is "we do not know", not
+  // "nothing was reported", and the two must not print the same.
+  if (!snapshot.networkType) return "Unknown";
   return NETWORK_LABEL[snapshot.networkType] ?? snapshot.networkType;
+}
+
+/**
+ * The hover text on a telemetry cell: which sample it came from, or that there is none.
+ *
+ * `recordedAt` is already in hand and was never shown. Battery and network are only true
+ * at the instant they were read, so a percentage with no age on it is a reading a manager
+ * cannot weigh — and on a machine that stopped reporting yesterday it is actively
+ * misleading.
+ */
+function telemetryTitle(snapshot: TelemetrySnapshot | undefined): string {
+  if (!snapshot) return "This device has not reported battery, network or storage yet.";
+  return `Reported ${new Date(snapshot.recordedAt).toLocaleString()}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -269,20 +318,51 @@ function DevicesScreen() {
       columnHelper.accessor((row) => row.device_name || row.label, {
         id: "device",
         header: "Device",
-        cell: (context) => (
-          <>
-            <span className="font-medium">{context.getValue()}</span>
-            <p className="truncate text-xs text-muted-foreground">
-              {context.row.original.model ?? "Unknown model"} · agent{" "}
-              {context.row.original.agent_version || "—"}
-            </p>
-          </>
-        ),
+        // The primary cell is the way in. There is no per-device route, so the nearest
+        // thing to "open this machine" is its owner's Devices tab, which is where the
+        // full detail for one device already lives — the same set this table hides at
+        // narrow widths. A row that shows a summary and cannot be opened is a dead end.
+        cell: (context) => {
+          const device = context.row.original;
+          const name = context.getValue();
+
+          return (
+            <>
+              <Link
+                href={`/people/${device.profile_id}/devices`}
+                title={name}
+                className="block truncate rounded-sm font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {name}
+              </Link>
+              <p
+                className="truncate text-xs text-muted-foreground"
+                title={`${device.model ?? "Unknown model"} · agent ${device.agent_version || "unknown"}`}
+              >
+                {device.model ?? "Unknown model"} · agent {device.agent_version || "—"}
+              </p>
+            </>
+          );
+        },
       }),
       columnHelper.accessor((row) => owners.get(row.profile_id) ?? "—", {
         id: "owner",
         header: "Assigned to",
-        cell: (context) => <span className="text-muted-foreground">{context.getValue()}</span>,
+        cell: (context) => {
+          const name = context.getValue();
+          // A dash here means the roster did not resolve the id — the row still knows
+          // whose it is, so the link stands either way rather than stranding the reader
+          // on the one column that failed.
+          return (
+            <Link
+              href={`/people/${context.row.original.profile_id}`}
+              title={name === "—" ? "Open this device's owner" : name}
+              className="block truncate rounded-sm text-muted-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {name}
+            </Link>
+          );
+        },
       }),
       columnHelper.accessor("platform", {
         id: "platform",
@@ -296,7 +376,17 @@ function DevicesScreen() {
       columnHelper.accessor((row) => row.cpu ?? "—", {
         id: "cpu",
         header: "CPU",
-        cell: (context) => <span className="text-muted-foreground">{context.getValue()}</span>,
+        cell: (context) => (
+          // A CPU string is "12th Gen Intel(R) Core(TM) i7-1265U" — 36 characters in a
+          // 140px budget. Clipped with the full value one hover away, rather than
+          // wrapped to three lines and dragging every other row's height with it.
+          <span
+            className="block truncate text-muted-foreground"
+            title={context.row.original.cpu ?? "The agent has not reported this machine's CPU."}
+          >
+            {context.getValue()}
+          </span>
+        ),
       }),
       columnHelper.accessor((row) => row.ram_mb ?? 0, {
         id: "ram",
@@ -312,23 +402,37 @@ function DevicesScreen() {
       columnHelper.accessor((row) => snapshots[row.id]?.batteryLevel ?? -1, {
         id: "battery",
         header: "Battery",
-        cell: (context) => (
-          <span className="tabular text-muted-foreground">
-            {batteryLabel(snapshots[context.row.original.id])}
-          </span>
-        ),
+        cell: (context) => {
+          const snapshot = snapshots[context.row.original.id];
+          return (
+            <span className="tabular text-muted-foreground" title={telemetryTitle(snapshot)}>
+              {batteryLabel(snapshot)}
+            </span>
+          );
+        },
       }),
       columnHelper.accessor((row) => networkLabel(snapshots[row.id]), {
         id: "network",
         header: "Network",
-        cell: (context) => <span className="text-muted-foreground">{context.getValue()}</span>,
+        cell: (context) => (
+          <span
+            className="text-muted-foreground"
+            title={telemetryTitle(snapshots[context.row.original.id])}
+          >
+            {context.getValue()}
+          </span>
+        ),
       }),
       columnHelper.accessor((row) => snapshots[row.id]?.storageFreeMb ?? -1, {
         id: "storageFree",
         header: "Free storage",
         cell: (context) => {
-          const free = snapshots[context.row.original.id]?.storageFreeMb ?? null;
-          return <span className="tabular text-muted-foreground">{gigabytes(free)}</span>;
+          const snapshot = snapshots[context.row.original.id];
+          return (
+            <span className="tabular text-muted-foreground" title={telemetryTitle(snapshot)}>
+              {gigabytes(snapshot?.storageFreeMb ?? null)}
+            </span>
+          );
         },
       }),
       columnHelper.accessor("status", {
@@ -337,12 +441,15 @@ function DevicesScreen() {
         cell: (context) => {
           const status = context.getValue();
           return (
+            // `dot`, because this is a *state* a machine is in right now rather than a
+            // label it carries — the same distinction the roster's Active/Idle pills draw.
             <Badge
+              dot
               variant={
                 status === "active" ? "online" : status === "revoked" ? "revoked" : "offline"
               }
             >
-              {status}
+              {STATUS_LABEL[status]}
             </Badge>
           );
         },
@@ -393,7 +500,13 @@ function DevicesScreen() {
   const visibleColumns = table.getVisibleFlatColumns();
 
   return (
-    <div className="mx-auto max-w-7xl px-6 py-7">
+    // `px-4` below `sm`, matching the Overview: 16px of gutter rather than 24px gives a
+    // 390px phone another 32px of table before it has to scroll inside its own box.
+    // `max-w-7xl` stays, and is the one place this page departs from the Overview's
+    // `max-w-6xl` — the eleven-column inventory declares a 77rem minimum at `2xl`, which
+    // fits inside 1280px of container and does not fit inside 1152px. `table-layout.test.ts`
+    // checks that arithmetic against this exact cap.
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-7">
       <PageHeader
         title="Devices"
         subtitle="Company-owned hardware reporting into AEMS."
@@ -410,6 +523,19 @@ function DevicesScreen() {
           caller is a manager. Hiding this from employees would leave them unable to set
           up the laptop they were handed. */}
       {addOpen ? <AddDeviceDialog onClose={() => setAddOpen(false)} /> : null}
+
+      {/* "0 of 0 reporting" is a claim, not a placeholder, so a load gets the card's
+          height and none of its words. An empty company gets neither: the empty state
+          in the table already says what would put a device here, and a conclusion about
+          nothing above it would only be in the way. */}
+      {state === "loading" ? (
+        <InventorySummarySkeleton />
+      ) : state !== "error" && rows.length > 0 ? (
+        <InventorySummary
+          rows={rows}
+          onShowStatus={(status) => setFilters({ ...filters, status })}
+        />
+      ) : null}
 
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <SearchField filters={filters} onChange={setFilters} />
@@ -487,10 +613,40 @@ function DevicesScreen() {
             />
           ) : null}
 
+          {/* The roster failing was the one degradation this page did silently: every
+              Assigned-to cell fell back to an em dash and nothing said why, so an outage
+              looked like an estate of unassigned machines. */}
+          {roster.isError ? (
+            <StaleNotice
+              className="mb-2 rounded-md border"
+              message="Owner names could not be read, so the Assigned to column is showing dashes. Every other column is current."
+              onRetry={() => void roster.refetch()}
+            />
+          ) : null}
+
           {state !== "loading" && rows.length > 0 ? (
-            <p className="mb-2 text-xs text-muted-foreground">
-              Showing <span className="tabular">{filtered.length}</span> of{" "}
-              <span className="tabular">{rows.length}</span>
+            <p className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                Showing <span className="tabular">{filtered.length}</span> of{" "}
+                <span className="tabular">{rows.length}</span>
+              </span>
+              {/* Said here as well as in the empty state, because a filter that hides
+                  nine of eleven rows still leaves two on screen — and a table that
+                  quietly answers a narrower question than the one asked is worse than
+                  an obviously empty one. */}
+              {filtersActive ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>Filtered</span>
+                  <button
+                    type="button"
+                    onClick={() => setFilters(EMPTY_DEVICE_FILTERS)}
+                    className="rounded-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Clear
+                  </button>
+                </>
+              ) : null}
             </p>
           ) : null}
 
@@ -558,9 +714,7 @@ function DevicesScreen() {
                               <Button
                                 type="button"
                                 variant="link"
-                                onClick={() =>
-                                  setFilters({ search: "", platform: null, status: null })
-                                }
+                                onClick={() => setFilters(EMPTY_DEVICE_FILTERS)}
                               >
                                 Clear filters
                               </Button>
@@ -593,6 +747,167 @@ function DevicesScreen() {
         </>
       )}
     </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* The conclusion                                                              */
+/* -------------------------------------------------------------------------- */
+
+interface StatusCounts {
+  total: number;
+  active: number;
+  offline: number;
+  revoked: number;
+}
+
+function countByStatus(rows: readonly DeviceRow[]): StatusCounts {
+  const counts: StatusCounts = { total: rows.length, active: 0, offline: 0, revoked: 0 };
+  for (const row of rows) counts[row.status] += 1;
+  return counts;
+}
+
+/**
+ * What the inventory says before it lists anything.
+ *
+ * The question this page is opened with is "is every company machine still reporting?",
+ * and eleven columns of hardware detail answer it only once they have all been read —
+ * on a laptop, six of them at a time. The sentence answers it first and the table
+ * becomes the evidence rather than the finding.
+ *
+ * Revoked machines are held out of the denominator deliberately. A revoked device is
+ * *meant* to be silent — non-negotiable #4 — so counting it as a machine that failed to
+ * report would turn a completed off-boarding into a warning, which is the one reading
+ * that would make an administrator hesitate to revoke anything.
+ *
+ * Same treatment as the Overview's verdict block, on purpose: two pages that lead with
+ * a conclusion should look like they were built by the same product.
+ */
+function InventorySummary({
+  rows,
+  onShowStatus,
+}: {
+  rows: readonly DeviceRow[];
+  onShowStatus: (status: DeviceFilters["status"]) => void;
+}) {
+  const counts = useMemo(() => countByStatus(rows), [rows]);
+  const expected = counts.total - counts.revoked;
+
+  return (
+    <section
+      aria-label="Inventory at a glance"
+      className="mb-6 rounded-lg border bg-card p-5 shadow-[var(--shadow-sm)] sm:p-6"
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h2 className="tabular text-2xl font-semibold tracking-[-0.025em] sm:text-[26px]">
+          {counts.active} of {expected} reporting
+        </h2>
+        {counts.offline > 0 ? (
+          <Badge variant="warning" dot>
+            {counts.offline} not reporting
+          </Badge>
+        ) : expected > 0 ? (
+          <Badge variant="success" dot>
+            All reporting
+          </Badge>
+        ) : null}
+      </div>
+
+      <p className="mt-2 max-w-[64ch] text-sm text-muted-foreground">
+        {counts.offline > 0 ? (
+          <>
+            {counts.offline === 1 ? "One machine has" : `${counts.offline} machines have`} stopped
+            sending heartbeats.{" "}
+            <SummaryFilterButton onClick={() => onShowStatus("offline")}>
+              Show {counts.offline === 1 ? "it" : "them"}
+            </SummaryFilterButton>
+            .
+          </>
+        ) : expected === 0 ? (
+          "No device is currently enrolled."
+        ) : (
+          "Every enrolled machine has sent a recent heartbeat."
+        )}
+        {counts.revoked > 0 ? (
+          <>
+            {" "}
+            <SummaryFilterButton onClick={() => onShowStatus("revoked")}>
+              {counts.revoked} revoked
+            </SummaryFilterButton>{" "}
+            {counts.revoked === 1 ? "device collects" : "devices collect"} nothing.
+          </>
+        ) : null}
+      </p>
+
+      <dl className="mt-5 flex flex-wrap gap-x-7 gap-y-3 border-t pt-4">
+        {[
+          { label: "Reporting", value: counts.active },
+          { label: "Offline", value: counts.offline },
+          { label: "Revoked", value: counts.revoked },
+          { label: "Enrolled", value: counts.total },
+        ].map((figure) => (
+          <div key={figure.label}>
+            <dd className="tabular text-base font-semibold tracking-[-0.02em] sm:text-[17px]">
+              {figure.value}
+            </dd>
+            <dt className="text-[11px] text-muted-foreground">{figure.label}</dt>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+/**
+ * The summary's own height, held while the inventory is still being read.
+ *
+ * Same reasoning as `DevicesFallback` below: a conclusion that appears above an already
+ * drawn table pushes the whole page down a beat after it settled. This card is the one
+ * thing on the screen whose height cannot be inferred from the columns, so it has to
+ * stand its own.
+ */
+function InventorySummarySkeleton() {
+  return (
+    <section
+      aria-hidden
+      className="mb-6 rounded-lg border bg-card p-5 shadow-[var(--shadow-sm)] sm:p-6"
+    >
+      <SkeletonBar className="h-8 w-56 max-w-full" />
+      <SkeletonBar className="mt-3 h-4 w-4/5 max-w-lg" />
+      <div className="mt-5 flex flex-wrap gap-x-7 gap-y-3 border-t pt-4">
+        {[0, 1, 2, 3].map((cell) => (
+          <div key={cell}>
+            <SkeletonBar className="h-5 w-10" />
+            <SkeletonBar className="mt-1 h-3 w-14" />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * A count in the sentence that is also the filter for it.
+ *
+ * The status Select above already exists and is not duplicated here — this only drives
+ * it, so the reader who has just been told two machines are silent does not then have to
+ * find the control that shows them.
+ */
+function SummaryFilterButton({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -835,11 +1150,13 @@ function LoadingRows({ columnIds, rows = 5 }: { columnIds: readonly string[]; ro
  */
 function DevicesFallback() {
   return (
-    <div className="mx-auto max-w-7xl px-6 py-7">
+    // Must match `DevicesScreen`'s container exactly, or the page shifts as it resolves.
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-7">
       <PageHeader title="Devices" subtitle="Company-owned hardware reporting into AEMS." />
       <span className="sr-only" role="status">
         Loading the device inventory
       </span>
+      <InventorySummarySkeleton />
       <FilterBarSkeleton fields={3} />
       <Table
         containerClassName="rounded-lg border bg-card"

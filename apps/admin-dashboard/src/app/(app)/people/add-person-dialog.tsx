@@ -21,6 +21,7 @@ import { Check, Copy, KeyRound, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 
+import { ErrorState } from "@/components/states";
 import { describeError, useApiQuery } from "@/lib/api";
 import { useCreateEmployee } from "@/lib/queries/employees";
 import {
@@ -134,15 +135,6 @@ function CreateStep({
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
-      {serverError ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
-        >
-          {serverError}
-        </p>
-      ) : null}
-
       <Field label="Work email" required error={errors.email?.message}>
         {(field) => (
           <Input
@@ -244,6 +236,23 @@ function CreateStep({
         )}
       </Field>
 
+      {/*
+       * The shared error surface, so a refused submission looks like every other failure
+       * in the dashboard rather than like a fourth kind of red box.
+       *
+       * Below the fields rather than above them, which is the unconventional half. This
+       * form is taller than a phone: an alert pinned to the top of a scrolling dialog is
+       * off screen at the exact moment it is raised, because the reader is at the bottom
+       * with their thumb on the button that raised it. `role="alert"` announces it either
+       * way, so the position is a decision for the people who can see it.
+       *
+       * No retry button: a rejected form is retried by changing it and pressing Add
+       * again, and a second submit control would be the wrong one to reach for.
+       */}
+      {serverError ? (
+        <ErrorState title="This person could not be added" message={serverError} />
+      ) : null}
+
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
@@ -321,7 +330,7 @@ function CredentialsStep({
         {password ? (
           <Button type="button" variant="outline" onClick={() => void copy()}>
             {copied ? (
-              <Check className="h-4 w-4 text-[hsl(var(--success))]" aria-hidden />
+              <Check className="h-4 w-4 text-success" aria-hidden />
             ) : (
               <Copy className="h-4 w-4" aria-hidden />
             )}

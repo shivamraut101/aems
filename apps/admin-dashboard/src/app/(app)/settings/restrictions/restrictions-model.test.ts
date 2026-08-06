@@ -19,6 +19,7 @@ import {
   restrictionRuleToInput,
   restrictionSettingsFormFrom,
   restrictionSettingsToInput,
+  rulePreview,
   ruleReach,
   rulesById,
   settingsChangeConsequence,
@@ -163,6 +164,63 @@ describe("ruleReach", () => {
     expect(ruleReach(rule({ matchKind: "url_pattern", pattern: "example.com/admin*" }))).toBe(
       "URLs matching example.com/admin*",
     );
+  });
+});
+
+describe("rulePreview", () => {
+  it("says plainly what a block rule does under a block list", () => {
+    expect(rulePreview("blocklist", { action: "block", matchKind: "domain", pattern: "facebook.com" }))
+      .toBe("Employees will not be able to open facebook.com and every subdomain of it.");
+  });
+
+  /**
+   * The two combinations people get wrong, and the reason this function exists. Both
+   * produce a rule that changes nothing on its own, and the table cannot tell that
+   * apart from a rule that works.
+   */
+  it("explains a rule that only takes effect against another rule", () => {
+    const allowUnderBlocklist = rulePreview("blocklist", {
+      action: "allow",
+      matchKind: "domain",
+      pattern: "facebook.com",
+    });
+    expect(allowUnderBlocklist).toMatch(/even if a block rule/);
+
+    const blockUnderAllowlist = rulePreview("allowlist", {
+      action: "block",
+      matchKind: "domain",
+      pattern: "facebook.com",
+    });
+    expect(blockUnderAllowlist).toMatch(/stays refused/);
+  });
+
+  it("states the allow list's default alongside an allow rule", () => {
+    const text = rulePreview("allowlist", {
+      action: "allow",
+      matchKind: "domain",
+      pattern: "payroll.example.com",
+    });
+    expect(text).toMatch(/will be able to open payroll\.example\.com/);
+    expect(text).toMatch(/not allowed by some rule stays refused/);
+  });
+
+  it("quotes a URL pattern rather than paraphrasing it", () => {
+    expect(
+      rulePreview("blocklist", {
+        action: "block",
+        matchKind: "url_pattern",
+        pattern: "example.com/admin*",
+      }),
+    ).toBe("Employees will not be able to open URLs matching example.com/admin*.");
+  });
+
+  it("says nothing until the pattern is usable", () => {
+    // A preview built from half a hostname reads as a statement about a site nobody
+    // named, which is worse than no preview.
+    expect(rulePreview("blocklist", { action: "block", matchKind: "domain", pattern: "" })).toBeNull();
+    expect(
+      rulePreview("blocklist", { action: "block", matchKind: "domain", pattern: "ads-*.example.com" }),
+    ).toBeNull();
   });
 });
 

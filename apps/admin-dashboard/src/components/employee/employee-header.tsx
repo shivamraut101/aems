@@ -6,15 +6,29 @@ import Link from "next/link";
 
 import { RelativeTime } from "@/components/relative-time";
 import { ErrorState, StaleNotice, queryViewState } from "@/components/states";
-import { StatusDot } from "@/components/status-dot";
 import { describeError, useApiQuery, useLiveWorkforce } from "@/lib/api";
 import { timeOfDay } from "@/lib/format";
 
 import { DayRangeControl } from "./day-range-control";
 import { employeeQuery } from "./employee-queries";
 import { displayName, initials, subtitleFor } from "./identity";
-import { platformLabel, resolvePresence } from "./presence";
+import { platformLabel, resolvePresence, type PresenceStatus } from "./presence";
 import { useDayWindow } from "./use-day-window";
+
+/**
+ * Presence as a pill rather than as a dot beside a word.
+ *
+ * It is a *state* — what the person is doing right now — so it takes the badge with
+ * the leading dot, the same treatment every other state in the product gets. On this
+ * header it is also the one fact a reader is looking for before any other, and a pill
+ * is what makes it findable in a row of plain label/value pairs.
+ */
+const PRESENCE: Record<PresenceStatus, { variant: "success" | "warning" | "offline"; label: string }> =
+  {
+    active: { variant: "success", label: "Active" },
+    idle: { variant: "warning", label: "Idle" },
+    offline: { variant: "offline", label: "Offline" },
+  };
 
 /**
  * The identity block from docs/design.md:112-120 — avatar, name, role, live status,
@@ -89,32 +103,52 @@ export function EmployeeHeader({ profileId }: { profileId: string }) {
 
           <div className="min-w-0">
             <h1 className="truncate text-xl font-semibold tracking-tight">{name}</h1>
-            <p className="mt-0.5 truncate text-sm text-muted-foreground" title={employee.email}>
+            <p className="mt-0.5 truncate text-sm text-muted-foreground">
               {subtitleFor(employee.role, employee.department)}
             </p>
           </div>
         </div>
 
         {/* The day is resolved in the browser's clock, so it is absent for one frame.
-            A fixed-height placeholder keeps the header from jumping when it arrives. */}
-        {day ? <DayRangeControl day={day} /> : <span className="h-9" aria-hidden />}
+            The placeholder matches the control's own box — full width below `sm`, where
+            it takes a line of its own — so the header does not grow a row when it
+            arrives. */}
+        {day ? (
+          <DayRangeControl day={day} />
+        ) : (
+          <span className="h-9 w-full sm:w-auto" aria-hidden />
+        )}
       </div>
 
-      <dl className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+      <dl className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
         <div className="flex items-center gap-2">
           <dt className="sr-only">Status</dt>
           <dd>
-            <StatusDot status={presence.status} />
+            <Badge variant={PRESENCE[presence.status].variant} dot>
+              {PRESENCE[presence.status].label}
+            </Badge>
+          </dd>
+        </div>
+
+        {/* The unambiguous identifier, and the reason the tooltip that used to hide it
+            on the role line was worth replacing: two people can share a display name,
+            and a manager acting on this page needs to know which one they have. */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <dt className="sr-only">Email</dt>
+          <dd className="min-w-0 truncate text-muted-foreground" title={employee.email}>
+            {employee.email}
           </dd>
         </div>
 
         <div className="flex min-w-0 items-center gap-1.5">
           <dt className="shrink-0 text-muted-foreground">Device</dt>
-          {/* Truncates rather than pushing the row wider than the phone it is on. */}
-          <dd className="truncate font-medium">
-            {presence.device
-              ? `${presence.device.label} · ${platformLabel(presence.device.platform)}`
-              : "None enrolled"}
+          {/* Truncates rather than pushing the row wider than the phone it is on, with
+              the full name on the title for the laptops named after a serial number. */}
+          <dd
+            className="min-w-0 truncate font-medium"
+            title={presence.device ? deviceLine(presence.device) : undefined}
+          >
+            {presence.device ? deviceLine(presence.device) : "None enrolled"}
           </dd>
         </div>
 
@@ -148,6 +182,11 @@ export function EmployeeHeader({ profileId }: { profileId: string }) {
       </dl>
     </div>
   );
+}
+
+/** "MacBook Pro · macOS" — the device, and which platform it speaks. */
+function deviceLine(device: { label: string; platform: Parameters<typeof platformLabel>[0] }): string {
+  return `${device.label} · ${platformLabel(device.platform)}`;
 }
 
 /**

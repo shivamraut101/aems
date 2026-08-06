@@ -18,18 +18,30 @@ import { AlertTriangle, Check } from "lucide-react";
 export function Section({
   title,
   description,
+  affects,
   actions,
   children,
   id,
 }: {
   title: string;
   description?: string;
+  /**
+   * Who a change here lands on, in one clause.
+   *
+   * A separate line rather than a third sentence in `description`, because this screen
+   * is four unrelated jobs stacked in one scroll and the question a reader has at each
+   * heading is "whose machine does this touch". Buried in the prose it is read once;
+   * on its own line it is scannable down the page.
+   */
+  affects?: string;
   actions?: React.ReactNode;
   children: React.ReactNode;
   id?: string;
 }) {
   return (
-    <section id={id} className="mt-9 first:mt-0">
+    // `scroll-mt` so the in-page index below the sticky heading does not land a target
+    // underneath it.
+    <section id={id} className="mt-9 scroll-mt-4 first:mt-0">
       {/* `items-end` only once the row is side by side: stacked on a phone it would
           right-align the action under a left-aligned heading. */}
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-3">
@@ -37,6 +49,11 @@ export function Section({
           <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
           {description ? (
             <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">{description}</p>
+          ) : null}
+          {affects ? (
+            <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Affects</span> {affects}
+            </p>
           ) : null}
         </div>
         {actions ? <div className="shrink-0">{actions}</div> : null}
@@ -87,29 +104,29 @@ export function ValueSkeleton({ className = "w-32" }: { className?: string }) {
 /**
  * An empty or unavailable state.
  *
- * Deliberately not styled as an error unless it is one — on day one of a demo almost
- * every panel is empty, and "no data yet" must not look like a fault.
+ * Deliberately not styled as an error — on day one of a demo almost every panel is
+ * empty, and "no data yet" must not look like a fault.
+ *
+ * There is no `error` tone. It existed, and it drew a destructive box with no way out
+ * of it: every failure on this screen was a sentence and a dead end. A failed read is
+ * `ErrorState` from `@/components/states`, which carries the retry, and having one of
+ * them rather than two is what stops a retry being optional.
  */
 export function Notice({
   tone = "muted",
   title,
   children,
 }: {
-  tone?: "muted" | "warning" | "error";
+  tone?: "muted" | "warning";
   title: string;
   children?: React.ReactNode;
 }) {
-  const toneClass =
-    tone === "error"
-      ? "border-destructive/30 bg-destructive/5"
-      : tone === "warning"
-        ? "border-warning/40 bg-warning/5"
-        : "border-border bg-card";
-
   return (
     <div
-      {...(tone === "error" ? { role: "alert" } : {})}
-      className={cn("rounded-lg border px-4 py-3.5", toneClass)}
+      className={cn(
+        "rounded-lg border px-4 py-3.5",
+        tone === "warning" ? "border-warning/40 bg-warning/5" : "border-border bg-card",
+      )}
     >
       <p className="text-sm font-medium">{title}</p>
       {children ? <div className="mt-1 text-sm text-muted-foreground">{children}</div> : null}

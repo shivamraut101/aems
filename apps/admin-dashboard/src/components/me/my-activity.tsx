@@ -39,10 +39,19 @@ export function MyActivity() {
   if (subject.state === "error") {
     return (
       <MeShell title="My activity" subtitle="Everything recorded about your work.">
+        {/* The message named the way out and gave no way to take it. `ErrorState` offers
+            a retry, which is the wrong control for a session that has expired — another
+            round trip is spent being refused identically — so the link sits beside it. */}
         <ErrorState
           title="Could not load your account"
           message="We could not confirm who is signed in. Sign in again to continue."
         />
+        <Link
+          href="/login"
+          className="inline-flex h-9 items-center rounded-md border bg-card px-3 text-sm font-medium transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          Sign in
+        </Link>
       </MeShell>
     );
   }
@@ -97,12 +106,18 @@ function MonitoringPaused() {
   return (
     <div className="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3">
       <EyeOff className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden />
-      <p className="text-sm">
+      <p className="min-w-0 text-sm">
         <span className="font-medium">Monitoring is paused for your account.</span>{" "}
         <span className="text-muted-foreground">
-          Nothing new is being collected. Activity recorded before it was paused is still shown
-          here.
-        </span>
+          Nothing new is being collected on any of your devices. Activity recorded before it was
+          paused is still shown here, and only your administrator can resume it.
+        </span>{" "}
+        <Link
+          href="/my-devices"
+          className="rounded font-medium underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          See your devices
+        </Link>
       </p>
     </div>
   );
@@ -125,8 +140,8 @@ function MonitoringSummary() {
       {terms ? (
         <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">
           Under <span className="font-medium text-foreground">{terms.name}</span> (version{" "}
-          {terms.version}), your enrolled devices record the applications you use, take a
-          screenshot {screenshotCadence(terms)}
+          <span className="tabular">{terms.version}</span>), your enrolled devices record the
+          applications you use, take a screenshot {screenshotCadence(terms)}
           {captures > 0 ? ` — about ${String(captures)} in an eight-hour day` : ""}, and count you
           idle after no keyboard or mouse activity {idleCadence(terms)}. What you type is never
           recorded.

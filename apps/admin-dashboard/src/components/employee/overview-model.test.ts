@@ -1,7 +1,7 @@
 import type { DayTimeline, TimelineMarker, TimelineSpan } from "@aems/types";
 import { describe, expect, it } from "vitest";
 
-import { buildOverviewKpis, summariseDay, topApplications } from "./overview-model";
+import { buildOverviewKpis, describeDay, summariseDay, topApplications } from "./overview-model";
 import { buildWorkPattern } from "./work-pattern";
 
 function appSpan(category: string | null, seconds: number): TimelineSpan {
@@ -33,6 +33,9 @@ function timeline(over: Partial<DayTimeline> = {}): DayTimeline {
     markers: [],
     totals: {
       activeSeconds: 0,
+      productiveSeconds: 0,
+      neutralSeconds: 0,
+      unproductiveSeconds: 0,
       idleSeconds: 0,
       breakSeconds: 0,
       offlineSeconds: 0,
@@ -61,6 +64,9 @@ const day = timeline({
   ],
   totals: {
     activeSeconds: 7500,
+    productiveSeconds: 0,
+    neutralSeconds: 7500,
+    unproductiveSeconds: 0,
     idleSeconds: 900,
     breakSeconds: 600,
     offlineSeconds: 0,
@@ -156,6 +162,67 @@ describe("buildOverviewKpis", () => {
     const empty = buildOverviewKpis(timeline(), buildWorkPattern(timeline()));
 
     expect(empty.map((kpi) => kpi.value)).toEqual(["0m", "0m", "0m", "0m"]);
+  });
+});
+
+describe("describeDay", () => {
+  /** The fixture day, with one part of it swapped out. */
+  function verdict(over: Partial<DayTimeline> = {}) {
+    const subject = { ...day, ...over };
+    return describeDay(subject, buildWorkPattern(subject));
+  }
+
+  it("leads with the tracked total, not with a score", () => {
+    const said = verdict();
+
+    expect(said.headline).toBe("2h 30m tracked");
+    expect(said.sentence).not.toMatch(/%/);
+  });
+
+  it("says the person is still on the clock when no clock-out was recorded", () => {
+    expect(
+      verdict({ markers: [marker({ at: "2026-08-05T09:05:00.000Z", kind: "clock-in" })] }).state,
+    ).toBe("working");
+    expect(verdict().state).toBe("finished");
+  });
+
+  it("draws no state pill for a day with no session at all", () => {
+    expect(verdict({ markers: [] }).state).toBeNull();
+  });
+
+  it("names the work behind the busiest bucket rather than the bucket", () => {
+    expect(verdict().sentence).toContain("went to Development, Design");
+  });
+
+  it("admits that unmatched activity is unmatched instead of calling it work", () => {
+    const unruled = timeline({
+      spans: [appSpan("Uncategorized", 3600)],
+      totals: { ...day.totals, activeSeconds: 3600, trackedSeconds: 3600, idleSeconds: 0 },
+    });
+
+    expect(describeDay(unruled, buildWorkPattern(unruled)).sentence).toContain(
+      "has not matched a category rule yet",
+    );
+  });
+
+  it("mentions idle only when it outweighed active time", () => {
+    expect(verdict().sentence).not.toContain("idle");
+
+    const quiet = timeline({
+      spans: [appSpan("Work > Development", 600)],
+      totals: { ...day.totals, activeSeconds: 600, idleSeconds: 5400, trackedSeconds: 6000 },
+    });
+
+    expect(describeDay(quiet, buildWorkPattern(quiet)).sentence).toContain(
+      "More of the day was idle",
+    );
+  });
+
+  it("says so plainly when nothing was tracked", () => {
+    const said = describeDay(timeline(), buildWorkPattern(timeline()));
+
+    expect(said.headline).toBe("0m tracked");
+    expect(said.sentence).toBe("No work session was recorded for this day.");
   });
 });
 

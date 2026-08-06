@@ -46,7 +46,14 @@ export type Breakpoint = keyof typeof BREAKPOINTS;
 /** `w-60` on the sidebar in `app-shell.tsx`. Hidden below `md`, so it costs nothing there. */
 export const SIDEBAR_WIDTH = 240;
 
-/** `px-6` on every page container, both sides. */
+/**
+ * `px-6` on a page container, both sides.
+ *
+ * Below `sm` the containers are `px-4`, so the real gutter there is 32 and this figure
+ * over-charges a phone by 16px. Left at 48 deliberately: every assertion that matters
+ * is at `md` and above, where the sidebar exists and the number is exact, and a model
+ * that under-states the room a narrow screen has can only fail safe.
+ */
 export const PAGE_PADDING = 48;
 
 /**

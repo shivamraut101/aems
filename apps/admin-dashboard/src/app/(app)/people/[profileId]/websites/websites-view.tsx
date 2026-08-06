@@ -1,15 +1,9 @@
 "use client";
 
-import {
-  flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
-  type ColumnDef,
-} from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Info } from "lucide-react";
+import { Info } from "lucide-react";
 import { Suspense, useMemo } from "react";
 
+import { devicesQuery } from "@/components/employee/employee-queries";
 import {
   EmptyState,
   ErrorState,
@@ -18,24 +12,19 @@ import {
   SkeletonLines,
   TruncationNotice,
 } from "@/components/employee/states";
+import { UsageTable, busiestRow } from "@/components/employee/usage-table";
 import { useDayWindow } from "@/components/employee/use-day-window";
-import { devicesQuery } from "@/components/employee/employee-queries";
 import { describeError, useApiQuery } from "@/lib/api";
 import { duration } from "@/lib/format";
 import {
   cellOf,
-  compareCells,
   devicesForProfile,
-  renderCell,
   sectionOf,
-  sharePercent,
   tableColumns,
   useWebsiteUsage,
   websiteCoverage,
-  type CellValue,
   type CoverageLevel,
   type ReportRow,
-  type UsageColumn,
 } from "@/lib/queries/usage";
 
 /**
@@ -73,6 +62,8 @@ function WebsitesTab({ profileId }: { profileId: string }) {
     [devices.data, profileId],
   );
 
+  // `tableColumns` resolves each column's format against the document's decimal-hours
+  // flag; the raw section columns have not had that applied.
   const columns = useMemo(() => tableColumns(data), [data]);
   const rows = useMemo(() => sectionOf(data)?.rows ?? [], [data]);
   const totals = sectionOf(data)?.totals ?? null;
@@ -81,19 +72,7 @@ function WebsitesTab({ profileId }: { profileId: string }) {
 
   return (
     <div>
-      <SectionHeading
-        title="Websites"
-        hint="Domains visited in the browser, busiest first."
-        action={
-          rows.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              <span className="tabular font-medium text-foreground">{duration(totalSeconds)}</span>{" "}
-              across {rows.length} {rows.length === 1 ? "domain" : "domains"} ·{" "}
-              <span className="tabular">{visits}</span> {visits === 1 ? "visit" : "visits"}
-            </p>
-          ) : null
-        }
-      />
+      <SectionHeading title="Websites" hint="Domains visited in the browser, busiest first." />
 
       <div className="space-y-3">
         {/* Shown whether or not there are rows: reading a short list and reading an
@@ -119,18 +98,84 @@ function WebsitesTab({ profileId }: { profileId: string }) {
           <Panel>
             <EmptyState
               title="No website activity recorded on this day"
-              body={
-                coverage.level === "window-title" || coverage.level === "mixed"
-                  ? "On Windows this is expected unless a page title spelled out its address. Application usage for the same day is on the Apps tab."
-                  : "Browser time is captured only while a work session is open on an enrolled device. Try another day."
-              }
+              body={emptyBody(coverage.level)}
             />
           </Panel>
         ) : (
-          <UsageTable columns={columns} rows={rows} totals={totals} caption="Website usage" />
+          <>
+            <Lead rows={rows} totalSeconds={totalSeconds} visits={visits} />
+            <UsageTable columns={columns} rows={rows} totals={totals} caption="Website usage" />
+          </>
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Why the list is empty, in the terms that actually apply to this person.
+ *
+ * The `unknown` case used to be told to "try another day", which is advice that cannot
+ * work: nothing this person has can report a browser address, so every other day is
+ * empty too. Sending someone off to page through a week for data that does not exist
+ * is worse than saying so.
+ */
+function emptyBody(level: CoverageLevel): string {
+  if (level === "window-title" || level === "mixed") {
+    return "On Windows this is expected unless a page title spelled out its address. Application usage for the same day is on the Apps tab.";
+  }
+
+  if (level === "unknown") {
+    return "No Windows or macOS device is enrolled for this person, and browser addresses come from the desktop agent only. Another day will look the same until one is enrolled — the Devices tab is where to check.";
+  }
+
+  return "Browser time is captured only while a work session is open on an enrolled device. Use the day picker above to check another day.";
+}
+
+/**
+ * What the browsing day amounted to, in a sentence, above the table that proves it.
+ *
+ * Named the busiest domain for the same reason the Apps tab does: the figures alone
+ * are a measurement, and the thing a reader came for is the conclusion.
+ */
+function Lead({
+  rows,
+  totalSeconds,
+  visits,
+}: {
+  rows: ReportRow[];
+  totalSeconds: number;
+  visits: number;
+}) {
+  const busiest = busiestRow(rows);
+  const domain = String(cellOf(busiest, "domain") ?? "").trim();
+  const busiestSeconds = Number(cellOf(busiest, "duration") ?? 0);
+  const count = rows.length;
+
+  return (
+    <p className="text-sm">
+      <span className="tabular font-medium">{duration(totalSeconds)}</span> across{" "}
+      <span className="tabular">{count}</span> {count === 1 ? "domain" : "domains"}
+      {visits > 0 ? (
+        <>
+          {" in "}
+          <span className="tabular">{visits}</span> {visits === 1 ? "visit" : "visits"}
+        </>
+      ) : null}
+      {domain && busiestSeconds > 0 ? (
+        <>
+          {" — mostly "}
+          {/* Domains run long on a phone; the full value stays reachable on hover and
+              in the table row below. */}
+          <span className="font-medium break-all" title={domain}>
+            {domain}
+          </span>{" "}
+          at <span className="tabular">{duration(busiestSeconds)}</span>.
+        </>
+      ) : (
+        "."
+      )}
+    </p>
   );
 }
 
@@ -140,6 +185,10 @@ function WebsitesTab({ profileId }: { profileId: string }) {
  * Amber for the two platform-limited readings, because those explain missing rows.
  * Muted for the rest, which are statements of fact rather than caveats. The text
  * never blames the employee or the product — it names the platform.
+ *
+ * The amber comes through the `warning` token rather than an arbitrary
+ * `border-[hsl(var(--warning))]/40`, so this panel is retuned for dark mode in
+ * globals.css along with every other warning surface instead of on its own.
  */
 function CoveragePanel({ level, note }: { level: CoverageLevel; note: string }) {
   const limited = level === "window-title" || level === "mixed";
@@ -147,13 +196,14 @@ function CoveragePanel({ level, note }: { level: CoverageLevel; note: string }) 
   return (
     <div
       className={`flex gap-2.5 rounded-md px-3 py-2 text-xs ${
-        limited
-          ? "border border-[hsl(var(--warning))]/40 bg-[hsl(var(--warning))]/10"
-          : "border bg-card text-muted-foreground"
+        limited ? "border border-warning/40 bg-warning/10" : "border bg-card text-muted-foreground"
       }`}
     >
-      <Info className="mt-px h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span>{note}</span>
+      <Info
+        className={`mt-px h-3.5 w-3.5 shrink-0 ${limited ? "text-warning" : "text-muted-foreground"}`}
+        aria-hidden="true"
+      />
+      <span className="min-w-0">{note}</span>
     </div>
   );
 }
@@ -167,157 +217,4 @@ function LoadingPanel() {
       <SkeletonLines count={6} />
     </Panel>
   );
-}
-
-/* ------------------------------------------------------------------------- */
-/* Table                                                                      */
-/* ------------------------------------------------------------------------- */
-
-function UsageTable({
-  columns,
-  rows,
-  totals,
-  caption,
-}: {
-  columns: UsageColumn[];
-  rows: ReportRow[];
-  totals: ReportRow | null;
-  caption: string;
-}) {
-  const columnDefs = useMemo<ColumnDef<ReportRow>[]>(
-    () =>
-      columns.map((column) => ({
-        id: column.id,
-        header: column.label,
-        accessorFn: (row: ReportRow) => cellOf(row, column.id),
-        sortingFn: (a, b, id) =>
-          compareCells(a.getValue<CellValue>(id), b.getValue<CellValue>(id), column.numeric),
-        cell: ({ row }) =>
-          column.id === "share" ? (
-            <ShareCell
-              value={cellOf(row.original, column.id)}
-              text={renderCell(row.original, column)}
-            />
-          ) : (
-            renderCell(row.original, column)
-          ),
-      })),
-    [columns],
-  );
-
-  const table = useReactTable({
-    data: rows,
-    columns: columnDefs,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  });
-
-  return (
-    <Panel className="overflow-hidden p-0">
-      {/* Wide content scrolls inside its own container; the page body never does. */}
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[34rem] text-sm">
-          <caption className="sr-only">{caption}</caption>
-          <thead>
-            {table.getHeaderGroups().map((group) => (
-              <tr
-                key={group.id}
-                className="border-b text-xs uppercase tracking-wide text-muted-foreground"
-              >
-                {group.headers.map((header) => {
-                  const column = columns.find((candidate) => candidate.id === header.column.id);
-                  const sorted = header.column.getIsSorted();
-
-                  return (
-                    <th
-                      key={header.id}
-                      scope="col"
-                      aria-sort={
-                        sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none"
-                      }
-                      className={`px-4 py-2 font-medium ${
-                        column?.align === "right" ? "text-right" : "text-left"
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={header.column.getToggleSortingHandler()}
-                        className={`inline-flex items-center gap-1 rounded-sm uppercase tracking-wide transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                          column?.align === "right" ? "flex-row-reverse" : ""
-                        }`}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        <SortIcon state={sorted} />
-                      </button>
-                    </th>
-                  );
-                })}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.map((row) => (
-              <tr
-                key={row.id}
-                className="border-b transition-colors last:border-0 hover:bg-secondary/40"
-              >
-                {row.getVisibleCells().map((cell) => {
-                  const column = columns.find((candidate) => candidate.id === cell.column.id);
-
-                  return (
-                    <td
-                      key={cell.id}
-                      className={`px-4 py-2.5 ${
-                        column?.align === "right" ? "tabular text-right" : "text-muted-foreground"
-                      } ${column?.id === "domain" ? "font-medium text-foreground" : ""}`}
-                    >
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-          {totals ? (
-            <tfoot>
-              <tr className="border-t bg-secondary/40 font-medium">
-                {columns.map((column, index) => (
-                  <td
-                    key={column.id}
-                    className={`px-4 py-2.5 ${
-                      column.align === "right" ? "tabular text-right" : "text-left"
-                    }`}
-                  >
-                    {index === 0 ? "Total" : renderCell(totals, column)}
-                  </td>
-                ))}
-              </tr>
-            </tfoot>
-          ) : null}
-        </table>
-      </div>
-    </Panel>
-  );
-}
-
-/** Navy at low opacity — a share is neither a success nor a warning, and never indigo. */
-function ShareCell({ value, text }: { value: CellValue; text: string }) {
-  return (
-    <span className="inline-flex items-center justify-end gap-2">
-      <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-        <span
-          className="block h-full rounded-full bg-primary/40"
-          style={{ width: `${sharePercent(value)}%` }}
-        />
-      </span>
-      <span className="tabular w-10 text-right">{text}</span>
-    </span>
-  );
-}
-
-function SortIcon({ state }: { state: false | "asc" | "desc" }) {
-  const className = "h-3 w-3 shrink-0";
-  if (state === "asc") return <ArrowUp className={className} aria-hidden="true" />;
-  if (state === "desc") return <ArrowDown className={className} aria-hidden="true" />;
-  return <ChevronsUpDown className={`${className} opacity-40`} aria-hidden="true" />;
 }

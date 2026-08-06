@@ -1,14 +1,15 @@
 "use client";
 
-import { Button } from "@aems/ui";
+import { Button, Field, Input } from "@aems/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useId, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { ErrorState } from "@/components/states";
 import { sessionQuery } from "@/lib/api";
 import { landingPathForRole } from "@/lib/session";
 import { createClient } from "@/lib/supabase";
@@ -31,24 +32,33 @@ type SignInValues = z.infer<typeof signInSchema>;
 /**
  * Turns a Supabase auth failure into something the person can act on.
  *
+ * Every branch names the *next move*, not just the fault. Someone locked out of the
+ * first screen of the product has no navigation and no support link to fall back on,
+ * so the sentence in front of them is the entire recovery path — "Invalid login
+ * credentials" tells them nothing they did not already know from the form refusing.
+ *
  * Credentials and unknown-account both resolve to the same sentence on purpose: a
- * message that distinguishes them is an account-enumeration oracle.
+ * message that distinguishes them is an account-enumeration oracle. That is also why
+ * the advice is about typing rather than about which half was wrong.
  */
 function describeAuthError(message: string): string {
   const lower = message.toLowerCase();
 
   if (lower.includes("invalid login credentials") || lower.includes("invalid_credentials")) {
-    return "That email and password do not match.";
+    return "That email and password do not match. Check for caps lock or a trailing space, then try again — your administrator can reset the password.";
   }
   if (lower.includes("email not confirmed")) {
-    return "This account has not been confirmed yet. Ask your administrator.";
+    return "This account has not been confirmed yet. Ask your administrator to finish setting it up.";
   }
   if (lower.includes("too many") || lower.includes("rate limit")) {
-    return "Too many attempts. Wait a minute and try again.";
+    return "Too many attempts from this device. Wait a minute, then try again.";
   }
   if (lower.includes("failed to fetch") || lower.includes("network")) {
-    return "Could not reach the sign-in service. Check your connection.";
+    return "Could not reach the sign-in service. Check your connection and try again.";
   }
+  // Anything unrecognised is shown as it arrived. It is framed by the heading above
+  // it rather than rewritten, because guessing at an unknown failure's remedy is how
+  // a reader gets sent somewhere that cannot help them.
   return message;
 }
 
@@ -71,9 +81,11 @@ export function LoginForm({ next }: { next: string }) {
   const [phase, setPhase] = useState<SignInPhase>("idle");
   const [navigating, startTransition] = useTransition();
 
-  const emailId = useId();
-  const passwordId = useId();
-  const errorId = useId();
+  // A password typed on a phone keyboard is the commonest cause of the credentials
+  // error this form then has to explain, and this is a company-device product where
+  // nobody is signing in on a train. Default hidden; the reveal is opt-in per attempt
+  // and is never persisted.
+  const [revealed, setRevealed] = useState(false);
 
   const {
     register,
@@ -157,63 +169,63 @@ export function LoginForm({ next }: { next: string }) {
   const busy = isSubmitting || opening;
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} noValidate className="mt-6 space-y-4">
-      {formError ? (
-        <div
-          id={errorId}
-          role="alert"
-          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-        >
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <span>{formError}</span>
-        </div>
-      ) : null}
+    <form onSubmit={handleSubmit(onSubmit)} noValidate className="mt-5 space-y-4">
+      {/* The shared error surface rather than a bespoke one. The heading states what
+          failed and the body states the move — a form has no "try again" button to
+          offer because the submit below already is one. */}
+      {formError ? <ErrorState title="Could not sign in" message={formError} /> : null}
 
-      <div className="space-y-1.5">
-        <label htmlFor={emailId} className="block text-sm font-medium">
-          Work email
-        </label>
-        <input
-          id={emailId}
-          type="email"
-          autoComplete="username"
-          autoFocus
-          spellCheck={false}
-          aria-invalid={errors.email ? true : undefined}
-          aria-describedby={errors.email ? `${emailId}-error` : undefined}
-          className={fieldClass(Boolean(errors.email))}
-          {...register("email")}
-        />
-        {errors.email ? (
-          <p id={`${emailId}-error`} className="text-xs text-destructive">
-            {errors.email.message}
-          </p>
-        ) : null}
-      </div>
+      {/* `Field` owns the label/description/invalid wiring, so it cannot be forgotten
+          on the one form in the product that is used by every single employee. */}
+      <Field label="Work email" error={errors.email?.message}>
+        {(field) => (
+          <Input
+            {...field}
+            {...register("email")}
+            type="email"
+            autoComplete="username"
+            autoFocus
+            spellCheck={false}
+            placeholder="name@company.com"
+          />
+        )}
+      </Field>
 
-      <div className="space-y-1.5">
-        <label htmlFor={passwordId} className="block text-sm font-medium">
-          Password
-        </label>
-        <input
-          id={passwordId}
-          type="password"
-          autoComplete="current-password"
-          aria-invalid={errors.password ? true : undefined}
-          aria-describedby={errors.password ? `${passwordId}-error` : undefined}
-          className={fieldClass(Boolean(errors.password))}
-          {...register("password")}
-        />
-        {errors.password ? (
-          <p id={`${passwordId}-error`} className="text-xs text-destructive">
-            {errors.password.message}
-          </p>
-        ) : null}
-      </div>
+      <Field label="Password" error={errors.password?.message}>
+        {(field) => (
+          <div className="relative">
+            <Input
+              {...field}
+              {...register("password")}
+              type={revealed ? "text" : "password"}
+              autoComplete="current-password"
+              // Room for the reveal control, so a long password never runs under it.
+              className="pr-10"
+            />
+            <button
+              type="button"
+              onClick={() => setRevealed((current) => !current)}
+              // The label carries the state, so the control does not need a second
+              // announcement channel to say the same thing twice.
+              aria-label={revealed ? "Hide password" : "Show password"}
+              className="absolute right-1 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {revealed ? (
+                <EyeOff className="h-4 w-4" aria-hidden />
+              ) : (
+                <Eye className="h-4 w-4" aria-hidden />
+              )}
+            </button>
+          </div>
+        )}
+      </Field>
 
       {/* One busy state spanning all three waits. It clears when the destination
-          renders and this form unmounts — never before. */}
-      <Button type="submit" disabled={busy} className="w-full">
+          renders and this form unmounts — never before.
+
+          `lg` for 40px rather than the default 36: this is the single control on the
+          first screen of the product, and it is hit with a thumb as often as a mouse. */}
+      <Button type="submit" size="lg" disabled={busy} className="w-full">
         {busy ? (
           <>
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -225,14 +237,4 @@ export function LoginForm({ next }: { next: string }) {
       </Button>
     </form>
   );
-}
-
-function fieldClass(invalid: boolean): string {
-  return [
-    "h-9 w-full rounded-md border bg-card px-3 text-sm shadow-sm",
-    "placeholder:text-muted-foreground",
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
-    "disabled:cursor-not-allowed disabled:opacity-50",
-    invalid ? "border-destructive" : "border-input",
-  ].join(" ");
 }

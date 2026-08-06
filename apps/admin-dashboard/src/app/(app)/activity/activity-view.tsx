@@ -92,7 +92,7 @@ export function ActivityView() {
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-7">
       <PageHeader
         title="Activity"
-        subtitle="Pick someone to read their day without leaving the list."
+        subtitle={rosterSummary(rows, employees.isLoading, presenceUnavailable)}
         actions={<DayNav dateKey={dateKey} onChange={(date) => select({ date })} />}
       />
 
@@ -122,6 +122,35 @@ export function ActivityView() {
       </div>
     </div>
   );
+}
+
+/**
+ * The subtitle, as an answer rather than an instruction.
+ *
+ * "Pick someone to read their day" told a manager how to work the screen; it did not
+ * tell them whether they needed to. The count is reduced from the rows already joined
+ * for the list below — no second request, and therefore no second answer that could
+ * disagree with the dots beside the names.
+ *
+ * **"Reporting", never "working".** The Overview's verdict says "N of M working" from
+ * `workingToday`, which counts anyone who worked *at all today*; this counts who is
+ * present *right now*. Two different questions, and a manager who clicks through from
+ * one screen to the other must not read the two numbers as a contradiction.
+ *
+ * Falls back to the instruction while the roster is loading, when there is nobody, and
+ * — the case that matters — whenever presence never landed: `rosterRows` defaults an
+ * unknown person to `offline`, so this would otherwise read "Nobody is reporting right
+ * now", which is a monitoring product asserting an outage as a fact about the business.
+ */
+function rosterSummary(rows: RosterRow[], loading: boolean, presenceUnavailable: boolean): string {
+  if (loading || presenceUnavailable || rows.length === 0) {
+    return "Pick someone to read their day without leaving the list.";
+  }
+
+  const reporting = rows.filter((row) => row.status !== "offline").length;
+  return reporting === 0
+    ? "Nobody is reporting right now."
+    : `${reporting} of ${rows.length} reporting right now.`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -275,11 +304,27 @@ function Roster({
           bordered={false}
           title="No one to show yet"
           body="People appear here once they are added to your company."
+          // `/activity` and `/people` carry the same role set in `session.ts`, so
+          // anyone who can read this screen can also open the one that fixes it.
+          action={
+            <Link
+              href="/people"
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9")}
+            >
+              Add people
+            </Link>
+          }
         />
       ) : (
         <ul className="max-h-[20rem] divide-y overflow-y-auto lg:max-h-[70vh]">
           {rows.map((row) => {
             const active = row.profileId === selectedId;
+            // A 19rem column truncates most device names and half the long ones, and a
+            // roster is exactly where "Sarah's MacBook Pro (Design)" and "Sarah's
+            // MacBook Air" clip to the same string. The full value goes in `title`.
+            const trailing = row.monitoringEnabled
+              ? (row.deviceLabel ?? row.department ?? "")
+              : "Monitoring paused";
 
             return (
               <li key={row.profileId}>
@@ -294,7 +339,9 @@ function Roster({
                   )}
                 >
                   <div className="flex items-baseline justify-between gap-2">
-                    <span className="truncate text-sm font-medium">{row.name}</span>
+                    <span className="truncate text-sm font-medium" title={row.name}>
+                      {row.name}
+                    </span>
                     <span className="tabular shrink-0 text-xs text-muted-foreground">
                       <RelativeTime iso={row.lastSeenAt} />
                     </span>
@@ -305,8 +352,8 @@ function Roster({
                     ) : (
                       <StatusDot status={row.status} className="text-xs text-muted-foreground" />
                     )}
-                    <span className="truncate text-xs text-muted-foreground">
-                      {row.monitoringEnabled ? (row.deviceLabel ?? row.department ?? "") : "Monitoring paused"}
+                    <span className="truncate text-xs text-muted-foreground" title={trailing}>
+                      {trailing}
                     </span>
                   </div>
                 </button>

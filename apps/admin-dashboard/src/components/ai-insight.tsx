@@ -48,7 +48,10 @@ export function AiInsight({
   return (
     <section
       aria-labelledby="ai-insight-heading"
-      className="rounded-lg border border-accent/25 bg-accent/[0.04] p-5"
+      // The tint and the accent border are this panel's own; the radius and the lift
+      // are the shared card treatment, so it sits at the same depth as the verdict
+      // block above it rather than reading as a different kind of object.
+      className="rounded-lg border border-accent/25 bg-accent/[0.04] p-5 shadow-[var(--shadow-sm)]"
     >
       <h2
         id="ai-insight-heading"
@@ -75,29 +78,65 @@ export function AiInsight({
           <p className="mt-3 text-[15px] leading-relaxed">{summary}</p>
 
           {breakdown?.length ? (
-            <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3">
+            /*
+             * A split, drawn as a split.
+             *
+             * Three loose "62%" figures side by side are three numbers to compare in
+             * your head; the bars make the proportion the first thing read and leave
+             * the figures to confirm it. They are indigo because this *is* the model's
+             * reading of how time divided, not a measured total — the same rule that
+             * puts the whole panel in indigo applies inside it.
+             */
+            <dl className="mt-4 space-y-2">
               {breakdown.map((item) => (
-                <div key={item.label}>
-                  <dt className="text-xs text-muted-foreground">{item.label}</dt>
-                  <dd className="tabular text-lg font-semibold">{item.percentage}%</dd>
+                <div key={item.label} className="flex items-center gap-3">
+                  <dt
+                    className="w-24 shrink-0 truncate text-xs text-muted-foreground sm:w-32"
+                    title={item.label}
+                  >
+                    {item.label}
+                  </dt>
+                  {/* Clamped, because a model can return 118% and a bar cannot. */}
+                  <div className="h-1.5 min-w-0 flex-1 rounded-full bg-accent/15" aria-hidden>
+                    <div
+                      className="h-full rounded-full bg-accent"
+                      style={{ width: `${Math.max(0, Math.min(100, item.percentage))}%` }}
+                    />
+                  </div>
+                  <dd className="tabular w-10 shrink-0 text-right text-sm font-semibold">
+                    {item.percentage}%
+                  </dd>
                 </div>
               ))}
             </dl>
           ) : null}
 
-          {observation ? (
-            <p className="mt-4 border-l-2 border-accent/40 pl-3 text-sm text-muted-foreground">
-              {observation}
-            </p>
-          ) : null}
-
-          {recommendation ? (
-            <p className="mt-2 border-l-2 border-accent/40 pl-3 text-sm text-muted-foreground">
-              {recommendation}
-            </p>
+          {observation || recommendation ? (
+            <div className="mt-4 space-y-3">
+              {observation ? <Note label="Observation">{observation}</Note> : null}
+              {recommendation ? <Note label="Recommendation">{recommendation}</Note> : null}
+            </div>
           ) : null}
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * The model's two follow-on statements, told apart by name.
+ *
+ * They rendered as two identical grey paragraphs behind the same accent rule, so
+ * nothing on screen said which was the reading of the week and which was the thing to
+ * do about it — and a recommendation a manager mistakes for an observation is a
+ * recommendation nobody acts on. `docs/design.md` labels both by name, which is also
+ * the reason the worker keeps them as separate fields rather than one blob.
+ */
+function Note({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="border-l-2 border-accent/40 pl-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-accent">{label}</p>
+      <p className="mt-0.5 text-sm text-muted-foreground">{children}</p>
+    </div>
   );
 }

@@ -137,6 +137,52 @@ export function consentForDevice(
 }
 
 /**
+ * The one-sentence answer /my-devices exists to give: is anything being collected about
+ * me right now?
+ *
+ * It is pure and tested because it is a *claim*, not a layout. "Nothing is being
+ * collected" printed above a machine that is in fact reporting would be the worst thing
+ * this product could say, so the three conditions the server actually enforces are
+ * mirrored here and nowhere else:
+ *
+ *  - `monitoring_enabled = false` on the profile → `requireDevice` 403s every request
+ *    (`apps/api/src/plugins/context.ts`), so nothing can be sent from any device.
+ *  - `devices.status = 'revoked'` → the same hook 403s that one device.
+ *  - no non-revoked `consent_records` row → `assertConsent` refuses ingestion.
+ *
+ * `collecting` is `number | null` rather than `number` for the case that matters most:
+ * when the consent read failed there is no honest count, and defaulting to zero would
+ * turn an outage into a reassurance. The caller must say "not knowable" instead.
+ */
+export interface CollectionStatus {
+  enrolled: number;
+  /** Null when consent could not be read — never guess "nothing" from a failed query. */
+  collecting: number | null;
+  /** An administrator has paused collection for the whole account. */
+  accountPaused: boolean;
+}
+
+export function collectionStatus(
+  // Structural rather than `MyDeviceRow`, so this module keeps its single import and
+  // does not drag `lib/queries/account` into the server prefetch path.
+  devices: readonly { id: string; status: string }[],
+  rows: readonly ConsentRow[] | undefined,
+  monitoringEnabled: boolean,
+): CollectionStatus {
+  const enrolled = devices.length;
+
+  if (!monitoringEnabled) return { enrolled, collecting: 0, accountPaused: true };
+  if (rows === undefined) return { enrolled, collecting: null, accountPaused: false };
+
+  const collecting = devices.filter(
+    (device) =>
+      device.status !== "revoked" && consentForDevice(rows, device.id).state === "active",
+  ).length;
+
+  return { enrolled, collecting, accountPaused: false };
+}
+
+/**
  * Has the company published a newer policy than the one this person agreed to?
  *
  * `assertConsent` only asks whether a non-revoked row exists — it never compares the

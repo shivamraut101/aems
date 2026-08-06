@@ -1,39 +1,31 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 
-import { ScreenshotReview } from "@/components/screenshot-review";
+import { ScreenshotReview, ScreenshotReviewSkeleton } from "@/components/screenshot-review";
 
 export const metadata: Metadata = {
   title: "Screenshots — AEMS",
 };
 
-/** `YYYY-MM-DD`, and nothing else. The value reaches a query string and a Date. */
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
-function readDate(raw: string | string[] | undefined): string | null {
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof value !== "string" || !DATE_PATTERN.test(value)) return null;
-  // A well-formed but impossible date ("2026-02-31") would silently roll over into
-  // March and label the page with a day the reviewer did not ask for.
-  return Number.isNaN(Date.parse(`${value}T00:00:00`)) ? null : value;
-}
-
-function today(): string {
-  const now = new Date();
-  const month = `${now.getMonth() + 1}`.padStart(2, "0");
-  const day = `${now.getDate()}`.padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
-}
-
 /**
  * The Screenshots tab of the employee page — scope §4.4, §2.3.
  *
- * A thin server shell: it resolves which person and which day, and hands both to a
- * client component that owns the fetching. The signed URLs on this screen live ten
- * minutes, so the data has to be able to re-sign itself while the page is open;
- * server-rendering the tiles would hand the reviewer a page that quietly rots. For
- * the same reason the blocks are not prefetched — their window is the viewer's local
- * midnight clamped to the current ten-minute block, which is a key the server cannot
- * predict (rule 2 in `lib/server-query.tsx`).
+ * A thin server shell: it resolves which person, and hands that to a client component
+ * that owns the fetching. The signed URLs on this screen live ten minutes, so the data
+ * has to be able to re-sign itself while the page is open; server-rendering the tiles
+ * would hand the reviewer a page that quietly rots. For the same reason the blocks are
+ * not prefetched — their window is the viewer's local midnight clamped to the current
+ * ten-minute block, which is a key the server cannot predict (rule 2 in
+ * `lib/server-query.tsx`).
+ *
+ * **The day is no longer resolved here.** This file used to parse `?date=` and compute
+ * the server's own "today", then hand both down as props for the review to hold in
+ * state — which made this the one tab whose day did not follow the day control in the
+ * employee header. The day belongs to the URL and `useDayWindow` reads it, exactly as
+ * the other six tabs do, so `searchParams` is not this page's business any more.
+ *
+ * `useDayWindow` reads `useSearchParams`, which forces a Suspense boundary during
+ * prerender — the same reason the Timeline tab has one.
  *
  * **No `serverApiFetch` here any more.** This file used to call
  * `/api/employees/:profileId` itself, on the server, for one string — the lightbox
@@ -47,22 +39,14 @@ function today(): string {
  */
 export default async function ScreenshotsPage({
   params,
-  searchParams,
 }: {
   params: Promise<{ profileId: string }>;
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { profileId } = await params;
-  const requestedDate = readDate((await searchParams)["date"]);
-
-  const serverToday = today();
 
   return (
-    <ScreenshotReview
-      profileId={profileId}
-      date={requestedDate ?? serverToday}
-      today={serverToday}
-      dateWasExplicit={requestedDate !== null}
-    />
+    <Suspense fallback={<ScreenshotReviewSkeleton />}>
+      <ScreenshotReview profileId={profileId} />
+    </Suspense>
   );
 }

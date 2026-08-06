@@ -1,5 +1,4 @@
-import { KpiRow } from "@/components/kpi-row";
-import { Panel, SectionHeading, SkeletonLines } from "@/components/employee/states";
+import { OverviewSkeleton } from "@/components/employee/overview-tab";
 
 /**
  * What the Overview tab looks like before its own JavaScript has run.
@@ -10,35 +9,12 @@ import { Panel, SectionHeading, SkeletonLines } from "@/components/employee/stat
  * had failed — and then the page grew twice, once when `OverviewTab` mounted its own
  * skeleton and again when the day arrived.
  *
- * Structurally identical to `OverviewSkeleton` inside `components/employee/overview-tab.tsx`
- * on purpose: matching the *next* thing the reader will see removes a jump, where
- * matching the final state would only move the jump earlier. The two must stay in
- * step — see the note filed with this work about exporting the original instead of
- * keeping a second copy here.
+ * It is now `OverviewTab`'s own skeleton rather than a second copy of it. Matching the
+ * *next* thing the reader will see is what removes the jump, and a hand-maintained
+ * copy matches only until somebody edits one of the two — which is what the note filed
+ * with the original asked for, and what adding the verdict block above the figures
+ * would have broken on its first day.
  */
 export function OverviewFallback() {
-  return (
-    <div className="space-y-6" aria-busy="true" aria-live="polite">
-      <span className="sr-only">Loading this day</span>
-      <KpiRow
-        loading
-        items={[
-          { label: "Work time", value: "" },
-          { label: "Active", value: "" },
-          { label: "Idle", value: "" },
-          { label: "Focused time", value: "" },
-        ]}
-      />
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Panel>
-          <SectionHeading title="Work pattern" />
-          <SkeletonLines count={4} />
-        </Panel>
-        <Panel>
-          <SectionHeading title="Applications" />
-          <SkeletonLines count={4} />
-        </Panel>
-      </div>
-    </div>
-  );
+  return <OverviewSkeleton />;
 }

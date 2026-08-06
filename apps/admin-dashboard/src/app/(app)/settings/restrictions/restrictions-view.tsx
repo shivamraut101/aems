@@ -24,7 +24,7 @@ import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 
 import { RelativeTime } from "@/components/relative-time";
-import { TableSkeletonRows, type SkeletonColumn } from "@/components/states";
+import { ErrorState, TableSkeletonRows, type SkeletonColumn } from "@/components/states";
 import { describeError, useApiQuery, useSession } from "@/lib/api";
 import {
   MATCH_KIND_LABEL,
@@ -109,13 +109,11 @@ export function RestrictionsView() {
   if (query.isError) {
     return (
       <Section title="Website access">
-        <Notice tone="error" title="Could not load the website policy">
-          <p>{describeError(query.error)}</p>
-          <p className="mt-1">
-            Nothing has changed on employees&rsquo; devices — this page could not read the
-            policy, not change it.
-          </p>
-        </Notice>
+        <ErrorState
+          title="Could not load the website policy"
+          message={`${describeError(query.error)} Nothing has changed on employees’ devices — this page could not read the policy, not change it. Whatever rules are stored are still being enforced.`}
+          onRetry={() => void query.refetch()}
+        />
       </Section>
     );
   }
@@ -132,6 +130,7 @@ export function RestrictionsView() {
       <Section
         title={copy.listHeading}
         description={copy.listDescription}
+        affects="every company device running the managed browser extension. Personal machines are never reached."
         actions={
           canEdit ? (
             <Button
@@ -157,6 +156,23 @@ export function RestrictionsView() {
               </p>
             </Notice>
           </div>
+        ) : null}
+
+        {!query.isLoading && rules.length > 0 ? (
+          <p className="mb-2 text-sm text-muted-foreground">
+            <span className="tabular font-medium text-foreground">{rules.length}</span>{" "}
+            {rules.length === 1 ? "rule" : "rules"}
+            {/* Paused rules are in the table and look like the rest of it until a reader
+                gets to the Effect column, so the count says how many are actually live. */}
+            {rules.some((rule) => !rule.enabled) ? (
+              <>
+                {", "}
+                <span className="tabular">{rules.filter((rule) => rule.enabled).length}</span> of
+                them active
+              </>
+            ) : null}
+            . The lowest order number that matches decides.
+          </p>
         ) : null}
 
         <Table
@@ -220,11 +236,12 @@ export function RestrictionsView() {
         ) : null}
       </Section>
 
-      <Refusals rules={rules} />
+      <Refusals rules={rules} mode={mode} />
 
       {dialog ? (
         <RuleDialog
           mode={mode}
+          enforcing={enforcing}
           rule={dialog.rule}
           rules={rules}
           onClose={() => setDialog(null)}
@@ -268,6 +285,7 @@ function PostureSection({
     <Section
       title="Website access"
       description="Which websites can be opened on company devices. Enforced by the managed browser extension that also reports website usage; nothing here touches a personal machine."
+      affects="every employee at once. Switching the mode changes what every rule below means, not just what one of them does."
       actions={
         canEdit && !editing && !isLoading ? (
           <Button variant="outline" size="sm" className="h-9" onClick={() => setEditing(true)}>
@@ -295,7 +313,7 @@ function PostureSection({
           {isLoading ? (
             <ValueSkeleton className="w-20" />
           ) : (
-            <Badge variant={settings?.enabled ? "online" : "offline"}>
+            <Badge variant={settings?.enabled ? "online" : "offline"} dot>
               {settings?.enabled ? "On" : "Off"}
             </Badge>
           )}

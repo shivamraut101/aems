@@ -63,13 +63,18 @@ export default async function EmployeeLayout({
           <EmployeeActions profileId={profileId} />
         </Suspense>
 
-        <Suspense fallback={<div className="h-11 border-b" />}>
+        {/* 38px, which is what the strip actually measures: a 36px link, its 2px
+            underline pulled onto the nav's own border. `h-11` was six pixels taller,
+            so the tabs and everything under them rose the moment they hydrated. */}
+        <Suspense fallback={<div className="h-[38px] border-b" />}>
           <EmployeeTabs profileId={profileId} />
         </Suspense>
 
         {/* 16px gutters on a phone, 24px from `sm` up. Six of the seven tabs put a
-            table or a chart in here, and 48px of padding out of 375 is a column. */}
-        <div className="px-4 py-6 sm:px-6">{children}</div>
+            table or a chart in here, and 48px of padding out of 375 is a column. The
+            vertical rhythm matches `overview-view.tsx` so the two pages do not settle
+            at different heights when a reader moves between them. */}
+        <div className="px-4 py-6 sm:px-6 sm:py-7">{children}</div>
       </div>
     </PrefetchBoundary>
   );

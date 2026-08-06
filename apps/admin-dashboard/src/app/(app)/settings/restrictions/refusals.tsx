@@ -11,20 +11,22 @@ import {
 } from "@aems/ui";
 import { ShieldAlert } from "lucide-react";
 
-import { TableSkeletonRows, type SkeletonColumn } from "@/components/states";
+import { ErrorState, TableSkeletonRows, type SkeletonColumn } from "@/components/states";
 import { describeError, useApiQuery } from "@/lib/api";
 import {
   RESTRICTION_EVENT_LIMIT,
   domainTallies,
+  modeCopy,
   personLabel,
   refusalReason,
   restrictionEventsQuery,
   restrictionPeopleQuery,
   rulesById,
+  type RestrictionMode,
   type RestrictionRule,
 } from "@/lib/queries/restrictions";
 
-import { Notice, Section } from "../section";
+import { Section } from "../section";
 
 /**
  * What the policy has actually refused.
@@ -54,7 +56,14 @@ const REFUSAL_SKELETON_COLUMNS: readonly SkeletonColumn[] = [
   { key: "why", label: "Why", width: "w-40" },
 ];
 
-export function Refusals({ rules }: { rules: readonly RestrictionRule[] }) {
+export function Refusals({
+  rules,
+  mode,
+}: {
+  rules: readonly RestrictionRule[];
+  /** The posture in force now, so a row recorded under the other one can say so. */
+  mode: RestrictionMode;
+}) {
   const query = useApiQuery(restrictionEventsQuery);
   // Warmed by the same page prefetch, so this names people in the first paint rather than
   // printing "Unknown" and correcting itself a moment later.
@@ -69,14 +78,14 @@ export function Refusals({ rules }: { rules: readonly RestrictionRule[] }) {
     <Section
       title="What this policy has refused"
       description="Pages the browser extension turned away. It is here so a rule that is refusing more than it was meant to can be found and changed — the fix for most of these rows is a rule, not a conversation."
+      affects="nothing — this is the record, not a control. Changing a rule above is what changes what appears here."
     >
       {query.isError ? (
-        <Notice tone="error" title="Could not load recent refusals">
-          <p>{describeError(query.error)}</p>
-          <p className="mt-1">
-            The rules above are unaffected — this is only the record of what they have done.
-          </p>
-        </Notice>
+        <ErrorState
+          title="Could not load recent refusals"
+          message={`${describeError(query.error)} The rules above are unaffected — this is only the record of what they have done.`}
+          onRetry={() => void query.refetch()}
+        />
       ) : (
         <>
           {tallies.length > 0 ? (
@@ -96,6 +105,13 @@ export function Refusals({ rules }: { rules: readonly RestrictionRule[] }) {
                 </li>
               ))}
             </ul>
+          ) : null}
+
+          {!query.isLoading && events.length > 0 ? (
+            <p className="mb-2 text-sm text-muted-foreground">
+              <span className="tabular font-medium text-foreground">{events.length}</span>{" "}
+              {events.length === 1 ? "refusal" : "refusals"}, newest first.
+            </p>
           ) : null}
 
           <Table
@@ -131,6 +147,7 @@ export function Refusals({ rules }: { rules: readonly RestrictionRule[] }) {
               ) : (
                 events.map((event) => {
                   const person = personLabel(event.profileId, roster);
+                  const rule = event.ruleId ? (byId.get(event.ruleId) ?? null) : null;
 
                   return (
                     <TableRow key={event.id}>
@@ -143,6 +160,10 @@ export function Refusals({ rules }: { rules: readonly RestrictionRule[] }) {
                       <TableCell>
                         {person ? (
                           <span className="font-medium">{person}</span>
+                        ) : people.isError ? (
+                          // "Not on the roster" is a claim about a person, and a failed
+                          // roster read is not entitled to make it about everybody.
+                          <span className="text-muted-foreground">Names unavailable</span>
                         ) : (
                           <span className="text-muted-foreground">Not on the current roster</span>
                         )}
@@ -151,8 +172,29 @@ export function Refusals({ rules }: { rules: readonly RestrictionRule[] }) {
                         {event.ruleId === null ? (
                           <Badge variant="offline">{refusalReason(event, byId)}</Badge>
                         ) : (
-                          refusalReason(event, byId)
+                          <span className="break-all">{refusalReason(event, byId)}</span>
                         )}
+
+                        {/* The row is evidence, so it carries what the employee was
+                            actually told — an admin fielding "why can't I open this"
+                            needs to know whether they saw a reason or a bare refusal. */}
+                        {rule ? (
+                          <p className="mt-0.5 text-xs">
+                            {rule.note
+                              ? `They were shown: “${rule.note}”`
+                              : "They were shown the company message only."}
+                          </p>
+                        ) : null}
+
+                        {/* The posture is half of the policy, and it can have changed
+                            since. Without this a row refused under an allow list reads
+                            as though a rule that no longer exists caused it. */}
+                        {event.mode !== mode ? (
+                          <p className="mt-0.5 text-xs">
+                            Recorded while the company was on a{" "}
+                            {modeCopy(event.mode).label.toLowerCase()}.
+                          </p>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   );

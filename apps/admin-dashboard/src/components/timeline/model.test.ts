@@ -85,6 +85,9 @@ function timeline(partial: Partial<DayTimeline> = {}): DayTimeline {
     markers: [],
     totals: {
       activeSeconds: 0,
+      productiveSeconds: 0,
+      neutralSeconds: 0,
+      unproductiveSeconds: 0,
       idleSeconds: 0,
       breakSeconds: 0,
       offlineSeconds: 0,
@@ -441,6 +444,9 @@ describe("timelineSummary — the text alternative", () => {
       timeline({
         totals: {
           activeSeconds: 6 * 3600 + 40 * 60,
+          productiveSeconds: 0,
+          neutralSeconds: 6 * 3600 + 40 * 60,
+          unproductiveSeconds: 0,
           idleSeconds: 30 * 60,
           breakSeconds: 10 * 60,
           offlineSeconds: 90 * 60,
@@ -477,6 +483,9 @@ describe("isEmptyTimeline", () => {
   it("is not empty when there is tracked time", () => {
     const totals = {
       activeSeconds: 60,
+      productiveSeconds: 0,
+      neutralSeconds: 60,
+      unproductiveSeconds: 0,
       idleSeconds: 0,
       breakSeconds: 0,
       offlineSeconds: 0,

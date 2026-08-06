@@ -1,5 +1,6 @@
 "use client";
 
+import { ErrorState } from "@/components/states";
 import { describeError, useApiQuery, useSession } from "@/lib/api";
 import { devicesQuery, employeesQuery } from "@/lib/queries/settings-specs";
 import { roleLabel } from "@/lib/session";
@@ -7,7 +8,7 @@ import { roleLabel } from "@/lib/session";
 import { CategoriesSection } from "./categories-section";
 import { MonitoringSection } from "./monitoring-section";
 import { PolicySection } from "./policy-section";
-import { DefinitionList, DefinitionRow, Notice, Section, ValueSkeleton } from "./section";
+import { DefinitionList, DefinitionRow, Section, ValueSkeleton } from "./section";
 
 /**
  * The company settings page body — everything that was `page.tsx` before the split.
@@ -20,9 +21,37 @@ import { DefinitionList, DefinitionRow, Notice, Section, ValueSkeleton } from ".
  * Three of the four write, and every write goes through the Fastify API so the audit
  * log records it.
  */
+
+/**
+ * The four jobs this route holds, as anchors.
+ *
+ * They are unrelated to each other — a tenant fact, an agent configuration, a scoring
+ * rule set and a per-person switch — and stacking four unrelated jobs in one scroll
+ * hides three of them below the fold. The tab strip above says there are two *routes*;
+ * this says what is on this one, which is the question it does not answer.
+ */
+const SECTIONS: readonly { id: string; label: string }[] = [
+  { id: "company", label: "Company" },
+  { id: "policy", label: "Monitoring policy" },
+  { id: "categories", label: "Category rules" },
+  { id: "monitoring", label: "Employee monitoring" },
+];
+
 export function SettingsView() {
   return (
     <>
+      <nav aria-label="Sections on this page" className="mb-6 flex flex-wrap gap-2">
+        {SECTIONS.map((section) => (
+          <a
+            key={section.id}
+            href={`#${section.id}`}
+            className="inline-flex h-8 items-center rounded-md border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {section.label}
+          </a>
+        ))}
+      </nav>
+
       <CompanySection />
       <PolicySection />
       <CategoriesSection />
@@ -32,7 +61,7 @@ export function SettingsView() {
 }
 
 function CompanySection() {
-  const { data: session, isLoading, isError, error } = useSession();
+  const { data: session, isLoading, isError, error, refetch } = useSession();
   // The same specs `page.tsx` prefetched, so these are answered from the hydrated
   // cache rather than fetched again on mount.
   const employees = useApiQuery(employeesQuery);
@@ -40,16 +69,23 @@ function CompanySection() {
 
   if (isError) {
     return (
-      <Section title="Company">
-        <Notice tone="error" title="Could not load your account">
-          <p>{describeError(error)}</p>
-        </Notice>
+      <Section title="Company" id="company">
+        <ErrorState
+          title="Could not load your account"
+          message={describeError(error)}
+          onRetry={() => void refetch()}
+        />
       </Section>
     );
   }
 
   return (
-    <Section title="Company" description="The tenant every record on this screen belongs to.">
+    <Section
+      id="company"
+      title="Company"
+      description="The tenant every record on this screen belongs to."
+      affects="nothing — this section is read-only."
+    >
       <DefinitionList>
         <DefinitionRow term="Company">
           {isLoading ? (

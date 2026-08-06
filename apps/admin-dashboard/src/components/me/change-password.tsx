@@ -2,7 +2,7 @@
 
 import { Button, Input, Label } from "@aems/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, Loader2, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, Loader2, ShieldCheck } from "lucide-react";
 import { useId, useState } from "react";
 import { useForm } from "react-hook-form";
 
@@ -103,26 +103,6 @@ export function ChangePasswordPanel({ email }: { email: string }) {
       description="Change the password you sign in with. It is not shared with anyone, including your administrator."
     >
       <form onSubmit={handleSubmit(onSubmit)} noValidate className="max-w-md space-y-4">
-        {formError ? (
-          <p
-            id={errorId}
-            role="alert"
-            className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
-          >
-            {formError}
-          </p>
-        ) : null}
-
-        {status === "changed" ? (
-          <p
-            role="status"
-            className="flex items-start gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm"
-          >
-            <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-            {PASSWORD_CHANGED_MESSAGE}
-          </p>
-        ) : null}
-
         {/* The username field exists for password managers, which need to know which
             account the new credential belongs to. Hidden from sight, not from them. */}
         <input
@@ -197,7 +177,36 @@ export function ChangePasswordPanel({ email }: { email: string }) {
           ) : null}
         </div>
 
-        <Button type="submit" disabled={isSubmitting}>
+        {/*
+         * The outcome sits above the button rather than at the top of the form.
+         *
+         * `role="alert"` and `role="status"` announce it either way, but a sighted
+         * person on a phone has just scrolled to the bottom to tap Change password —
+         * and a message three fields above the fold is one they never see. They then
+         * type the whole thing again.
+         */}
+        {formError ? (
+          <p
+            id={errorId}
+            role="alert"
+            className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive-muted px-3 py-2 text-sm"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden />
+            <span className="min-w-0">{formError}</span>
+          </p>
+        ) : null}
+
+        {status === "changed" ? (
+          <p
+            role="status"
+            className="flex items-start gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm"
+          >
+            <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
+            <span className="min-w-0">{PASSWORD_CHANGED_MESSAGE}</span>
+          </p>
+        ) : null}
+
+        <Button type="submit" disabled={isSubmitting} className="w-full sm:w-auto">
           {isSubmitting ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
