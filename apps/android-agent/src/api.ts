@@ -69,8 +69,8 @@ function mockFetch(): typeof globalThis.fetch {
         headers: { "Content-Type": "application/json" },
       });
 
-    if (method === "POST" && path === "/api/devices/enroll") return respond(MOCK_ENROLLMENT);
-    if (method === "POST" && path === "/api/auth/consent") return respond({ consentId: "preview-consent" });
+    if (method === "POST" && path === "/api/devices/enroll-with-code") return respond(MOCK_ENROLLMENT);
+    if (method === "POST" && path === "/api/auth/consent/device") return respond({ consentId: "preview-consent" });
     if (method === "POST" && path === "/api/devices/heartbeat") return respond({ ok: true });
     if (method === "POST" && path === "/api/devices/telemetry") return respond({ ok: true });
     if (method === "POST" && path === "/api/devices/applications") return respond({ upserted: 0 });

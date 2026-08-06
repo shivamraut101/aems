@@ -6,16 +6,15 @@ import { PressableScale } from "../components/PressableScale";
 import { useTheme } from "../theme";
 
 interface LoginScreenProps {
-  onLogin: (accessToken: string) => Promise<void>;
+  onLogin: (code: string) => Promise<void>;
 }
 
 /**
  * Sign-in and device binding (scope §3.1).
  *
  * Mirrors the desktop agent's `LoginScreen.tsx`: the employee pastes the sign-in
- * code the web dashboard issues rather than typing a password here. Nothing this
- * screen sends is stored on the device beyond the enrolment call it triggers —
- * see `state.ts`'s `login()` for why the token itself never touches disk.
+ * code the web dashboard issues rather than typing a password here. The code is
+ * sent as-is to `POST /api/devices/enroll-with-code` — see `state.ts`'s `login()`.
  */
 export function LoginScreen({ onLogin }: LoginScreenProps) {
   const theme = useTheme();

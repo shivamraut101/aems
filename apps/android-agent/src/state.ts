@@ -1,6 +1,6 @@
 import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 
 import type { AgentPolicy, DeviceEnrollmentRequest } from "@aems/types";
 
@@ -115,16 +115,15 @@ async function collectDeviceFacts(): Promise<DeviceEnrollmentRequest> {
 /**
  * Agent state.
  *
- * Mirrors the desktop agent's login → enroll → consent sequence
- * (`apps/desktop-agent/src/main/index.ts`): the employee's Supabase access token is
- * held only in a ref for the span of one session, never persisted — if the app is
- * killed between enrolling and consenting, the device token survives in
- * SecureStore but the access token does not, and `refresh()` sends the employee
- * back to `LoginScreen` to finish setup rather than getting stuck on a consent
- * screen it can no longer submit.
+ * Mirrors the desktop agent's enroll-with-code → consent sequence
+ * (`apps/desktop-agent/src/main/index.ts`): this agent never holds a user session.
+ * `login()` binds the device with the short pairing code the dashboard issues
+ * (`POST /api/devices/enroll-with-code`, deliberately unauthenticated — the code
+ * IS the credential), and `acceptConsent()` proves itself with the device token
+ * that enrolment returns, the same way the desktop agent's `submitConsentAsDevice`
+ * does. Both survive an app restart because both live in SecureStore.
  */
 export function useAgentState() {
-  const accessToken = useRef<string | null>(null);
   const [status, setStatus] = useState<AgentStatus>({
     screen: "login",
     greeting: greeting(),
@@ -144,7 +143,6 @@ export function useAgentState() {
     ]);
 
     if (credentials === null) {
-      accessToken.current = null;
       setStatus((current) => ({
         ...current,
         screen: "login",
@@ -164,7 +162,7 @@ export function useAgentState() {
 
     setStatus((current) => ({
       ...current,
-      screen: consented ? "home" : accessToken.current !== null ? "consent" : "login",
+      screen: consented ? "home" : "consent",
       greeting: greeting(),
       collecting: consented,
       deviceId: credentials.deviceId,
@@ -173,12 +171,11 @@ export function useAgentState() {
     }));
   }, []);
 
-  const login = useCallback(async (token: string) => {
-    client.setAuth({ kind: "user", token });
+  const login = useCallback(async (code: string) => {
+    // No Authorization header sent — enroll-with-code is deliberately unauthenticated,
+    // the pairing code the dashboard shows is the whole credential.
     const facts = await collectDeviceFacts();
-    const response = await client.enrollDevice(facts);
-
-    accessToken.current = token;
+    const response = await client.enrollDeviceWithCode(code, facts);
 
     await Promise.all([
       SecureStore.setItemAsync(DEVICE_TOKEN_KEY, response.deviceToken),
@@ -205,26 +202,18 @@ export function useAgentState() {
     if (credentials === null) {
       throw new Error("Enrol this device before recording consent");
     }
-    if (accessToken.current === null) {
-      // The access token only ever lives in memory (never persisted, matching the
-      // desktop agent) — if it's gone, the app was restarted mid-setup and the
-      // employee has to sign in again to finish.
-      setStatus((current) => ({ ...current, screen: "login" }));
-      throw new Error("Sign in again to finish setting up this device");
-    }
 
     // Consent has to reach the server before it is believed locally — the API is
     // the enforcement point, so a locally-consented agent with no consent_records
-    // row just gets rejected on every later request.
-    client.setAuth({ kind: "user", token: accessToken.current });
-    await client.submitConsent({
-      deviceId: credentials.deviceId,
+    // row just gets rejected on every later request. Proven by the device token,
+    // which survives an app restart in SecureStore — unlike a user session, this
+    // agent never has to ask the employee to sign in again just to finish setup.
+    client.setAuth({ kind: "device", token: credentials.deviceToken });
+    await client.submitConsentAsDevice({
       policyVersion: credentials.policy.version,
       method: "in_app_dialog",
     });
 
-    accessToken.current = null;
-    client.setAuth({ kind: "device", token: credentials.deviceToken });
     await SecureStore.setItemAsync(CONSENT_KEY, credentials.policy.version);
 
     setStatus((current) => ({
