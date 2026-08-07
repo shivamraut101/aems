@@ -94,6 +94,45 @@ export function useDeviceTelemetry(deviceId: string, enabled: boolean) {
   });
 }
 
+/** One row of `location_points`, as `GET /api/activity/locations` returns it. */
+export interface LocationPoint {
+  id: number;
+  deviceId: string;
+  recordedAt: string;
+  latitude: number;
+  longitude: number;
+  accuracyM: number | null;
+}
+
+/**
+ * Where a phone was, over one day.
+ *
+ * The most sensitive read in the product, so it is scoped by day rather than opened as
+ * a browsable history: the API refuses another person's trail outright unless the
+ * caller `canViewOthers`, and asking a day at a time means a manager sees the day they
+ * navigated to and not a month they did not ask for.
+ *
+ * `enabled` is false for a laptop — desktops send no location at all.
+ */
+export function useDeviceLocations(
+  profileId: string,
+  from: string,
+  to: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["deviceLocations", profileId, from, to],
+    queryFn: () =>
+      apiFetch<{ points: LocationPoint[] }>(
+        `/api/activity/locations?profileId=${encodeURIComponent(profileId)}` +
+          `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      ),
+    enabled: enabled && Boolean(profileId) && Boolean(from) && Boolean(to),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
 /** Newest-seen first, then by name, so the list has a stable order across renders. */
 export function sortApplications(rows: readonly DeviceApplicationRow[]): DeviceApplicationRow[] {
   return [...rows].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));

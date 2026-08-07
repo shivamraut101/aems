@@ -10,7 +10,7 @@ import { ActivityTimeline, TimelineSkeleton } from "@/components/activity-timeli
 import { devicesQuery } from "@/components/employee/employee-queries";
 import { PhoneDay } from "@/components/employee/phone-day";
 import { SectionHeading } from "@/components/employee/states";
-import { useDeviceTelemetry } from "../device-queries";
+import { useDeviceLocations, useDeviceTelemetry } from "../device-queries";
 import { useDayWindow } from "@/components/employee/use-day-window";
 import { clampWindowToNow } from "@/components/timeline/model";
 import { RelativeTime } from "@/components/relative-time";
@@ -91,6 +91,20 @@ function DeviceDay() {
   // leads with them — they are what a handset can answer about a working day.
   const telemetry = useDeviceTelemetry(deviceId, isPhone === true);
 
+  // Only phones report location, and only for the day on screen — see the note on the
+  // hook. Filtered to this device: the endpoint answers per person, and a page about
+  // one machine must not show another machine's trail.
+  const locations = useDeviceLocations(
+    profileId,
+    window?.from ?? "",
+    window?.to ?? "",
+    isPhone === true,
+  );
+  const devicePoints = useMemo(
+    () => (locations.data?.points ?? []).filter((point) => point.deviceId === deviceId),
+    [locations.data, deviceId],
+  );
+
   return (
     <div>
       {/* Back to the list rather than to the person: somebody who drilled into one
@@ -150,6 +164,7 @@ function DeviceDay() {
           error={query.error}
           onRetry={() => void query.refetch()}
           dayLabel={day.label}
+          locations={locations.isError ? [] : devicePoints}
         />
       ) : (
         <ActivityTimeline

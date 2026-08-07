@@ -1,9 +1,9 @@
 "use client";
 
-import { BatteryCharging, Battery, Signal, Smartphone, Wifi, WifiOff } from "lucide-react";
+import { BatteryCharging, Battery, MapPin, Signal, Smartphone, Wifi, WifiOff } from "lucide-react";
 
 import { EmptyState, ErrorState } from "@/components/states";
-import type { DeviceTelemetryRow } from "@/app/(app)/people/[profileId]/devices/device-queries";
+import type { DeviceTelemetryRow, LocationPoint } from "@/app/(app)/people/[profileId]/devices/device-queries";
 import { duration as formatDuration } from "@/lib/format";
 import type { AppUsage } from "@aems/types";
 
@@ -52,6 +52,7 @@ export function PhoneDay({
   error,
   onRetry,
   dayLabel,
+  locations,
 }: {
   apps: readonly AppUsage[];
   latest: DeviceTelemetryRow | null;
@@ -61,6 +62,8 @@ export function PhoneDay({
   error: unknown;
   onRetry: () => void;
   dayLabel: string;
+  /** Null for a device that does not report location at all. */
+  locations: readonly LocationPoint[] | null;
 }) {
   if (isError) {
     return (
@@ -151,6 +154,15 @@ export function PhoneDay({
               <li key={app.appName} className="flex items-center gap-3 px-4 py-2.5 text-sm sm:px-5">
                 <span className="min-w-0 flex-1 truncate" title={app.appName}>
                   {app.appName}
+                  {/* The employee sees "Opened 4 times" on their own Activity screen,
+                      from the same rows. A manager reading a different set of numbers
+                      about the same day is how a monitoring product loses an argument
+                      it should not be having. */}
+                  {app.opens === undefined ? null : (
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      Opened {app.opens} {app.opens === 1 ? "time" : "times"}
+                    </span>
+                  )}
                 </span>
                 {/* A bar rather than a percentage: the question is which app dominated,
                     and a row of lengths answers it without anybody reading a number. */}
@@ -172,6 +184,61 @@ export function PhoneDay({
         )}
       </section>
 
+      {/* Location is the most sensitive thing this product holds, so it is stated
+          rather than plotted: a point count, when it started and stopped, and the
+          coordinates behind a disclosure. A map would invite scrubbing somebody's
+          movements as an idle activity, which is a different product from answering
+          "where was this field device today". */}
+      {locations !== null ? (
+        <section className="rounded-lg border bg-card">
+          <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b px-4 py-3 sm:px-5">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              <MapPin className="h-3.5 w-3.5" aria-hidden />
+              Location on {dayLabel}
+            </h3>
+            <span className="text-xs text-muted-foreground">
+              {locations.length === 0
+                ? "No points recorded"
+                : `${String(locations.length)} point${locations.length === 1 ? "" : "s"}`}
+            </span>
+          </header>
+
+          {locations.length === 0 ? (
+            <p className="px-4 py-3 text-xs text-muted-foreground sm:px-5">
+              This phone recorded no location for {dayLabel}. Location is collected only
+              while consent is in force and the employee has granted the permission —
+              Android asks for background access separately, in Settings.
+            </p>
+          ) : (
+            <details className="group">
+              <summary className="cursor-pointer list-none px-4 py-3 text-xs text-muted-foreground hover:text-foreground sm:px-5">
+                First {shortTime(locations[locations.length - 1]?.recordedAt)}, last{" "}
+                {shortTime(locations[0]?.recordedAt)} — show the trail
+              </summary>
+              <ul className="divide-y border-t">
+                {locations.slice(0, 50).map((point) => (
+                  <li key={point.id} className="flex items-center gap-3 px-4 py-2 text-xs sm:px-5">
+                    <span className="tabular w-14 shrink-0 text-muted-foreground">
+                      {shortTime(point.recordedAt)}
+                    </span>
+                    <span className="tabular min-w-0 flex-1 truncate font-mono">
+                      {point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}
+                    </span>
+                    {/* A point good to 2km and one good to 5m are not the same claim,
+                        and a reader deciding where somebody was needs to know which. */}
+                    {point.accuracyM === null ? null : (
+                      <span className="tabular shrink-0 text-muted-foreground">
+                        ±{Math.round(point.accuracyM)}m
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
+      ) : null}
+
       <p className="flex items-start gap-2 text-xs text-muted-foreground">
         <Smartphone className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
         <span>
@@ -183,6 +250,15 @@ export function PhoneDay({
       </p>
     </div>
   );
+}
+
+/** "14:05" in the reader's zone. Seconds are noise on a movement trail. */
+function shortTime(iso: string | undefined): string {
+  if (!iso) return "—";
+  const parsed = Date.parse(iso);
+  return Number.isFinite(parsed)
+    ? new Date(parsed).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "—";
 }
 
 function Kpi({

@@ -378,6 +378,19 @@ export interface AppUsage {
   appName: string;
   category: string | null;
   seconds: number;
+  /**
+   * How many separate times the app came to the front.
+   *
+   * One per reported interval, which is one `activity_events` row. That is
+   * deliberately the same arithmetic the Android app does for the employee's own
+   * Activity screen — its `totalsFrom` counts sessions and notes that "each session is
+   * one activity_events row, so counting rows there and counting sessions here cannot
+   * drift apart". A manager and the person being measured have to see the same number.
+   *
+   * Optional so a caller reducing from something other than raw intervals can omit it
+   * rather than report a zero, which would read as "never opened".
+   */
+  opens?: number;
 }
 
 // ---------------------------------------------------------------------------

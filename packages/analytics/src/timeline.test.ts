@@ -635,7 +635,9 @@ describe("buildDayTimeline", () => {
     });
 
     expect(timeline.totals.activeSeconds).toBe(600);
-    expect(timeline.topApps).toEqual([{ appName: "Code", category: null, seconds: 600 }]);
+    expect(timeline.topApps).toEqual([
+      { appName: "Code", category: null, seconds: 600, opens: 1 },
+    ]);
     expect(timeline.spans.map((s) => s.kind)).toEqual(["offline", "app", "offline"]);
   });
 
@@ -646,7 +648,12 @@ describe("buildDayTimeline", () => {
       idle: [],
     });
 
-    expect(timeline.topApps).toEqual([{ appName: "Code", category: null, seconds: 3600 }]);
+    // Seconds are unioned so a two-device day cannot exceed the clock. `opens` is not
+    // unioned and must not be: two devices each reported the app coming to the front,
+    // and collapsing that to 1 would hide that this was reported twice.
+    expect(timeline.topApps).toEqual([
+      { appName: "Code", category: null, seconds: 3600, opens: 2 },
+    ]);
     expect(timeline.totals.activeSeconds).toBe(3600);
   });
 
