@@ -158,6 +158,8 @@ export interface Database {
           cpu: string | null;
           ram_mb: number | null;
           storage_mb: number | null;
+          /** Migration ...0016. At most one per profile; see the column comment. */
+          is_primary: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -167,6 +169,7 @@ export interface Database {
           profile_id: string;
           platform: DevicePlatform;
           label: string;
+          is_primary?: boolean;
           os_version?: string;
           agent_version?: string;
           enrolled_at?: string;

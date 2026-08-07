@@ -10,7 +10,7 @@ import {
 } from "@aems/analytics";
 import { canViewOthers, type SessionProfile } from "@aems/auth";
 import { AEMS_BUCKET } from "@aems/supabase";
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 // One definition of how long a screenshot link lives, shared with the route that
@@ -168,6 +168,36 @@ function deviceScope(
     : { company_id: companyId, profile_id: profileId, device_id: deviceId };
 }
 
+/**
+ * Which machine defines this person's hours, when the caller has not said.
+ *
+ * An explicit `?deviceId=` always wins — that is a manager asking about one machine
+ * on purpose, and second-guessing it would answer a question nobody asked.
+ *
+ * Otherwise the primary device (migration …0016), because idle is not device-scoped:
+ * activity, idle and breaks are unioned across every machine and then idle is
+ * subtracted from activity, so a laptop left untouched cancelled work being done on a
+ * phone at the same moment. Naming one machine the system of record is the fix the
+ * client chose over rewriting the reduction to run per device and union the results.
+ *
+ * `null` when nobody has chosen, and that is deliberate: the union across all devices
+ * is what every existing day was computed with, so a company that never opens this
+ * setting sees no number move.
+ */
+async function primaryDeviceFor(
+  app: FastifyInstance,
+  companyId: string,
+  profileId: string,
+): Promise<string | null> {
+  const { data } = await app.supabase
+    .from("devices")
+    .select("id")
+    .match({ company_id: companyId, profile_id: profileId, is_primary: true })
+    .maybeSingle();
+
+  return data?.id ?? null;
+}
+
 export const analyticsRoutes: FastifyPluginAsync = async (app) => {
   /** Headline numbers for one person over one window. */
   app.get("/productivity", { preHandler: app.requireUser }, async (request, reply) => {
@@ -188,7 +218,13 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     // Same scope object as the timeline, for the same reason — see the comment there.
     // These two endpoints answer the same day and must narrow it identically, or the
     // KPI row and the ribbon below it describe different sets of devices.
-    const scope = deviceScope(session.companyId, profileId, parsed.data.deviceId);
+    const scope = deviceScope(
+      session.companyId,
+      profileId,
+      parsed.data.deviceId ??
+        (await primaryDeviceFor(app, session.companyId, profileId)) ??
+        undefined,
+    );
 
     // Four columns and two, not `*`. `summarisePeriod` reads the two timestamps and
     // `rankApps` adds the app and its category — nothing here looks at `window_title`,
@@ -245,7 +281,12 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
     }
 
-    const scope = deviceScope(session.companyId, profileId, deviceId);
+    // An explicit deviceId wins; otherwise the primary device governs the day. Both
+    // resolve to the same one-object scope, so the five queries below cannot end up
+    // narrowed differently from each other.
+    const governing =
+      deviceId ?? (await primaryDeviceFor(app, session.companyId, profileId)) ?? undefined;
+    const scope = deviceScope(session.companyId, profileId, governing);
 
     // Five sources, not two. Scope §2.7's worked example opens with "09:00 Login" and
     // §2.2 makes break time a first-class number — neither is expressible from

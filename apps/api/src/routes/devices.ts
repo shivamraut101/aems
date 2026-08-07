@@ -801,6 +801,92 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     return { latest: samples[0] ?? null, samples };
   });
 
+  /**
+   * Names the machine whose activity and idle define this person's working hours.
+   *
+   * `requireManager`, not `requireSuperAdmin` like the two routes either side. Asked
+   * for by name — the person who knows which machine is somebody's work computer is
+   * their manager, not a company administrator. It is still a consequential setting:
+   * it changes the hours a person is judged on, which is why it is audited.
+   *
+   * A separate route rather than a field on `PATCH /:deviceId`, because that one
+   * reassigns ownership and revokes the outgoing owner's consent as it goes. Choosing
+   * a primary device must never carry that.
+   */
+  app.post("/:deviceId/primary", { preHandler: app.requireManager }, async (request, reply) => {
+    const { deviceId } = request.params as { deviceId: string };
+    const session = request.session!;
+
+    if (!deviceIdSchema.safeParse(deviceId).success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_device_id", message: "deviceId must be a uuid", statusCode: 400 });
+    }
+
+    // Company-scoped: the service-role key bypasses RLS, so this read is the tenant
+    // boundary. A revoked device is refused because hours must not be defined by a
+    // machine that has been told to stop reporting.
+    const { data: device } = await app.supabase
+      .from("devices")
+      .select("id, profile_id, status, label")
+      .eq("id", deviceId)
+      .eq("company_id", session.companyId)
+      .maybeSingle();
+
+    if (!device) {
+      return reply.code(404).send({ error: "not_found", message: "No such device", statusCode: 404 });
+    }
+
+    if (device.status === "revoked") {
+      return reply.code(409).send({
+        error: "device_revoked",
+        message: "A revoked device cannot define working hours",
+        statusCode: 409,
+      });
+    }
+
+    // Cleared first, because `devices_one_primary_per_profile` is a unique index: two
+    // rows claiming to be the system of record cannot both exist, and setting before
+    // clearing would be refused by the database rather than swapping.
+    await app.supabase
+      .from("devices")
+      .update({ is_primary: false })
+      .eq("company_id", session.companyId)
+      .eq("profile_id", device.profile_id)
+      .eq("is_primary", true);
+
+    const { data, error } = await app.supabase
+      .from("devices")
+      .update({ is_primary: true })
+      .eq("id", deviceId)
+      .eq("company_id", session.companyId)
+      .select("id, is_primary")
+      .maybeSingle();
+
+    if (error || !data) {
+      return reply.code(500).send({
+        error: "primary_failed",
+        message: error?.message ?? "Could not set the primary device",
+        statusCode: 500,
+      });
+    }
+
+    await recordAudit(
+      app.supabase,
+      {
+        companyId: session.companyId,
+        actorId: session.profileId,
+        action: "device.primary_set",
+        targetType: "device",
+        targetId: deviceId,
+        metadata: { profileId: device.profile_id, label: device.label } as Json,
+      },
+      app.log,
+    );
+
+    return data;
+  });
+
   /** Revoking a device stops it collecting on its very next request. */
   app.post("/:deviceId/revoke", { preHandler: app.requireSuperAdmin }, async (request, reply) => {
     const { deviceId } = request.params as { deviceId: string };
