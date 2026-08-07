@@ -9,7 +9,13 @@
  *   import { ErrorState, TableSkeleton, queryViewState } from "@/components/states";
  */
 
-export { EmptyState, ErrorState, StaleNotice } from "./feedback";
+export {
+  DegradedNotice,
+  EmptyState,
+  ErrorState,
+  StaleNotice,
+  type DegradedSource,
+} from "./feedback";
 export {
   FilterBarSkeleton,
   ListSkeleton,

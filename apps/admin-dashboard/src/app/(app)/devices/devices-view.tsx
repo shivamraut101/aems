@@ -41,11 +41,11 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { RelativeTime } from "@/components/relative-time";
 import { PageHeader } from "@/components/page-header";
 import {
+  DegradedNotice,
   EmptyState,
   ErrorState,
   FilterBarSkeleton,
   SkeletonBar,
-  StaleNotice,
   queryViewState,
 } from "@/components/states";
 import { apiFetch, describeError, useApiQuery, useSession, type DeviceRow } from "@/lib/api";
@@ -594,35 +594,27 @@ function DevicesScreen() {
         />
       ) : (
         <>
-          {state === "stale" ? (
-            <StaleNotice
-              className="mb-2 rounded-md border"
-              message="This inventory could not be refreshed, so it may be a few minutes old."
-              onRetry={() => void devices.refetch()}
-            />
-          ) : null}
+          {/* Three sources feed this table and each can fail alone — the inventory
+              itself, the telemetry columns, and the roster behind "Assigned to". Each
+              used to raise its own amber strip, so a bad minute pushed the table a
+              third of the way down the page behind three paragraphs and three Retry
+              links. They are named as columns rather than as requests, because nobody
+              reading this knows there are three queries.
 
-          {/* Telemetry is a second request against a second table. It failing costs
-              three columns, not the inventory — so it is said out loud and the rest of
-              the table stays up. */}
-          {telemetry.isError ? (
-            <StaleNotice
-              className="mb-2 rounded-md border"
-              message="Battery, network and free storage could not be read. Every other column is current."
-              onRetry={() => void telemetry.refetch()}
-            />
-          ) : null}
-
-          {/* The roster failing was the one degradation this page did silently: every
-              Assigned-to cell fell back to an em dash and nothing said why, so an outage
-              looked like an estate of unassigned machines. */}
-          {roster.isError ? (
-            <StaleNotice
-              className="mb-2 rounded-md border"
-              message="Owner names could not be read, so the Assigned to column is showing dashes. Every other column is current."
-              onRetry={() => void roster.refetch()}
-            />
-          ) : null}
+              The roster one matters most: without it every Assigned-to cell falls back
+              to an em dash, and an outage looks like an estate of unassigned machines. */}
+          <DegradedNotice
+            className="mb-2"
+            sources={[
+              { label: "This inventory", isError: state === "stale", refetch: () => void devices.refetch() },
+              {
+                label: "Battery, network and free storage",
+                isError: telemetry.isError,
+                refetch: () => void telemetry.refetch(),
+              },
+              { label: "Assigned to", isError: roster.isError, refetch: () => void roster.refetch() },
+            ]}
+          />
 
           {state !== "loading" && rows.length > 0 ? (
             <p className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">

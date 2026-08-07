@@ -136,6 +136,76 @@ export function StaleNotice({
   );
 }
 
+/** One source a screen reads from, and what it costs the reader when it fails. */
+export interface DegradedSource {
+  /** Named as the reader sees it — a column or a section, never a request. */
+  label: string;
+  isError: boolean;
+  refetch: () => void;
+}
+
+/**
+ * Everything on this screen that is not current, as one line.
+ *
+ * Replaces stacking a {@link StaleNotice} per failed query. The Devices page reads
+ * three sources — inventory, telemetry, roster — and rendered a separate amber strip
+ * for each, so a bad minute pushed the table a third of the way down the page behind
+ * three paragraphs and three Retry links. Each was individually well-written and the
+ * pile was unreadable.
+ *
+ * Two rules make one line enough:
+ *
+ *  - **Name the columns, not the requests.** "Owner names could not be read" describes
+ *    our architecture; "Assigned to" describes the reader's table. Nobody using this
+ *    knows there are three queries and nobody should have to.
+ *  - **One Retry, for everything that failed.** Three buttons made the reader schedule
+ *    the recovery. The screen knows which sources are down; it can ask for all of them.
+ *
+ * Renders nothing when every source is healthy, which is what lets a caller list all
+ * of them unconditionally rather than guarding each.
+ */
+export function DegradedNotice({
+  sources,
+  className,
+}: {
+  sources: readonly DegradedSource[];
+  className?: string;
+}) {
+  const failed = sources.filter((source) => source.isError);
+  if (failed.length === 0) return null;
+
+  return (
+    <p
+      role="alert"
+      className={cn(
+        "flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs",
+        className,
+      )}
+    >
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" aria-hidden />
+      <span className="min-w-0">
+        <span className="font-medium">{formatList(failed.map((source) => source.label))}</span>{" "}
+        {failed.length === 1 ? "is" : "are"} not current. Everything else on this page is.
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          for (const source of failed) source.refetch();
+        }}
+        className="rounded font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {failed.length === 1 ? "Retry" : "Retry all"}
+      </button>
+    </p>
+  );
+}
+
+/** "A", "A and B", "A, B and C" — Oxford-less, which is the house style in this UI. */
+function formatList(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1] ?? ""}`;
+}
+
 /*
  * Note for whoever consolidates this next.
  *

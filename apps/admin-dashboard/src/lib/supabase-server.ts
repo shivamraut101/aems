@@ -91,7 +91,23 @@ export async function serverApiFetch<T>(path: string): Promise<T | null> {
 
     if (!response.ok) return null;
     return (await response.json()) as T;
-  } catch {
+  } catch (cause) {
+    /*
+     * Unreachable is not the same as signed out, and this used to answer `null` for
+     * both.
+     *
+     * The consequence was on screen for hours: with the API down, `getServerSession`
+     * resolved to null, the shell rendered "Not signed in", and it offered a Sign in
+     * link to somebody whose session was perfectly valid — the middleware had just
+     * let them through on it. Every visible sign pointed at the wrong problem.
+     *
+     * Logged and still null, because the caller's contract is "no session to render
+     * with" and every one of them already handles that. What this buys is a line in
+     * the server log naming the real cause, rather than an outage that looks
+     * identical to a sign-out. The banner-level fix belongs to the callers that can
+     * tell a reader something; see `DegradedNotice`.
+     */
+    console.error("[aems] API unreachable during server render", cause);
     return null;
   }
 }
