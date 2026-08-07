@@ -464,6 +464,12 @@ function readDayState(persisted: unknown, today: string): DayState {
     openBreakSince: readStamp(record["openBreakSince"]),
     lastCaptureAt: readStamp(record["lastCaptureAt"]),
     lastSyncAt: readStamp(record["lastSyncAt"]),
+    // Restored like any other stamp, and for a reason the others do not carry: this
+    // one is an instruction from the employee. Dropping it on restart resumes
+    // collection on someone who said they had finished — the document is discarded
+    // wholesale when it belongs to a previous day, so a stamp that survives here is
+    // always today's.
+    dayEndedAt: readStamp(record["dayEndedAt"]),
   };
 }
 

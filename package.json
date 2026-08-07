@@ -3,7 +3,7 @@
   "private": true,
   "description": "AEMS - AI workforce intelligence platform. Monitoring for company-owned devices with employee consent and compliance controls.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "packageManager": "pnpm@10.33.0",
   "scripts": {

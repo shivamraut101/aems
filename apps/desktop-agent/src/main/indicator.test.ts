@@ -28,6 +28,7 @@ function status(overrides: Partial<AgentStatus> = {}): AgentStatus {
     policyVersion: "2026-01",
     workSessionId: 1,
     pendingEvents: 0,
+    dayEnded: false,
     lastSyncAt: null,
     permissions: { screenRecording: "granted", accessibility: "granted", websiteTracking: "browser-url" },
     totals: emptyTotals(),

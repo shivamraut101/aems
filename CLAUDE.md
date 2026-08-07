@@ -392,5 +392,34 @@ Ask before acting on these.
     value of type event_trigger` for both anon and authenticated (verified 2026-08-05).
     It is also Supabase's own platform trigger (`ensure_rls`), not ours, and its only
     effect is to *enable* RLS on new public tables. Left in place deliberately.
+11. **`DEVICE_TOKEN_SECRET` buys nothing and should become a per-device token.**
+    `lib/device-token.ts` HMACs `{deviceId, companyId, profileId, issuedAt}` so a
+    token can be verified statelessly — but `requireDevice` (`plugins/context.ts:105`)
+    re-reads the `devices` row on *every* request regardless, and non-negotiable #4
+    means it always must. The one benefit of an HMAC is therefore unreachable by
+    design, while the costs are real: a shared secret on every host, forgeable tokens
+    for any known device id if it leaks, and a rotation that re-enrols the whole fleet.
+    **Replace with** a random per-device token stored hashed on `devices` and looked up
+    by hash — the same single query, no shared secret, no env var, per-device rotation.
+    Roughly one migration (column + unique index), both enrolment routes,
+    `requireDevice`, and `devices.test.ts` already covers the surface. Not urgent: the
+    per-request revocation read is what actually secures this today. Also note
+    `verifyDeviceToken` never checks `issuedAt`, so tokens never expire.
+12. **Data integrity defects found 2026-08-07, against live data — see the audit.**
+    Ranked, all reproduced: (a) an unbounded idle stretch records overnight machine-on
+    time as *idle*, so one employee's day read 14h 2m idle / 1.1% activity — the agent
+    caps a break at 3h but nothing caps idle, and the API's `STALE_IDLE_AFTER_MS` is
+    applied only by `/live`; (b) `/analytics/overview` returned `activeNow: 1` beside
+    `workingToday: 0, totalHoursToday: 0` because it counts only sessions that *started*
+    today and then sums wall-clock with no union across devices and no idle/break
+    subtraction; (c) work sessions never close when an agent is killed (3/3 open, oldest
+    47.7h) and there is no server-side reaper; (d) a `CHECK` violation returns 500, which
+    `sync.ts:63` classifies as retry, so one clock-skewed event wedges that device's queue
+    forever — and the agent uses wall-clock `Date` with no monotonic fallback; (e) the
+    ingestion path has no tests, including the consent gates at `activity.ts:241` and
+    `:332`; (f) 3 of 4 profiles in the live database are seed data. Root cause under
+    (a)/(b): **four different definitions of "hours"** — tray unions sessions, Android
+    uses wall clock since clock-in, the timeline unions activity/idle/break and ignores
+    sessions, the overview KPI sums raw session time. One reduction should serve all four.
 
 Delete each item once it is resolved.

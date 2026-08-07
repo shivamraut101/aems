@@ -244,6 +244,20 @@ describe("DayStateStore", () => {
     expect(reopened.breakSpans).toEqual(breakSpans);
   });
 
+  it("remembers that the employee ended their day, across a restart", () => {
+    const fs = new FakeFs();
+    const endedAt = "2026-08-05T17:30:00.000Z";
+
+    dayStore(fs).update({ dayEndedAt: endedAt });
+
+    // `readDayState` wrote this field and never read it back, so a clock-out survived
+    // exactly as long as the process did. Rebooting a laptop after finishing for the
+    // day silently resumed collection on someone who had said they were done — the
+    // one direction of error non-negotiable #1 exists to prevent. The compiler found
+    // it; nothing else would have.
+    expect(dayStore(fs).load().dayEndedAt).toBe(endedAt);
+  });
+
   it("recovers an open break at its original start, not at the moment of the relaunch", () => {
     const fs = new FakeFs();
 
