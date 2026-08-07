@@ -3,6 +3,7 @@
 import { BatteryCharging, Battery, MapPin, Signal, Smartphone, Wifi, WifiOff } from "lucide-react";
 
 import { EmptyState, ErrorState } from "@/components/states";
+import { LocationTrail } from "./location-trail";
 import type { DeviceTelemetryRow, LocationPoint } from "@/app/(app)/people/[profileId]/devices/device-queries";
 import { duration as formatDuration } from "@/lib/format";
 import type { AppUsage } from "@aems/types";
@@ -210,31 +211,7 @@ export function PhoneDay({
               Android asks for background access separately, in Settings.
             </p>
           ) : (
-            <details className="group">
-              <summary className="cursor-pointer list-none px-4 py-3 text-xs text-muted-foreground hover:text-foreground sm:px-5">
-                First {shortTime(locations[locations.length - 1]?.recordedAt)}, last{" "}
-                {shortTime(locations[0]?.recordedAt)} — show the trail
-              </summary>
-              <ul className="divide-y border-t">
-                {locations.slice(0, 50).map((point) => (
-                  <li key={point.id} className="flex items-center gap-3 px-4 py-2 text-xs sm:px-5">
-                    <span className="tabular w-14 shrink-0 text-muted-foreground">
-                      {shortTime(point.recordedAt)}
-                    </span>
-                    <span className="tabular min-w-0 flex-1 truncate font-mono">
-                      {point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}
-                    </span>
-                    {/* A point good to 2km and one good to 5m are not the same claim,
-                        and a reader deciding where somebody was needs to know which. */}
-                    {point.accuracyM === null ? null : (
-                      <span className="tabular shrink-0 text-muted-foreground">
-                        ±{Math.round(point.accuracyM)}m
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </details>
+            <LocationTrail points={locations} />
           )}
         </section>
       ) : null}
