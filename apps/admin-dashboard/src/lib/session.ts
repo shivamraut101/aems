@@ -1,10 +1,10 @@
 /**
  * Session shape, route access policy and navigation.
  *
- * Deliberately framework-free and dependency-light: `middleware.ts` runs this on the
+ * Deliberately framework-free and dependency-light: `proxy.ts` runs this on the
  * edge, server components run it in Node, and the shell runs it in the browser. Keep
  * `next/*`, React and the Supabase clients out of this file — importing any of them
- * here would drag them into the middleware bundle.
+ * here would drag them into the proxy bundle.
  *
  * None of this is a security boundary. RLS is. This decides what to *render*, so the
  * UI stops offering actions the database will refuse.
@@ -318,7 +318,7 @@ function hasControlCharacter(value: string): boolean {
   return false;
 }
 
-/** Routes reachable without a session. Everything else goes through middleware. */
+/** Routes reachable without a session. Everything else goes through the proxy (src/proxy.ts). */
 /**
  * Where somebody carrying a temporary password is sent, and the one route the
  * must-change gate lets through — otherwise it would redirect the page it redirects to.

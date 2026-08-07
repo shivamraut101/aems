@@ -37,8 +37,13 @@ function passThrough(request: NextRequest): NextResponse {
  * This is a UX boundary, not the security one. It decides what renders. The API
  * verifies every token itself and RLS decides what any of it may read — a forged
  * cookie gets someone a sidebar and nothing behind it.
+ *
+ * Named `proxy` in `src/proxy.ts` rather than `middleware` in `src/middleware.ts`:
+ * Next 16 renamed the convention. The behaviour is unchanged — same request, same
+ * position in the pipeline — and Next still resolves `middleware.ts` for now, but
+ * running on the deprecated name is how a build starts warning and then breaks.
  */
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
   // `response` is reassigned by `setAll` below so that rotated cookies survive.

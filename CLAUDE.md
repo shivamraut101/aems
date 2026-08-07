@@ -41,7 +41,7 @@ the work, stop and raise it; don't route around it.
 | Package manager  | pnpm                                  |
 | Monorepo         | Turborepo                             |
 | Language         | TypeScript (Kotlin for Android native modules) |
-| Frontend         | Next.js 15 (App Router)               |
+| Frontend         | Next.js 16 (App Router)               |
 | UI               | Tailwind CSS + shadcn/ui              |
 | Client state     | Zustand                               |
 | Server state     | TanStack Query                        |
@@ -86,7 +86,7 @@ Do not introduce these — each was ruled out deliberately:
 
 ```text
 apps/
-  admin-dashboard/   Next.js 15 admin dashboard
+  admin-dashboard/   Next.js 16 admin dashboard
   api/               Fastify backend
   desktop-agent/     Electron + React + TS (Windows, macOS)
   android-agent/     React Native + Expo
@@ -110,9 +110,16 @@ New shared code goes in an existing package before a new one is created.
 
 ## Per-surface rules
 
-### apps/admin-dashboard (Next.js 15)
+### apps/admin-dashboard (Next.js 16)
 
 - App Router only.
+- **The request gate is `src/proxy.ts`, exporting `proxy`** — Next 16's rename of
+  `middleware.ts`. It refreshes the Supabase session cookie, redirects the signed-out
+  to `/login`, and holds anyone carrying a temporary password on `/set-password`. It
+  is a UX boundary, never the security one.
+- **Turbopack is the default builder.** It rejects CommonJS inside a `"type": "module"`
+  package where webpack quietly allowed it, so a shared `.js` config file must use
+  `export default`.
 - Server state through TanStack Query. Zustand is for client-only state —
   dashboard filters and user preferences. Never mirror server data into Zustand.
 - All forms: React Hook Form + Zod. The Zod schema is the single source of validation
@@ -313,6 +320,7 @@ until they confirm the edit.
 | 2026-08-05 | **Website restriction is in scope.** The admin panel can set rules that block sites, enforced by a managed browser extension. | `docs/scope.md` §8 lists control features under *Later — not part of MVP* |
 | 2026-08-05 | **The dashboard may go beyond `docs/design.md`** where a change demonstrably improves the product. Asked for by name: "if you can improve the design rather than just docs/design.md and if you have better ideas according to this project please proceed." | `docs/design.md` was previously followed to the letter |
 | 2026-08-06 | **The Android agent's tab bar may be translucent.** Asked for by name ("make the tab bar like ios liquid glass"), and confined to `apps/android-agent/src/components/TabBar.tsx` — chosen over glass everywhere, which was offered and declined. The rest of the app takes iOS *structure* only: collapsing large titles, grouped inset lists, hairline separators, spring presses. | `docs/design.md` lists **glassmorphism** under *Avoid*, and the 2026-08-05 permission above named only the dashboard |
+| 2026-08-08 | **Next.js 15 → 16, and the dashboard's request gate is `src/proxy.ts`.** Asked for by name: "the next latest should be used… must be using proxy.ts". `docs/stack.md` §3 is amended in place rather than overridden here, because the client authorised the document edit. Carried three consequences: the `middleware.ts` → `proxy.ts` rename, Turbopack becoming the default builder (which rejected `module.exports` in the ESM `packages/ui/tailwind-preset.js`), and Node ≥ 20.9 / React ^19, both already met. | `docs/stack.md` locked **Next.js 15** |
 | 2026-08-07 | **That tab bar is a floating capsule, not an edge-to-edge bar.** Asked for by name against a reference screenshot. It is inset from both screen edges, fully rounded (radius = half its height), hairline-bordered, and carries a spring-driven pill behind the selected tab. Same file, same exception — `radius` in `theme.ts` is untouched and still 8, so nothing else in the app can pick this radius up by accident. | `docs/design.md` locks an **8px radius** and lists **huge rounded cards** under *Avoid* |
 
 Two parts of the design direction are **not** loosened by that, because neither is a

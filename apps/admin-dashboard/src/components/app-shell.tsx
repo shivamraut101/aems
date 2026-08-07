@@ -46,7 +46,7 @@ import {
 } from "@/lib/session";
 import { createClient } from "@/lib/supabase";
 
-/** Icon identity lives in `session.ts` (which middleware imports); the components live here. */
+/** Icon identity lives in `session.ts` (which the proxy imports); the components live here. */
 const ICONS: Record<NavIcon, typeof LayoutDashboard> = {
   overview: LayoutDashboard,
   people: Users,
