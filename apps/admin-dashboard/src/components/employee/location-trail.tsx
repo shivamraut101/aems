@@ -2,6 +2,7 @@
 
 import { cn } from "@aems/ui";
 import { ExternalLink } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 
 import type { LocationPoint } from "@/app/(app)/people/[profileId]/devices/device-queries";
@@ -27,6 +28,24 @@ import {
  * answer "where were they at about four", and scrolling a list to find a timestamp is
  * a worse way to ask that than dragging to it.
  */
+/**
+ * Loaded only when somebody switches to the map, and never on the server.
+ *
+ * Leaflet reaches for `window` at import time, so it cannot be server-rendered —
+ * `ssr: false` is a requirement, not a preference. `dynamic` also keeps the mapping
+ * library and its stylesheet out of the bundle for every reader who never presses the
+ * switch, which is most of them: this is the only screen in the product that loads a
+ * map, and the only one that talks to a tile server.
+ */
+const TrailMap = dynamic(() => import("./trail-map"), {
+  ssr: false,
+  loading: () => (
+    <div className="border-t px-4 py-4 sm:px-5">
+      <div className="h-[420px] w-full animate-pulse rounded-md border bg-muted" aria-hidden />
+    </div>
+  ),
+});
+
 export function LocationTrail({ points }: { points: readonly LocationPoint[] }) {
   const stops = useMemo(() => groupIntoStops(points), [points]);
 
@@ -173,103 +192,6 @@ export function LocationTrail({ points }: { points: readonly LocationPoint[] }) 
           Nothing recorded after {shortTime(new Date(cutoff).toISOString())}.
         </p>
       ) : null}
-    </div>
-  );
-}
-
-/**
- * The day's path, drawn as inline SVG rather than on tiles.
- *
- * No map library and no tile requests, which is a deliberate trade with a real cost:
- * this shows the *shape* of a day's movement — where the stops were relative to each
- * other, in what order, how far apart — and no streets. Street context comes from the
- * per-stop OpenStreetMap link, which is reader-initiated.
- *
- * The reason is not bundle size. An embedded tile map fetches from a third party on
- * every render, with an employee's coordinates in the request, whether or not anybody
- * looked. That is a different privacy posture from a link somebody chooses to click,
- * and on the most sensitive screen in this product it is the client's call rather than
- * a default I should pick. Real tiles are a `docs/stack.md` addition — see the note in
- * `CLAUDE.md` open items.
- *
- * Latitude is inverted because SVG y grows downward and north does not. Longitude is
- * scaled by cos(latitude) so the shape is not stretched east-west — at 26°N a degree
- * of longitude is about 100km against latitude's 111km, and ignoring that tilts every
- * path.
- */
-function TrailMap({ stops }: { stops: readonly LocationStop[] }) {
-  const path = [...stops].reverse();
-
-  if (path.length === 0) return null;
-
-  const lats = path.map((s) => s.latitude);
-  const lons = path.map((s) => s.longitude);
-  const midLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-  const kx = Math.cos((midLat * Math.PI) / 180);
-
-  const xs = lons.map((lon) => lon * kx);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...lats);
-  const maxY = Math.max(...lats);
-
-  // A single stop has no extent. Give it one so it lands in the middle rather than
-  // dividing by zero and disappearing.
-  const spanX = maxX - minX || 1e-6;
-  const spanY = maxY - minY || 1e-6;
-  const pad = 8;
-
-  const project = (lat: number, lon: number) => ({
-    x: pad + ((lon * kx - minX) / spanX) * (200 - pad * 2),
-    y: pad + (1 - (lat - minY) / spanY) * (120 - pad * 2),
-  });
-
-  const projected = path.map((stop) => ({ stop, ...project(stop.latitude, stop.longitude) }));
-
-  return (
-    <div className="border-t px-4 py-4 sm:px-5">
-      <svg
-        viewBox="0 0 200 120"
-        className="h-40 w-full rounded-md border bg-muted/30"
-        role="img"
-        aria-label={`Movement between ${String(path.length)} ${path.length === 1 ? "place" : "places"}`}
-      >
-        {projected.length > 1 ? (
-          <polyline
-            points={projected.map((p) => `${String(p.x)},${String(p.y)}`).join(" ")}
-            fill="none"
-            stroke="hsl(var(--muted-foreground))"
-            strokeWidth="1"
-            strokeDasharray="3 2"
-          />
-        ) : null}
-
-        {projected.map((p, index) => (
-          <circle
-            key={p.stop.fromIso}
-            cx={p.x}
-            cy={p.y}
-            // Longer stops read as bigger, so a desk is visibly not a traffic light.
-            r={Math.min(6, 2 + Math.sqrt(p.stop.points))}
-            className={
-              index === projected.length - 1
-                ? "fill-[hsl(var(--success))]"
-                : "fill-[hsl(var(--primary))]"
-            }
-            opacity={0.85}
-          >
-            <title>
-              {shortTime(p.stop.fromIso)} — {p.stop.latitude.toFixed(5)},{" "}
-              {p.stop.longitude.toFixed(5)}
-            </title>
-          </circle>
-        ))}
-      </svg>
-
-      <p className="mt-2 text-xs text-muted-foreground">
-        Relative positions and the order they were visited. No street detail — open any
-        stop in the list for that. The last position is green.
-      </p>
     </div>
   );
 }
