@@ -49,6 +49,51 @@ export function useDeviceApplications(deviceId: string) {
   });
 }
 
+/** One row of `device_telemetry`, as `GET /api/devices/:id/telemetry` returns it. */
+export interface DeviceTelemetryRow {
+  id: number;
+  recorded_at: string;
+  battery_level: number | null;
+  battery_charging: boolean | null;
+  network_type: "wifi" | "cellular" | "ethernet" | "offline" | null;
+  storage_free_mb: number | null;
+  /**
+   * Screen-on seconds **since local midnight**, not since the previous sample.
+   *
+   * Verified against live data before this was rendered: the samples climb
+   * 56 → 559 → 617 → 766 → 917 → 1097 within one day, and the Kotlin behind it
+   * (`ScreenTimeTracker.getTodaySeconds`, which calls `resetIfNewDay`) accumulates
+   * rather than reporting a delta. So the newest sample is today's total and these
+   * must never be summed. Migration `…0004` says the opposite in a column comment;
+   * `…0012` corrects it.
+   */
+  screen_active_seconds: number | null;
+}
+
+/**
+ * The newest telemetry sample for one device.
+ *
+ * Only Android sends these — battery, network and screen-on time have no desktop
+ * counterpart — which is why the phone card can show live state the laptop card
+ * cannot, and why this is fetched per device rather than folded into the roster.
+ *
+ * `limit=1`: the card shows current state, not a history. A 60-second stale time
+ * because the agent samples about that often, so anything shorter refetches a number
+ * that has not moved.
+ */
+export function useDeviceTelemetry(deviceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["deviceTelemetry", deviceId],
+    queryFn: () =>
+      apiFetch<{ latest: DeviceTelemetryRow | null; samples: DeviceTelemetryRow[] }>(
+        `/api/devices/${encodeURIComponent(deviceId)}/telemetry?limit=1`,
+      ),
+    enabled: enabled && Boolean(deviceId),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
 /** Newest-seen first, then by name, so the list has a stable order across renders. */
 export function sortApplications(rows: readonly DeviceApplicationRow[]): DeviceApplicationRow[] {
   return [...rows].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
