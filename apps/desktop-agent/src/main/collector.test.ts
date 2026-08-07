@@ -81,6 +81,7 @@ class FakeApi {
       acceptedActivity: 0,
       acceptedIdle: 0,
       acceptedBreaks: 0,
+      acceptedLocations: 0,
       duplicates: 0,
     });
   }
