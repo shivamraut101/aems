@@ -298,7 +298,25 @@ export async function createEmployeeAccount(
     // No mail is going out, so leaving the address unconfirmed would block the
     // first sign-in on a confirmation link nobody receives.
     email_confirm: true,
-    user_metadata: { full_name: input.fullName },
+    /*
+     * `must_change_password` rides here so the dashboard's middleware can read it
+     * straight from the JWT with no extra query.
+     *
+     * In `user_metadata`, not `app_metadata`, and the difference is the whole design
+     * — see docs/superpowers/specs/2026-08-07-password-lifecycle-design.md.
+     * `app_metadata` is service-role-only and would be tamper-proof, but clearing it
+     * needs an endpoint that can set any user's password, and
+     * `components/me/password.ts` argues against exactly that: this service holds the
+     * service-role key and has no business handling a plaintext credential. So the
+     * browser sets the password and clears this flag in one `updateUser` call under
+     * the person's own session, and nothing passes through us.
+     *
+     * The cost is recorded rather than hidden: a user can clear this without choosing
+     * a new password. Accepted — the flag exists because a temporary password was read
+     * aloud by an admin who therefore already knows it, so the only person harmed by
+     * skipping is the account owner. It is a prompt, not a boundary against them.
+     */
+    user_metadata: { full_name: input.fullName, must_change_password: true },
   });
 
   if (created.error || !created.data.user) {

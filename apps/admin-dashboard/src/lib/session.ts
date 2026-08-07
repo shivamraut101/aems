@@ -319,8 +319,22 @@ function hasControlCharacter(value: string): boolean {
 }
 
 /** Routes reachable without a session. Everything else goes through middleware. */
+/**
+ * Where somebody carrying a temporary password is sent, and the one route the
+ * must-change gate lets through — otherwise it would redirect the page it redirects to.
+ */
+export const SET_PASSWORD_PATH = "/set-password";
+
+/** Reachable with no session at all. */
 export function isPublicPath(pathname: string): boolean {
-  return pathname === "/login" || pathname.startsWith("/login/");
+  return (
+    pathname === "/login" ||
+    pathname.startsWith("/login/") ||
+    pathname === "/forgot-password" ||
+    // Supabase lands the recovery link here with a session in the URL fragment, which
+    // the middleware cannot see — so it has to be public or the link bounces to /login.
+    pathname === "/reset-password"
+  );
 }
 
 /**
