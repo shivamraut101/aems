@@ -250,6 +250,7 @@ function appUsage(
         ...(grouping === "category" ? {} : { application: bucket.key }),
         category: grouping === "category" ? bucket.key : (categories.get(bucket.key) ?? UNCATEGORIZED),
         duration: bucket.seconds,
+        opens: bucket.visits,
         share: totalDuration === 0 ? 0 : Number((bucket.seconds / totalDuration).toFixed(4)),
       },
     });
@@ -269,6 +270,9 @@ function appUsage(
         application: null,
         category: null,
         duration: totalDuration,
+        // Summed, not merged: two devices reporting the same app are two openings of
+        // it, even where the overlapping *time* is only counted once above.
+        opens: rows.reduce((sum, row) => sum + Number(row.cells["opens"] ?? 0), 0),
         share: null,
       },
     },

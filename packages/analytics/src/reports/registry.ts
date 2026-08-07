@@ -121,6 +121,11 @@ export function columnsFor(kind: ReportKind, grouping: Grouping): ColumnDef[] {
       columns.push({ id: "category", label: "Category", format: "text", align: "left" });
       columns.push(
         { id: "duration", label: "Duration", format: "duration", align: "right" },
+        // How many separate times the app was opened, not how long it was held. The
+        // desktop agent counts one focus interval per switch and the Android agent
+        // counts one foreground session per opening, so both sides of the same column
+        // mean the same thing: a row is a visit.
+        { id: "opens", label: "Opens", format: "count", align: "right" },
         { id: "share", label: "Share", format: "percent", align: "right" },
       );
       return columns;

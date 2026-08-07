@@ -10,6 +10,7 @@ import { hasEnded, isOnBreak, loadDay } from "./day";
 import { clearPending, enqueue, loadPending, pendingCount } from "./queue";
 import { closeForgottenBreak, ensureWorkSession } from "./session";
 import { clearDeviceCredentials, loadSyncContext, LAST_SYNC_KEY, markRevoked } from "./state";
+import { uuidFrom } from "./uuid";
 import AemsUsage from "../modules/aems-usage";
 
 export type SyncOutcome = "synced" | "revoked" | "no-device";
@@ -17,6 +18,8 @@ export type SyncOutcome = "synced" | "revoked" | "no-device";
 const LAST_ACTIVITY_SYNC_KEY = "aems.lastActivitySyncAt";
 /** First-ever sync on a freshly consented device looks back this far, not further. */
 const DEFAULT_LOOKBACK_MS = 30 * 60 * 1000;
+/** Ceiling on how far a rewound watermark may drag the query window back. */
+const MAX_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Runs one pass of heartbeat → telemetry → app usage, for both the foreground
@@ -173,43 +176,61 @@ async function collectActivity(deviceId: string): Promise<void> {
   const endMs = Date.now();
   if (endMs <= startMs) return;
 
-  const stats = await AemsUsage.queryUsage(startMs, endMs);
+  const { sessions, openSessionStartMs } = await AemsUsage.queryUsage(startMs, endMs);
 
-  if (stats.length > 0) {
-    const activity: ActivityEventInput[] = stats.map((stat) => ({
-      // Stable across a retry of *this* cycle (same window), which is all the
-      // stability this needs — the next cycle queries a disjoint window and so
-      // naturally produces different ids.
-      clientEventId: `${deviceId}:${stat.packageName}:${startMs}`,
-      appName: stat.appLabel,
-      startedAt: new Date(stat.firstTimeStamp).toISOString(),
-      endedAt: new Date(stat.firstTimeStamp + stat.totalTimeForegroundMs).toISOString(),
+  if (sessions.length > 0) {
+    const activity: ActivityEventInput[] = sessions.map((session) => ({
+      // Derived from the session's own identity, so re-reading a window after a crash
+      // produces the id already stored rather than a second copy of the same session.
+      clientEventId: uuidFrom(`${deviceId}:${session.packageName}:${session.startedAtMs}`),
+      appName: session.appLabel,
+      startedAt: new Date(session.startedAtMs).toISOString(),
+      endedAt: new Date(session.endedAtMs).toISOString(),
     }));
 
     await enqueue({ activity });
 
     // Inventory is a snapshot of what is installed, not an observation that can be
     // lost — it is re-sent in full every cycle, so it does not belong in the queue.
-    const applications: InstalledApplication[] = stats.map((stat) => ({
-      name: stat.appLabel,
-      identifier: stat.packageName,
-    }));
+    // Deduplicated by package: an app opened six times is six sessions but one entry.
+    const applications: InstalledApplication[] = [
+      ...new Map(
+        sessions.map((session) => [
+          session.packageName,
+          { name: session.appLabel, identifier: session.packageName },
+        ]),
+      ).values(),
+    ];
     await attempt(() => client.reportApplications({ applications }));
   }
 
-  // Advancing as soon as the events are journalled is now correct, and it is the
-  // point of having a journal: durability used to be a side effect of leaving this
-  // window in place, which covered a failed request and nothing else — not a crash,
-  // and not a break event, which `UsageStatsManager` cannot be re-asked for.
-  await SecureStore.setItemAsync(LAST_ACTIVITY_SYNC_KEY, String(endMs));
+  // Rewind to a session still running rather than advancing past it. The watermark is
+  // "everything before here has been accounted for", and an app the employee still has
+  // open has not been: it is reported when it closes, as one session with its true
+  // start. Advancing to `endMs` would cut it at the sync boundary and count a single
+  // opening once per cycle it survived.
+  //
+  // Advancing as soon as the events are journalled is safe, and is the point of having
+  // a journal: durability used to depend on leaving this window in place, which covered
+  // a failed request and nothing else — not a crash, and not a break event, which
+  // `UsageStatsManager` cannot be re-asked for.
+  await SecureStore.setItemAsync(LAST_ACTIVITY_SYNC_KEY, String(openSessionStartMs ?? endMs));
 }
 
 async function loadLastActivitySyncMs(): Promise<number> {
+  const floor = Date.now() - MAX_LOOKBACK_MS;
+
   const stored = await SecureStore.getItemAsync(LAST_ACTIVITY_SYNC_KEY);
   if (stored !== null) {
     const parsed = Number(stored);
-    if (Number.isFinite(parsed)) return parsed;
+    // Clamped because the watermark deliberately rewinds to an open session, and an app
+    // left in the foreground for days (a kiosk, a stuck launcher, a phone that never
+    // sleeps) would otherwise pin it there and grow the query without bound. Android
+    // keeps roughly a week of events, so a window older than this cannot be answered
+    // in full anyway.
+    if (Number.isFinite(parsed)) return Math.max(parsed, floor);
   }
+
   return Date.now() - DEFAULT_LOOKBACK_MS;
 }
 

@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 
-import AemsUsage, { type AppUsageRecord } from "../../modules/aems-usage";
+import AemsUsage, { type AppSession } from "../../modules/aems-usage";
 import { ListSection } from "../components/List";
 import { Screen } from "../components/Screen";
 import { useTheme } from "../theme";
@@ -20,11 +20,51 @@ import { useTheme } from "../theme";
 /** Anything shorter than this is noise — a launcher redraw, a notification tap. */
 const MIN_VISIBLE_MS = 60_000;
 
+/** One app's day: how long it was open, and how many separate times. */
+interface AppTotal {
+  packageName: string;
+  appLabel: string;
+  totalMs: number;
+  opens: number;
+}
+
+/**
+ * Collapses the day's sessions to one row per app.
+ *
+ * `opens` counts sessions rather than deriving anything, which is what makes it the
+ * same number the company sees: each session is one `activity_events` row, so counting
+ * rows there and counting sessions here cannot drift apart.
+ */
+function totalsFrom(sessions: AppSession[]): AppTotal[] {
+  const byPackage = new Map<string, AppTotal>();
+
+  for (const session of sessions) {
+    const existing = byPackage.get(session.packageName);
+    const elapsed = session.endedAtMs - session.startedAtMs;
+
+    if (existing) {
+      existing.totalMs += elapsed;
+      existing.opens += 1;
+    } else {
+      byPackage.set(session.packageName, {
+        packageName: session.packageName,
+        appLabel: session.appLabel,
+        totalMs: elapsed,
+        opens: 1,
+      });
+    }
+  }
+
+  return [...byPackage.values()]
+    .filter((total) => total.totalMs >= MIN_VISIBLE_MS)
+    .sort((a, b) => b.totalMs - a.totalMs);
+}
+
 export function ActivityScreen() {
   const theme = useTheme();
   const styles = createStyles(theme);
 
-  const [records, setRecords] = useState<AppUsageRecord[] | null>(null);
+  const [records, setRecords] = useState<AppTotal[] | null>(null);
   const [denied, setDenied] = useState(false);
 
   const load = useCallback(async () => {
@@ -40,12 +80,8 @@ export function ActivityScreen() {
     startOfDay.setHours(0, 0, 0, 0);
 
     try {
-      const stats = await AemsUsage.queryUsage(startOfDay.getTime(), Date.now());
-      setRecords(
-        stats
-          .filter((stat) => stat.totalTimeForegroundMs >= MIN_VISIBLE_MS)
-          .sort((a, b) => b.totalTimeForegroundMs - a.totalTimeForegroundMs),
-      );
+      const { sessions } = await AemsUsage.queryUsage(startOfDay.getTime(), Date.now());
+      setRecords(totalsFrom(sessions));
     } catch {
       setRecords([]);
     }
@@ -55,8 +91,8 @@ export function ActivityScreen() {
     void load();
   }, [load]);
 
-  const total = (records ?? []).reduce((sum, r) => sum + r.totalTimeForegroundMs, 0);
-  const longest = records?.[0]?.totalTimeForegroundMs ?? 0;
+  const total = (records ?? []).reduce((sum, r) => sum + r.totalMs, 0);
+  const longest = records?.[0]?.totalMs ?? 0;
 
   return (
     <Screen
@@ -97,8 +133,11 @@ export function ActivityScreen() {
                   <Text style={styles.appName} numberOfLines={1}>
                     {record.appLabel}
                   </Text>
-                  <Text style={styles.appTime}>{formatSpan(record.totalTimeForegroundMs)}</Text>
+                  <Text style={styles.appTime}>{formatSpan(record.totalMs)}</Text>
                 </View>
+                <Text style={styles.appOpens}>
+                  Opened {record.opens} {record.opens === 1 ? "time" : "times"}
+                </Text>
                 {/*
                   Bars scale against the longest entry, not the total. Against the
                   total, a normal day of ten apps renders as ten near-invisible
@@ -110,7 +149,7 @@ export function ActivityScreen() {
                     style={[
                       styles.barFill,
                       {
-                        width: `${longest > 0 ? (record.totalTimeForegroundMs / longest) * 100 : 0}%`,
+                        width: `${longest > 0 ? (record.totalMs / longest) * 100 : 0}%`,
                       },
                     ]}
                   />
@@ -183,6 +222,7 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
     },
     appName: { ...typography.body, color: colors.foreground, flex: 1 },
     appTime: { ...typography.subhead, color: colors.muted },
+    appOpens: { ...typography.footnote, color: colors.muted },
     barTrack: { height: 4, borderRadius: 2, backgroundColor: colors.border, overflow: "hidden" },
     barFill: { height: 4, borderRadius: 2, backgroundColor: colors.indigo },
     notice: {

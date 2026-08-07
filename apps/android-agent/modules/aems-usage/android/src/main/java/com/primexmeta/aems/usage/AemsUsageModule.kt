@@ -9,6 +9,7 @@ import android.os.Process
 import android.os.StatFs
 import android.provider.Settings
 import android.app.ActivityManager
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -54,30 +55,85 @@ class AemsUsageModule : Module() {
       context.startActivity(intent)
     }
 
+    /**
+     * Real foreground sessions in a window — one entry per time the app was actually
+     * open, with the timestamps Android recorded for it.
+     *
+     * This reads the *event stream* (`queryEvents`) rather than the aggregate
+     * (`queryUsageStats`), which is how Digital Wellbeing arrives at its own numbers,
+     * and it is not a refinement — the aggregate cannot answer the question asked here.
+     * `queryUsageStats(INTERVAL_BEST, ...)` returns pre-rolled buckets that overlap the
+     * requested range, so a 60-second sync window is answered with each app's total for
+     * the whole *day*. Reporting that every cycle restated the day's total as if it were
+     * a fresh minute of use, and a phone that had spent one hour in Chrome would have
+     * sent that hour again on every sync until it read as hundreds.
+     *
+     * Aggregates also cannot say how many *times* an app was opened, because they have
+     * already thrown the boundaries away. Walking RESUMED → PAUSED keeps them, so one
+     * session is one row downstream and counting rows counts openings.
+     *
+     * Only *completed* sessions are returned. An app still in the foreground when the
+     * window closes is reported through `openSessionStartMs` instead, so the caller can
+     * rewind to it and emit that session once, whole, when it actually ends — rather
+     * than cutting it at an arbitrary sync boundary and counting one opening twice.
+     */
     AsyncFunction("queryUsage") { startMs: Long, endMs: Long ->
       val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
       val packageManager = context.packageManager
 
-      manager
-        .queryUsageStats(UsageStatsManager.INTERVAL_BEST, startMs, endMs)
-        // Apps the user never opened still appear with zero foreground time; they
-        // are noise, not evidence of activity.
-        .filter { it.totalTimeInForeground > 0 }
-        .map { stat ->
-          val label = runCatching {
-            packageManager
-              .getApplicationLabel(packageManager.getApplicationInfo(stat.packageName, 0))
-              .toString()
-          }.getOrDefault(stat.packageName)
+      val labels = HashMap<String, String>()
+      fun labelOf(packageName: String): String = labels.getOrPut(packageName) {
+        runCatching {
+          packageManager
+            .getApplicationLabel(packageManager.getApplicationInfo(packageName, 0))
+            .toString()
+        }.getOrDefault(packageName)
+      }
 
-          mapOf(
-            "packageName" to stat.packageName,
-            "appLabel" to label,
-            "totalTimeForegroundMs" to stat.totalTimeInForeground,
-            "firstTimeStamp" to stat.firstTimeStamp,
-            "lastTimeStamp" to stat.lastTimeStamp,
-          )
+      // Insertion-ordered so the earliest still-open resume is found by scanning values.
+      val openAt = LinkedHashMap<String, Long>()
+      val sessions = mutableListOf<Map<String, Any>>()
+
+      val events = manager.queryEvents(startMs, endMs)
+      val event = UsageEvents.Event()
+
+      while (events.hasNextEvent()) {
+        events.getNextEvent(event)
+        val packageName = event.packageName ?: continue
+
+        when (event.eventType) {
+          // ACTIVITY_RESUMED/ACTIVITY_PAUSED are the API 29 names for the constants
+          // MOVE_TO_FOREGROUND/MOVE_TO_BACKGROUND carried since API 1 — same values,
+          // and Kotlin inlines them, so referencing them is safe down to minSdk 24.
+          UsageEvents.Event.ACTIVITY_RESUMED -> {
+            // An app already counted as open must not restart its own session: several
+            // activities inside one app each emit RESUMED, and treating the second as a
+            // new opening would both split the session and inflate the count.
+            if (!openAt.containsKey(packageName)) openAt[packageName] = event.timeStamp
+          }
+
+          // STOPPED usually follows PAUSED for the same activity; whichever lands first
+          // closes the session and `remove` makes the other a no-op.
+          UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
+            val startedAt = openAt.remove(packageName) ?: continue
+            if (event.timeStamp <= startedAt) continue
+
+            sessions.add(
+              mapOf(
+                "packageName" to packageName,
+                "appLabel" to labelOf(packageName),
+                "startedAtMs" to startedAt,
+                "endedAtMs" to event.timeStamp,
+              ),
+            )
+          }
         }
+      }
+
+      mapOf<String, Any?>(
+        "sessions" to sessions,
+        "openSessionStartMs" to openAt.values.minOrNull(),
+      )
     }
 
     AsyncFunction("getDeviceSnapshot") {
