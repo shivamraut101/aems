@@ -27,6 +27,9 @@ const PRESENCE: Record<PresenceStatus, { variant: "success" | "warning" | "offli
   {
     active: { variant: "success", label: "Active" },
     idle: { variant: "warning", label: "Idle" },
+    // Said in full here, unlike the one-word badge in the strip: this header carries a
+    // single person, so there is room to answer the question Offline used to raise.
+    finished: { variant: "offline", label: "Finished for today" },
     offline: { variant: "offline", label: "Offline" },
   };
 

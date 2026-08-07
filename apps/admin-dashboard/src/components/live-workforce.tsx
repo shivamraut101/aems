@@ -33,6 +33,9 @@ const PLATFORM_LABEL = {
 const STATUS_BADGE = {
   active: { variant: "online", label: "Active" },
   idle: { variant: "warning", label: "Idle" },
+  // Not a warning tone. Somebody who ended their day did the right thing, and amber
+  // beside their name asks a manager to look into a completed shift.
+  finished: { variant: "secondary", label: "Finished" },
   offline: { variant: "offline", label: "Offline" },
 } as const;
 

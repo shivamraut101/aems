@@ -125,8 +125,20 @@ export interface RosterRow {
   monitoringEnabled: boolean;
 }
 
-/** Present beats idle beats absent — the order a manager scans in. */
-const STATUS_RANK: Record<PresenceStatus, number> = { active: 0, idle: 1, offline: 2 };
+/**
+ * Present beats idle beats absent — the order a manager scans in.
+ *
+ * `finished` sorts below offline on purpose: a completed day is the one state on this
+ * list that needs nothing from anybody, so it belongs at the bottom where an unread
+ * row costs nothing. Offline still ranks above it because a machine that went quiet
+ * without clocking out might be a problem.
+ */
+const STATUS_RANK: Record<PresenceStatus, number> = {
+  active: 0,
+  idle: 1,
+  offline: 2,
+  finished: 3,
+};
 
 function newerOf(a: string | null, b: string | null): string | null {
   if (!a) return b;

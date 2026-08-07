@@ -299,7 +299,11 @@ export interface LiveWorkforceRow {
   lastSeenAt: string | null;
   /** Set only while `status` is "idle" — when the current idle stretch began. */
   idleSince: string | null;
-  status: "active" | "idle" | "offline";
+  /**
+   * `finished` means they clocked out today and nothing is open again — see the
+   * derivation in `analytics.ts`. It is a kind of offline that says why.
+   */
+  status: "active" | "idle" | "finished" | "offline";
 }
 
 export interface OverviewMetrics {

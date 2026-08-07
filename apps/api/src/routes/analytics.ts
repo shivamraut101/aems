@@ -498,7 +498,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const now = Date.now();
 
-    const [{ data: people }, { data: openIdle }] = await Promise.all([
+    const [{ data: people }, { data: openIdle }, { data: todaySessions }] = await Promise.all([
       app.supabase
         .from("profiles")
         .select("id, full_name, email, devices(id, platform, label, last_seen_at, status)")
@@ -515,11 +515,39 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
         .eq("company_id", session.companyId)
         .is("idle_end_at", null)
         .gte("idle_start_at", new Date(now - STALE_IDLE_AFTER_MS).toISOString()),
+      /*
+       * Today's clock-ins, so "went home" can be told from "went dark".
+       *
+       * The agent stops heartbeating the moment an employee ends their day — the
+       * gate sits above `maybeHeartbeat` — so they fell to Offline two minutes
+       * later, indistinguishable from a crashed agent or a closed laptop lid. A
+       * manager reading Offline could not tell "finished properly" from "the
+       * monitoring stopped working", which are opposite facts about the same row.
+       *
+       * There is no live signal for it and there does not need to be: ending the
+       * day closes the work session, so a session clocked out today with none left
+       * open is the record of somebody having finished.
+       */
+      app.supabase
+        .from("work_sessions")
+        .select("profile_id, clock_out_at")
+        .eq("company_id", session.companyId)
+        .gte("clock_in_at", new Date(new Date(now).setHours(0, 0, 0, 0)).toISOString()),
     ]);
 
     const idleSince = new Map(
       (openIdle ?? []).map((row) => [row.device_id, row.idle_start_at] as const),
     );
+
+    // Somebody who clocked out today and has nothing open again. An open session
+    // disqualifies them however many closed ones sit beside it — a person who ended
+    // their day and then started working again is working, and that is the later fact.
+    const finishedToday = new Set<string>();
+    const stillOpen = new Set<string>();
+    for (const row of todaySessions ?? []) {
+      (row.clock_out_at === null ? stillOpen : finishedToday).add(row.profile_id);
+    }
+    for (const profileId of stillOpen) finishedToday.delete(profileId);
 
     const seenAt = (value: string | null): number => {
       const parsed = value ? Date.parse(value) : NaN;
@@ -548,7 +576,19 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
 
       // Offline wins over idle: a laptop that stopped reporting mid-idle-stretch is
       // not "idle", it is gone, and leaving it amber would imply we still know.
-      const status = !online ? ("offline" as const) : idleAt ? ("idle" as const) : ("active" as const);
+      //
+      // "Finished" is a kind of offline, ranked between the two: it only applies to
+      // someone already quiet, and it says *why* they are quiet. Checked after
+      // `online` so a person who clocked out and then opened their laptop again reads
+      // as active — the agent reopens a session and the record catches up, but the
+      // heartbeat is the faster and more current of the two signals.
+      const status = online
+        ? idleAt
+          ? ("idle" as const)
+          : ("active" as const)
+        : finishedToday.has(person.id)
+          ? ("finished" as const)
+          : ("offline" as const);
 
       return {
         // Null for someone who has enrolled nothing. The dashboard keys the strip
