@@ -23,6 +23,22 @@ const rangeSchema = z.object({
   profileId: z.string().uuid(),
   from: z.string().datetime({ offset: true }),
   to: z.string().datetime({ offset: true }),
+  /**
+   * Narrow the answer to one machine. Absent means every device this person has.
+   *
+   * Everything here used to aggregate a person's devices together, which is the right
+   * default — "how was their day" is a question about the person, and a laptop and a
+   * phone reporting at the same moment must be unioned rather than added, which is
+   * what `buildDayTimeline` does. But it left no way to ask the other question. An
+   * employee with a laptop and two phones produced one merged stream, so "what did
+   * they do on the field phone yesterday" had no answer, and neither did "this device
+   * stopped reporting on Tuesday — what was it doing before that".
+   *
+   * Optional rather than a second route: the arithmetic is identical either way. This
+   * only decides which rows enter it, so a filtered day and a whole day cannot drift
+   * apart the way two endpoints computing the same totals eventually would.
+   */
+  deviceId: z.string().uuid().optional(),
 });
 
 /**
@@ -129,6 +145,29 @@ const MAX_AGGREGATE_ROWS = 5000;
  */
 const STALE_IDLE_AFTER_MS = 4 * 60 * 60 * 1000;
 
+/**
+ * Company, person, and optionally one machine — as one object, applied with `.match`.
+ *
+ * `.match` rather than a conditional `.eq` chained onto each builder, because the
+ * failure mode of the latter is applying the device filter to four queries and
+ * forgetting the fifth. That does not throw and does not look wrong: it answers with
+ * one device's activity beside every device's idle, and the day silently stops adding
+ * up. One object cannot be applied partially.
+ *
+ * `company_id` stays in here rather than being inferred from `profile_id`. The API
+ * runs on the service-role key and bypasses RLS, so this is the tenant boundary on
+ * every route that uses it.
+ */
+function deviceScope(
+  companyId: string,
+  profileId: string,
+  deviceId: string | undefined,
+): { company_id: string; profile_id: string; device_id?: string } {
+  return deviceId === undefined
+    ? { company_id: companyId, profile_id: profileId }
+    : { company_id: companyId, profile_id: profileId, device_id: deviceId };
+}
+
 export const analyticsRoutes: FastifyPluginAsync = async (app) => {
   /** Headline numbers for one person over one window. */
   app.get("/productivity", { preHandler: app.requireUser }, async (request, reply) => {
@@ -146,6 +185,11 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
     }
 
+    // Same scope object as the timeline, for the same reason — see the comment there.
+    // These two endpoints answer the same day and must narrow it identically, or the
+    // KPI row and the ribbon below it describe different sets of devices.
+    const scope = deviceScope(session.companyId, profileId, parsed.data.deviceId);
+
     // Four columns and two, not `*`. `summarisePeriod` reads the two timestamps and
     // `rankApps` adds the app and its category — nothing here looks at `window_title`,
     // `url` or the four uuids, and those are most of the row. The rows are not part of
@@ -155,8 +199,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("activity_events")
         .select("app_name, category, started_at, ended_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("started_at", to)
         .or(`ended_at.gte.${from},ended_at.is.null`)
         .order("started_at", { ascending: false })
@@ -164,8 +207,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("idle_events")
         .select("idle_start_at, idle_end_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("idle_start_at", to)
         .or(`idle_end_at.gte.${from},idle_end_at.is.null`)
         .order("idle_start_at", { ascending: false })
@@ -197,11 +239,13 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const session = request.session!;
-    const { profileId, from, to, bucketSeconds } = parsed.data;
+    const { profileId, from, to, bucketSeconds, deviceId } = parsed.data;
 
     if (profileId !== session.profileId && !canViewOthers(session.role)) {
       return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
     }
+
+    const scope = deviceScope(session.companyId, profileId, deviceId);
 
     // Five sources, not two. Scope §2.7's worked example opens with "09:00 Login" and
     // §2.2 makes break time a first-class number — neither is expressible from
@@ -218,8 +262,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("activity_events")
         .select("app_name, window_title, category, started_at, ended_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("started_at", to)
         .or(`ended_at.gte.${from},ended_at.is.null`)
         .order("started_at", { ascending: false })
@@ -227,8 +270,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("idle_events")
         .select("idle_start_at, idle_end_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("idle_start_at", to)
         .or(`idle_end_at.gte.${from},idle_end_at.is.null`)
         .order("idle_start_at", { ascending: false })
@@ -236,8 +278,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("break_events")
         .select("break_start_at, break_end_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("break_start_at", to)
         .or(`break_end_at.gte.${from},break_end_at.is.null`)
         .order("break_start_at", { ascending: false })
@@ -245,8 +286,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("work_sessions")
         .select("clock_in_at, clock_out_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("clock_in_at", to)
         .or(`clock_out_at.gte.${from},clock_out_at.is.null`)
         .order("clock_in_at", { ascending: false })
@@ -254,8 +294,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("screenshots")
         .select("id, captured_at, storage_path, thumbnail_path, blurred, work_session_id")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .gte("captured_at", from)
         .lte("captured_at", to)
         .order("captured_at", { ascending: false })
