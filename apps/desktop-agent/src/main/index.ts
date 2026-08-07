@@ -19,11 +19,18 @@ import {
 } from "electron";
 import type { AppUpdater } from "electron-updater";
 
-import { emptyTotals, IPC_CHANNELS, mayCollect, statusOf } from "../shared/types/index.js";
+import {
+  emptyTotals,
+  IPC_CHANNELS,
+  mayCollect,
+  pausedBecause,
+  statusOf,
+} from "../shared/types/index.js";
 import type {
   AgentPermissions,
   AgentStatus,
   EnrollRequest,
+  PauseReason,
   PermissionTarget,
 } from "../shared/types/index.js";
 import type { BridgeInvocation } from "./bridge.js";
@@ -176,12 +183,26 @@ function broadcastStatus(status: AgentStatus): void {
 
 // -- tray -----------------------------------------------------------------
 
+/**
+ * A `Record`, not a switch with a default, and that is the whole point.
+ *
+ * The previous version tested four conditions and fell through to "monitoring active"
+ * for anything else — so when `dayEnded` was added, the tooltip claimed monitoring was
+ * running over an agent that had clocked out, and nothing failed. A total map cannot
+ * fall through: add a member to `PauseReason` and this stops compiling until it is
+ * given words.
+ */
+const TRAY_TOOLTIP: Record<PauseReason, string> = {
+  revoked: "AEMS — this device has been revoked by an administrator",
+  "not-enrolled": "AEMS — not signed in",
+  "consent-required": "AEMS — consent required, nothing is being collected",
+  "day-ended": "AEMS — finished for today, nothing is being collected",
+  "on-break": "AEMS — on a break, nothing is being collected",
+};
+
 function trayTooltip(status: AgentStatus): string {
-  if (status.revoked) return "AEMS — this device has been revoked by an administrator";
-  if (!status.enrolled) return "AEMS — not signed in";
-  if (status.consentRequired) return "AEMS — consent required, nothing is being collected";
-  if (status.onBreak) return "AEMS — on a break, nothing is being collected";
-  return "AEMS — monitoring active";
+  const paused = pausedBecause(status);
+  return paused === null ? "AEMS — monitoring active" : TRAY_TOOLTIP[paused];
 }
 
 function updateTray(status: AgentStatus): void {

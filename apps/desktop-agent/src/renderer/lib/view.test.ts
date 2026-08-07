@@ -140,6 +140,22 @@ describe("connectionLabel", () => {
     },
   );
 
+  // This screen rendered "You have finished for today" and "Connected" at the same
+  // time: the notice reads `dayEnded` directly, the status row went through
+  // `collecting`, and `collecting` stays true after clock-out because it describes the
+  // consent record. The two halves of one screen disagreed about whether the employee
+  // was being recorded.
+  it.each([true, false])(
+    "says the day is finished rather than Connected (collecting: %s)",
+    (collecting) => {
+      const label = labelOf(status({ dayEnded: true, collecting }));
+
+      expect(label.text).toMatch(/finished/i);
+      expect(label.text).not.toMatch(/connected/i);
+      expect(label.tone).toBe("off");
+    },
+  );
+
   it("asks for consent when collection is paused for no other reason", () => {
     const label = labelOf(status({ collecting: false, consentRequired: true }));
 

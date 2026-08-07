@@ -8,9 +8,10 @@
 import type {
   AgentPermissions,
   AgentStatus,
+  PauseReason,
   PermissionTarget,
 } from "../../shared/types/index.js";
-import { isPermissionBlocked } from "../../shared/types/index.js";
+import { isPermissionBlocked, pausedBecause } from "../../shared/types/index.js";
 
 export type Screen = "login" | "consent" | "status";
 
@@ -38,16 +39,25 @@ export function screenFor(status: AgentStatus): Screen {
   return status.consentRequired ? "consent" : "status";
 }
 
+/** Every way collection can be stopped, said in the employee's words. Total on purpose. */
+const PAUSED_LABEL: Record<PauseReason, ConnectionLabel> = {
+  revoked: { text: "Stopped by your administrator", tone: "off" },
+  "not-enrolled": { text: "Not signed in", tone: "off" },
+  "day-ended": { text: "Finished for today", tone: "off" },
+  "on-break": { text: "On a break — paused", tone: "warn" },
+  "consent-required": { text: "Paused — consent needed", tone: "warn" },
+};
+
 export function connectionLabel(
   status: AgentStatus,
   gaps: readonly PermissionGap[],
 ): ConnectionLabel {
-  if (status.revoked) return { text: "Stopped by your administrator", tone: "off" };
-  if (!status.enrolled) return { text: "Not signed in", tone: "off" };
-  // Ranked above the consent gate: a break is the employee's own decision, and
-  // reading "consent needed" while they are on one would be alarming and wrong.
-  if (status.onBreak) return { text: "On a break — paused", tone: "warn" };
-  if (!status.collecting) return { text: "Paused — consent needed", tone: "warn" };
+  // One source for "is anything being recorded" — see `pausedBecause` — read through a
+  // total map so a new pause reason cannot fall through to "Connected". Assembling the
+  // condition inline is what let this screen report "Connected" directly above its own
+  // "You have finished for today" notice.
+  const paused = pausedBecause(status);
+  if (paused !== null) return PAUSED_LABEL[paused];
 
   // Claiming a plain "Connected" while the OS is blocking capture would tell the
   // employee more is being recorded than actually is.
