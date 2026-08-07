@@ -798,6 +798,9 @@ function emptyTimeline(input: DayTimelineInput, slotSeconds: SlotSeconds): DayTi
     markers: [],
     totals: {
       activeSeconds: 0,
+      productiveSeconds: 0,
+      neutralSeconds: 0,
+      unproductiveSeconds: 0,
       idleSeconds: 0,
       breakSeconds: 0,
       offlineSeconds: 0,
