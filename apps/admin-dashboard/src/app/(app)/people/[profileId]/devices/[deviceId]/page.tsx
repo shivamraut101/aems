@@ -8,7 +8,9 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 
 import { ActivityTimeline, TimelineSkeleton } from "@/components/activity-timeline";
 import { devicesQuery } from "@/components/employee/employee-queries";
+import { PhoneDay } from "@/components/employee/phone-day";
 import { SectionHeading } from "@/components/employee/states";
+import { useDeviceTelemetry } from "../device-queries";
 import { useDayWindow } from "@/components/employee/use-day-window";
 import { clampWindowToNow } from "@/components/timeline/model";
 import { RelativeTime } from "@/components/relative-time";
@@ -81,8 +83,13 @@ function DeviceDay() {
     deviceId,
   );
 
-  const Icon = device?.platform === "android" ? Smartphone : Laptop;
+  const isPhone = device?.platform === "android";
+  const Icon = isPhone ? Smartphone : Laptop;
   const name = device ? device.device_name || device.label : "This device";
+
+  // Battery, network and screen-on time. Only phones send them, and the phone view
+  // leads with them — they are what a handset can answer about a working day.
+  const telemetry = useDeviceTelemetry(deviceId, isPhone === true);
 
   return (
     <div>
@@ -129,6 +136,21 @@ function DeviceDay() {
 
       {day === null || window === null ? (
         <TimelineSkeleton />
+      ) : isPhone ? (
+        /* A phone gets a phone's numbers. Rendering ActivityTimeline here asked it the
+           desktop's questions and answered with structural zeroes — every enrolled
+           handset has idle_events 0, break_events 0, screenshots 0, because Android
+           exposes no idle signal and this app captures no screen. See `PhoneDay`. */
+        <PhoneDay
+          apps={notStarted ? [] : (query.data?.topApps ?? [])}
+          latest={telemetry.data?.latest ?? null}
+          telemetryPending={telemetry.isPending}
+          isLoading={query.isPending && query.fetchStatus === "fetching"}
+          isError={query.isError}
+          error={query.error}
+          onRetry={() => void query.refetch()}
+          dayLabel={day.label}
+        />
       ) : (
         <ActivityTimeline
           timeline={notStarted ? null : query.data}
