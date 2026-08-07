@@ -1,6 +1,6 @@
 import * as FileSystem from "expo-file-system";
 
-import type { ActivityEventInput, BreakEventInput } from "@aems/types";
+import type { ActivityEventInput, BreakEventInput, LocationPointInput } from "@aems/types";
 
 /**
  * Events written to disk before they are sent, and removed only once the API has
@@ -34,12 +34,13 @@ const MAX_PENDING = 2000;
 export interface PendingEvents {
   activity: ActivityEventInput[];
   breaks: BreakEventInput[];
+  locations: LocationPointInput[];
 }
 
-export const NO_PENDING: PendingEvents = { activity: [], breaks: [] };
+export const NO_PENDING: PendingEvents = { activity: [], breaks: [], locations: [] };
 
 export function pendingCount(pending: PendingEvents): number {
-  return pending.activity.length + pending.breaks.length;
+  return pending.activity.length + pending.breaks.length + pending.locations.length;
 }
 
 export async function loadPending(): Promise<PendingEvents> {
@@ -48,7 +49,13 @@ export async function loadPending(): Promise<PendingEvents> {
     if (!info.exists) return NO_PENDING;
 
     const parsed = JSON.parse(await FileSystem.readAsStringAsync(QUEUE_URI)) as PendingEvents;
-    return { activity: parsed.activity ?? [], breaks: parsed.breaks ?? [] };
+    // Each field defaulted separately: a journal written by an older build has no
+    // `locations` key at all, and reading it must not throw away the events it does have.
+    return {
+      activity: parsed.activity ?? [],
+      breaks: parsed.breaks ?? [],
+      locations: parsed.locations ?? [],
+    };
   } catch {
     // An unreadable journal is dropped rather than retried forever. Re-reading a file
     // that will not parse on every cycle is a worse outcome than losing what it held.
@@ -77,11 +84,13 @@ export async function enqueue(events: Partial<PendingEvents>): Promise<PendingEv
   const merged: PendingEvents = {
     activity: dedupe([...current.activity, ...(events.activity ?? [])]),
     breaks: dedupe([...current.breaks, ...(events.breaks ?? [])]),
+    locations: dedupe([...current.locations, ...(events.locations ?? [])]),
   };
 
   const trimmed: PendingEvents = {
     activity: merged.activity.slice(-MAX_PENDING),
     breaks: merged.breaks.slice(-MAX_PENDING),
+    locations: merged.locations.slice(-MAX_PENDING),
   };
 
   const dropped = pendingCount(merged) - pendingCount(trimmed);

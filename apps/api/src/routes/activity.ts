@@ -8,6 +8,8 @@ import {
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
+import { canViewOthers } from "@aems/auth";
+
 import { assertConsent } from "../plugins/context.js";
 import { validationFailure } from "../lib/validation.js";
 
@@ -42,12 +44,35 @@ const breakEventSchema = z.object({
   breakEndAt: z.string().datetime({ offset: true }).nullish(),
 });
 
+/**
+ * §3.5. Bounds are asserted here as well as in the CHECK constraint, so a malformed
+ * fix is a 400 naming the field rather than a 500 from Postgres — the agent classifies
+ * a 500 as retryable, which would wedge the device's queue on a single bad point.
+ */
+const locationPointSchema = z.object({
+  clientEventId: z.string().uuid(),
+  recordedAt: z.string().datetime({ offset: true }),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  accuracyM: z.number().min(0).nullish(),
+});
+
+const locationQuerySchema = z.object({
+  profileId: z.string().uuid().optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  // A trail is read a day at a time; the ceiling stops an unbounded range from
+  // dragging a month of points through the API by accident.
+  limit: z.coerce.number().int().min(1).max(2000).default(500),
+});
+
 const batchSchema = z.object({
   deviceId: z.string().uuid(),
   workSessionId: z.number().int().nullish(),
   activity: z.array(activityEventSchema).max(1000).optional(),
   idle: z.array(idleEventSchema).max(1000).optional(),
   breaks: z.array(breakEventSchema).max(1000).optional(),
+  locations: z.array(locationPointSchema).max(1000).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -345,6 +370,7 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
     let acceptedActivity = 0;
     let acceptedIdle = 0;
     let acceptedBreaks = 0;
+    let acceptedLocations = 0;
 
     if (body.activity?.length) {
       // Categorise here, not on the device. Storing the label keeps `rankApps`, the
@@ -429,15 +455,105 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       acceptedBreaks = data?.length ?? 0;
     }
 
+    if (body.locations?.length) {
+      const { data, error } = await app.supabase
+        .from("location_points")
+        .upsert(
+          body.locations.map((point) => ({
+            ...base,
+            work_session_id: body.workSessionId ?? null,
+            recorded_at: point.recordedAt,
+            latitude: point.latitude,
+            longitude: point.longitude,
+            accuracy_m: point.accuracyM ?? null,
+            client_event_id: point.clientEventId,
+          })),
+          { onConflict: "device_id,client_event_id", ignoreDuplicates: true },
+        )
+        .select("id");
+
+      if (error) {
+        return reply
+          .code(500)
+          .send({ error: "ingest_failed", message: error.message, statusCode: 500 });
+      }
+      acceptedLocations = data?.length ?? 0;
+    }
+
     const submitted =
-      (body.activity?.length ?? 0) + (body.idle?.length ?? 0) + (body.breaks?.length ?? 0);
+      (body.activity?.length ?? 0) +
+      (body.idle?.length ?? 0) +
+      (body.breaks?.length ?? 0) +
+      (body.locations?.length ?? 0);
 
     return {
       acceptedActivity,
       acceptedIdle,
       acceptedBreaks,
-      duplicates: submitted - acceptedActivity - acceptedIdle - acceptedBreaks,
+      acceptedLocations,
+      duplicates:
+        submitted - acceptedActivity - acceptedIdle - acceptedBreaks - acceptedLocations,
     };
+  });
+
+  /**
+   * §3.5 location history for one person over one window.
+   *
+   * The scoping here is the whole access control, not a convenience: this route runs on
+   * the service-role key, which bypasses RLS, so the checks RLS would have made have to
+   * be made in code. Two of them — the requester may only ask about themselves unless
+   * they are a manager, and the company filter is applied to the query rather than to
+   * the answer, so a valid profile id from another tenant returns nothing rather than
+   * somebody else's movements.
+   */
+  app.get("/locations", { preHandler: app.requireUser }, async (request, reply) => {
+    const session = request.session!;
+
+    const parsed = locationQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send(validationFailure(parsed.error, "invalid_query"));
+    }
+
+    const profileId = parsed.data.profileId ?? session.profileId;
+
+    if (profileId !== session.profileId && !canViewOthers(session.role)) {
+      return reply.code(403).send({
+        error: "forbidden",
+        message: "You can only view your own location history",
+        statusCode: 403,
+      });
+    }
+
+    let query = app.supabase
+      .from("location_points")
+      .select("id, device_id, recorded_at, latitude, longitude, accuracy_m, work_session_id")
+      .eq("company_id", session.companyId)
+      .eq("profile_id", profileId)
+      .order("recorded_at", { ascending: false })
+      .limit(parsed.data.limit);
+
+    if (parsed.data.from !== undefined) query = query.gte("recorded_at", parsed.data.from);
+    if (parsed.data.to !== undefined) query = query.lte("recorded_at", parsed.data.to);
+
+    const { data, error } = await query;
+
+    if (error) {
+      return reply
+        .code(500)
+        .send({ error: "locations_unavailable", message: error.message, statusCode: 500 });
+    }
+
+    const points = (data ?? []).map((row) => ({
+      id: row.id,
+      deviceId: row.device_id,
+      recordedAt: row.recorded_at,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      accuracyM: row.accuracy_m,
+      workSessionId: row.work_session_id,
+    }));
+
+    return { points };
   });
 
   /**

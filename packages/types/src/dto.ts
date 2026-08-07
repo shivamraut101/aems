@@ -113,6 +113,22 @@ export interface BreakEventInput {
   breakEndAt?: string | null;
 }
 
+/**
+ * One position fix — `docs/scope.md` §3.5, Android only.
+ *
+ * `accuracyM` is carried rather than dropped because a fix is a claim with an error
+ * bar, and a 2km cell-tower estimate rendered identically to a 5m GPS lock is the
+ * kind of "evidence" that gets someone accused of being somewhere they were not.
+ */
+export interface LocationPointInput {
+  clientEventId: string;
+  recordedAt: string;
+  latitude: number;
+  longitude: number;
+  /** Metres of horizontal uncertainty, or null when the platform did not say. */
+  accuracyM?: number | null;
+}
+
 export interface ScreenshotMetadataInput {
   clientEventId: string;
   capturedAt: string;
@@ -136,12 +152,19 @@ export interface ActivityBatch {
   activity?: ActivityEventInput[];
   idle?: IdleEventInput[];
   breaks?: BreakEventInput[];
+  /**
+   * Rides the same batch as everything else so it passes the same consent gate and the
+   * same idempotency check. A separate endpoint would have been a second door into the
+   * most sensitive table in the product, with its own copy of both.
+   */
+  locations?: LocationPointInput[];
 }
 
 export interface ActivityBatchResult {
   acceptedActivity: number;
   acceptedIdle: number;
   acceptedBreaks: number;
+  acceptedLocations: number;
   /** Rows skipped because their clientEventId was already stored. */
   duplicates: number;
 }

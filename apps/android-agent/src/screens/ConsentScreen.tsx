@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 
 import { PressableScale } from "../components/PressableScale";
+import { checkLocationAccess, requestLocationAccess } from "../location";
 import { useTheme } from "../theme";
 import AemsUsage from "../../modules/aems-usage";
 import type { AgentStatus } from "../state";
@@ -35,6 +36,16 @@ const DISCLOSURE_ITEMS = [
     icon: "refresh-cw" as const,
     description: "Keeps a history of successful connections with the server.",
   },
+  // §3.5. Listed last but stated in the same plain terms as the rest: this is the one
+  // item on the list that follows the person rather than the device, and consent to it
+  // is not something to obtain by omission. "While you are clocked in" is the literal
+  // behaviour — `sync.ts` skips the sample on a break and after the day ends.
+  {
+    text: "Where this device is, while you are clocked in",
+    icon: "map-pin" as const,
+    description:
+      "Records the device's position periodically during work. Not while you are on a break, and not after you finish for the day.",
+  },
 ];
 
 export function ConsentScreen({ status, onAccept, onAccepted }: ConsentScreenProps) {
@@ -48,6 +59,12 @@ export function ConsentScreen({ status, onAccept, onAccepted }: ConsentScreenPro
     try {
       await onAccept();
       if (!AemsUsage.hasUsageAccess()) AemsUsage.requestUsageAccess();
+      // Asked only after consent is recorded, never before: the dialog is Android's, but
+      // the agreement is ours, and prompting for a location grant while the disclosure
+      // above is still unanswered would be collecting the answer before the question.
+      // A refusal here is survivable — `samplePoint` returns null and the rest of the
+      // agent carries on — so nothing is gated on the outcome.
+      if ((await checkLocationAccess()) !== "granted-always") await requestLocationAccess();
       // Starting the foreground service is deliberately *not* done here. `onAccept`
       // has just set `collecting`, and App.tsx starts and stops the service from that
       // one flag — so it also comes back on the launches this handler never sees.

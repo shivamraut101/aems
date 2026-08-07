@@ -552,6 +552,64 @@ export interface Database {
           },
         ];
       };
+      location_points: {
+        Row: {
+          id: number;
+          company_id: string;
+          profile_id: string;
+          device_id: string;
+          work_session_id: number | null;
+          recorded_at: string;
+          latitude: number;
+          longitude: number;
+          accuracy_m: number | null;
+          client_event_id: string;
+          created_at: string;
+        };
+        Insert: {
+          company_id: string;
+          profile_id: string;
+          device_id: string;
+          work_session_id?: number | null;
+          recorded_at: string;
+          latitude: number;
+          longitude: number;
+          accuracy_m?: number | null;
+          client_event_id: string;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["location_points"]["Insert"]>;
+        Relationships: [
+          {
+            foreignKeyName: "location_points_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "location_points_profile_id_fkey";
+            columns: ["profile_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "location_points_device_id_fkey";
+            columns: ["device_id"];
+            isOneToOne: false;
+            referencedRelation: "devices";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "location_points_work_session_id_fkey";
+            columns: ["work_session_id"];
+            isOneToOne: false;
+            referencedRelation: "work_sessions";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       device_telemetry: {
         Row: {
           id: number;

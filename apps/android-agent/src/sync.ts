@@ -9,6 +9,7 @@ import { client } from "./api";
 import { hasEnded, isOnBreak, loadDay } from "./day";
 import { clearPending, enqueue, loadPending, pendingCount } from "./queue";
 import { closeForgottenBreak, ensureWorkSession } from "./session";
+import { samplePoint } from "./location";
 import { clearDeviceCredentials, loadSyncContext, LAST_SYNC_KEY, markRevoked } from "./state";
 import { uuidFrom } from "./uuid";
 import AemsUsage from "../modules/aems-usage";
@@ -61,7 +62,14 @@ export async function runSyncCycle(): Promise<SyncOutcome> {
   // desktop collector — but the queue is still drained, so anything already recorded
   // still reaches the server.
   const observing = !isOnBreak(day) && !hasEnded(day);
-  if (observing) await attempt(() => collectActivity(credentials.deviceId));
+  if (observing) {
+    await attempt(() => collectActivity(credentials.deviceId));
+    // Gated on `observing` for the same reason app usage is, and it matters more here:
+    // a declared break is when someone steps out, and recording where they went is
+    // precisely the collection they were told stops. §3.5 is about where the company's
+    // devices are during work, not about where their holder is at lunch.
+    await attempt(() => collectLocation(credentials.deviceId));
+  }
 
   const flushed = await attempt(() => flushPending(credentials.deviceId, day.workSessionId));
   if (flushed === "revoked") {
@@ -105,6 +113,7 @@ async function flushPending(deviceId: string, workSessionId: number | null): Pro
     workSessionId,
     activity: pending.activity,
     breaks: pending.breaks,
+    locations: pending.locations,
   });
 
   await clearPending();
@@ -215,6 +224,20 @@ async function collectActivity(deviceId: string): Promise<void> {
   // a failed request and nothing else — not a crash, and not a break event, which
   // `UsageStatsManager` cannot be re-asked for.
   await SecureStore.setItemAsync(LAST_ACTIVITY_SYNC_KEY, String(openSessionStartMs ?? endMs));
+}
+
+/**
+ * One position fix per cycle, journalled like everything else.
+ *
+ * It goes through the queue rather than straight to the API so an offline phone — the
+ * exact case §3 describes, a field employee out of coverage — still has its trail when
+ * it reconnects, instead of a gap for precisely the period the feature exists to cover.
+ */
+async function collectLocation(deviceId: string): Promise<void> {
+  const point = await samplePoint(deviceId);
+  if (point === null) return;
+
+  await enqueue({ locations: [point] });
 }
 
 async function loadLastActivitySyncMs(): Promise<number> {

@@ -7,6 +7,12 @@ import { ListRow, ListSection } from "../components/List";
 import { PressableScale } from "../components/PressableScale";
 import { Screen } from "../components/Screen";
 import type { DayTotals } from "../day";
+import {
+  checkLocationAccess,
+  describeCurrentPosition,
+  type CurrentPosition,
+  type LocationAccess,
+} from "../location";
 import type { AgentStatus } from "../state";
 import { useTheme } from "../theme";
 
@@ -21,6 +27,15 @@ interface HomeScreenProps {
 /** The daily target the progress bar is drawn against. */
 const WORK_TARGET_SECONDS = 8 * 3600;
 
+/**
+ * States the error bar on a fix instead of letting a rounded pair of decimals imply a
+ * precision the GPS never claimed. Omitted entirely when the platform gave no accuracy.
+ */
+function accuracyNote(position: CurrentPosition | null): string {
+  if (position?.accuracyM == null) return ".";
+  return ` — accurate to about ${Math.round(position.accuracyM)}m.`;
+}
+
 export function HomeScreen({
   status,
   onStartBreak,
@@ -33,10 +48,34 @@ export function HomeScreen({
 
   const [hasUsageAccess, setHasUsageAccess] = useState(true);
   const [busy, setBusy] = useState<"break" | "day" | null>(null);
+  const [position, setPosition] = useState<CurrentPosition | null>(null);
+  const [locationAccess, setLocationAccess] = useState<LocationAccess | null>(null);
 
   useEffect(() => {
     setHasUsageAccess(AemsUsage.hasUsageAccess());
   }, []);
+
+  /**
+   * Re-read on every change to whether the day is being recorded, so the card cannot sit
+   * showing a position from before a break began — the agent stops sampling then, and a
+   * stale reading left on screen would misrepresent what is being collected.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const access = await checkLocationAccess().catch((): LocationAccess => "denied");
+      const current = access === "denied" ? null : await describeCurrentPosition();
+      if (cancelled) return;
+
+      setLocationAccess(access);
+      setPosition(current);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [status.collecting, status.onBreak, status.dayEnded]);
 
   const totals = useLiveTotals(status);
   const split = splitForDisplay(totals);
@@ -64,6 +103,9 @@ export function HomeScreen({
           ? "Collecting"
           : "Paused";
   const statusIsLive = status.collecting && !status.onBreak && !status.dayEnded;
+  // The exact condition `sync.ts` samples under, so the card cannot claim recording is
+  // happening at a moment the agent has stopped.
+  const recordingLocation = statusIsLive && locationAccess === "granted-always";
 
   return (
     <Screen
@@ -115,6 +157,45 @@ export function HomeScreen({
             <Text style={styles.progressPercentText}>{progressPercent}% of 8h</Text>
           </View>
         </View>
+      </View>
+
+      {/*
+        Current location, directly under the hero — `docs/scope.md` §3.5 shown to the
+        person it describes rather than only to their employer, which is Non-negotiable
+        #3 applied to the most sensitive thing this app records. Whether it is *being*
+        recorded is stated alongside the reading, because "we can see where you are" and
+        "we are storing where you are" are different claims and only one of them is true
+        on a break.
+      */}
+      <View style={styles.locationCard}>
+        <View style={styles.locationHeader}>
+          <Feather
+            name="map-pin"
+            size={16}
+            color={recordingLocation ? theme.colors.emerald : theme.colors.muted}
+          />
+          <Text style={styles.locationLabel}>CURRENT LOCATION</Text>
+        </View>
+
+        <Text style={styles.locationValue} numberOfLines={2}>
+          {locationAccess === "denied"
+            ? "Location is turned off"
+            : (position?.label ?? "Locating…")}
+        </Text>
+
+        <Text style={styles.locationDetail}>
+          {locationAccess === "denied"
+            ? "Grant location access on the Device tab to record where company devices are."
+            : locationAccess === "granted-foreground"
+              ? "Set to “While using the app” — position is only recorded while this app is open."
+              : recordingLocation
+                ? `Recorded while you are clocked in${accuracyNote(position)}`
+                : status.onBreak
+                  ? "Not being recorded while you are on a break."
+                  : status.dayEnded
+                    ? "Not being recorded — you have finished for today."
+                    : "Not being recorded until you start your day."}
+        </Text>
       </View>
 
       {/*
@@ -470,6 +551,21 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
     progressLabels: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
     progressLabelText: { ...typography.footnote, color: colors.muted },
     progressPercentText: { ...typography.footnote, color: colors.foreground, fontWeight: "600" },
+
+    // Same card shell as the hero, one step quieter: this is context for the reading
+    // above it, not a second headline competing with today's time.
+    locationCard: {
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: radius,
+      padding: spacing.md,
+      gap: spacing.xs,
+    },
+    locationHeader: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+    locationLabel: { ...typography.caption, color: colors.muted, letterSpacing: 0.6, fontWeight: "600" },
+    locationValue: { ...typography.headline, color: colors.foreground },
+    locationDetail: { ...typography.footnote, color: colors.muted },
 
     section: { gap: spacing.sm },
     sectionHeader: { ...typography.caption, color: colors.muted, letterSpacing: 0.6, marginLeft: spacing.xs },

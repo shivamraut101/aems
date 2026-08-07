@@ -41,12 +41,22 @@ const COLLECTED = [
     label: "Sync history",
     detail: "When this phone last reached the server, so your company knows it is online.",
   },
+  {
+    icon: "map-pin" as const,
+    label: "Where this device is",
+    detail:
+      "The phone's position, recorded periodically while you are clocked in. Paused on a break and stopped when your day ends.",
+  },
 ];
 
+// This list used to promise "Your location", and that promise stopped being true the
+// day §3.5 was turned on. A stale reassurance on this screen is worse than no screen at
+// all — it is the document the employee is entitled to rely on, so what moved into
+// COLLECTED above had to come out of here in the same change, not the next one.
 const NOT_COLLECTED = [
   "The contents of messages, emails, photos or files",
   "Anything you type, including passwords",
-  "Your location",
+  "Where you are on a break, or once your day has ended",
   "Personal use outside a working day you have started",
 ];
 

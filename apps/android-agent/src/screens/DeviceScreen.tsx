@@ -7,6 +7,7 @@ import { AppState, StyleSheet, Text, View } from "react-native";
 import AemsUsage, { type DeviceSnapshot } from "../../modules/aems-usage";
 import { ListRow, ListSection } from "../components/List";
 import { Screen } from "../components/Screen";
+import { checkLocationAccess, requestLocationAccess, type LocationAccess } from "../location";
 import { useTheme } from "../theme";
 
 /**
@@ -28,6 +29,7 @@ interface Readout {
   network: Network.NetworkStateType;
   usageAccess: boolean;
   notificationsGranted: boolean;
+  locationAccess: LocationAccess;
 }
 
 export function DeviceScreen() {
@@ -45,6 +47,10 @@ export function DeviceScreen() {
         Notifications.getPermissionsAsync().catch(() => ({ granted: false })),
       ]);
 
+    const locationAccess = await checkLocationAccess().catch(
+      (): LocationAccess => "denied",
+    );
+
     setReadout({
       snapshot,
       batteryLevel,
@@ -52,6 +58,7 @@ export function DeviceScreen() {
       network: network.type ?? Network.NetworkStateType.UNKNOWN,
       usageAccess: AemsUsage.hasUsageAccess(),
       notificationsGranted: notificationPermission.granted,
+      locationAccess,
     });
   }, []);
 
@@ -142,6 +149,31 @@ export function DeviceScreen() {
             readout?.notificationsGranted === false
               ? () => void Notifications.requestPermissionsAsync()
               : undefined
+          }
+        />
+        {/*
+          Three states rather than two, because "granted" and "granted while the app is
+          open" fail differently and a single warning would hide which one is in force.
+          Foreground-only is the quiet case worth naming: the app looks fine, and the
+          trail simply stops whenever the phone goes in a pocket.
+        */}
+        <ListRow
+          icon={readout?.locationAccess === "granted-always" ? "check-circle" : "alert-triangle"}
+          iconColor={
+            readout?.locationAccess === "granted-always" ? theme.colors.emerald : theme.colors.amber
+          }
+          label="Location"
+          detail={
+            readout?.locationAccess === "granted-always"
+              ? "Working. Position is recorded while you are clocked in."
+              : readout?.locationAccess === "granted-foreground"
+                ? "Set to 'While using the app'. Position is only recorded while this app is open — choose 'Allow all the time' to record during work."
+                : "Turned off. No location is recorded."
+          }
+          onPress={
+            readout?.locationAccess === "granted-always"
+              ? undefined
+              : () => void requestLocationAccess().then(load)
           }
         />
       </ListSection>
