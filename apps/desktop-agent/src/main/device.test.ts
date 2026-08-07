@@ -9,6 +9,7 @@ import {
   parseMacModel,
   parseWindowsModel,
   parseWindowsUninstallKeys,
+  readInstalledMemoryBytes,
   readMachineModel,
 } from "./device.js";
 import type { DeviceHostFacts } from "./device.js";
@@ -175,6 +176,49 @@ describe("readMachineModel", () => {
   it("asks nothing at all on a platform the agent does not enrol", async () => {
     const exec = vi.fn(() => Promise.resolve(""));
     expect(await readMachineModel("linux", exec)).toBeNull();
+    expect(exec).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Reported from a real machine: a Ryzen 5 5500H laptop with 8 GB fitted listed "6 GB".
+ *
+ * `os.totalmem()` is memory *available to the OS*, and integrated Radeon graphics take
+ * their share out of exactly that. An inventory column answers "what is in this
+ * machine", so it has to come from the DIMMs.
+ */
+describe("readInstalledMemoryBytes", () => {
+  /** `wmic memorychip get Capacity` on a two-DIMM machine: header, then one per stick. */
+  const WMIC_OUTPUT = "Capacity    \r\n8589934592  \r\n8589934592  \r\n\r\n";
+
+  it("sums the DIMMs on Windows and reads hw.memsize on macOS", async () => {
+    const calls: string[] = [];
+    const exec = (file: string, args: string[]): Promise<string> => {
+      calls.push(`${file} ${args.join(" ")}`);
+      return Promise.resolve(file === "wmic" ? WMIC_OUTPUT : "17179869184\n");
+    };
+
+    // 16 GB, not the 15.65 GB `totalmem()` reports on the same machine.
+    expect(await readInstalledMemoryBytes("win32", exec)).toBe(17_179_869_184);
+    expect(await readInstalledMemoryBytes("darwin", exec)).toBe(17_179_869_184);
+    expect(calls).toEqual(["wmic memorychip get Capacity", "/usr/sbin/sysctl -n hw.memsize"]);
+  });
+
+  it("yields null when wmic is missing, so the caller can fall back", async () => {
+    // wmic is deprecated and absent from the newest Windows builds. A slightly low
+    // number from `totalmem()` beats an empty column.
+    const absent = (): Promise<string> => Promise.reject(new Error("not recognized"));
+    expect(await readInstalledMemoryBytes("win32", absent)).toBeNull();
+  });
+
+  it("yields null for output carrying no capacities at all", async () => {
+    const exec = () => Promise.resolve("Capacity    \r\n\r\n");
+    expect(await readInstalledMemoryBytes("win32", exec)).toBeNull();
+  });
+
+  it("asks nothing on a platform the agent does not enrol", async () => {
+    const exec = vi.fn(() => Promise.resolve(""));
+    expect(await readInstalledMemoryBytes("linux", exec)).toBeNull();
     expect(exec).not.toHaveBeenCalled();
   });
 });
