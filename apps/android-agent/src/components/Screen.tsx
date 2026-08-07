@@ -9,7 +9,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { TAB_BAR_CONTENT_INSET } from "./TabBar";
+import { useTabBarContentInset } from "./TabBar";
 import { useTheme } from "../theme";
 
 const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
@@ -58,6 +58,7 @@ export function Screen({
 }: ScreenProps) {
   const theme = useTheme();
   const styles = createStyles(theme);
+  const tabBarInset = useTabBarContentInset();
 
   const scrollY = useSharedValue(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -123,7 +124,7 @@ export function Screen({
         scrollEventThrottle={16}
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: tabbed ? TAB_BAR_CONTENT_INSET + theme.spacing.lg : theme.spacing.xl },
+          { paddingBottom: tabbed ? tabBarInset + theme.spacing.lg : theme.spacing.xl },
         ]}
         refreshControl={
           onRefresh ? (
