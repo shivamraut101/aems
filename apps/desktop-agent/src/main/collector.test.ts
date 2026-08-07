@@ -1075,6 +1075,41 @@ describe("ending the day", () => {
     expect(h.sessions.current).toBeNull();
   });
 
+  it("records nothing at all once the day is over — screen, keyboard or camera", async () => {
+    // The button says "End day" and the tray says "finished for today, nothing is being
+    // collected". This is the test that those two sentences are true, rather than a
+    // session id going null while the watchers keep running. The sibling assertion for
+    // a break ("records nothing about what is on screen during a declared break")
+    // existed; the same one for a finished day did not, which is how three surfaces
+    // came to claim monitoring over a stopped loop without a single test failing.
+    const h = harness();
+    await h.collector.tick(at(0));
+
+    const capturesBefore = h.capturer.calls;
+    await h.collector.endDay(at(60));
+
+    h.focus.sample = {
+      appName: "chrome",
+      windowTitle: "Barclays | Personal Banking",
+      url: "https://bank.example.com/accounts",
+    };
+    h.idleSeconds.value = 9_999;
+
+    const idleBefore = sentIdle(h).length;
+
+    await h.collector.tick(at(120));
+    await h.collector.tick(at(600));
+    await h.collector.shutdown(at(900));
+
+    const leaked = sentActivity(h).filter(
+      (event) => event.appName === "chrome" || event.windowTitle?.includes("Barclays") === true,
+    );
+
+    expect(leaked).toEqual([]);
+    expect(h.capturer.calls).toBe(capturesBefore);
+    expect(sentIdle(h).length).toBe(idleBefore);
+  });
+
   it("is idempotent, so a double click cannot close a second session", async () => {
     const h = harness();
     await h.collector.tick(at(0));
