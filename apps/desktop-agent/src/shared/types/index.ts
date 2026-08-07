@@ -268,8 +268,47 @@ export function isIndicatorRoute(hash: string): boolean {
   return hash === INDICATOR_HASH;
 }
 
+/**
+ * Why nothing is being recorded, or null while it is.
+ *
+ * The single answer to "is this agent collecting right now", and the reason this
+ * exists as a function rather than as a condition each caller assembles.
+ *
+ * `status.collecting` does NOT mean what its name suggests. It is `mayCollect(config)`
+ * — whether the *consent record* permits collection — and it stays true through a
+ * break and through a finished day, because neither of those touches consent. Every
+ * surface that reports collection therefore has to subtract the pause reasons itself,
+ * and three of them independently forgot to subtract `dayEnded`: the indicator pill
+ * read "Monitoring", the tray tooltip read "monitoring active", and the status screen
+ * read "Connected", all while `Collector.run` was returning early and recording
+ * nothing. Three lies from one missing clause, on the surfaces non-negotiable #2 is
+ * made of.
+ *
+ * So the clause lives here once. A fourth pause reason changes this function and
+ * nothing else, and the compiler names every caller that has to handle it.
+ *
+ * Ordered most-terminal first, so a revoked device is never described as merely
+ * needing consent. `day-ended` outranks `on-break` because ending the day is offered
+ * *from* a break — "finished for today" is the truer of the two statements.
+ */
+export type PauseReason =
+  | "not-enrolled"
+  | "revoked"
+  | "day-ended"
+  | "on-break"
+  | "consent-required";
+
+export function pausedBecause(status: AgentStatus): PauseReason | null {
+  if (!status.enrolled) return "not-enrolled";
+  if (status.revoked) return "revoked";
+  if (status.dayEnded) return "day-ended";
+  if (status.onBreak) return "on-break";
+  if (!status.collecting) return "consent-required";
+  return null;
+}
+
 /** Why the indicator is not on screen. Carried so a hidden indicator can be logged. */
-export type IndicatorHiddenReason = "not-enrolled" | "consent-required" | "revoked" | "on-break";
+export type IndicatorHiddenReason = PauseReason;
 
 export type IndicatorTone = "recording" | "limited";
 
@@ -289,12 +328,8 @@ export type IndicatorState =
  * as merely needing consent.
  */
 export function indicatorStateFor(status: AgentStatus): IndicatorState {
-  if (!status.enrolled) return { visible: false, reason: "not-enrolled" };
-  if (status.revoked) return { visible: false, reason: "revoked" };
-  // Ranked above the consent gate because a break is the employee's own decision and
-  // `collecting` stays true through one — it describes the consent record, not the loop.
-  if (status.onBreak) return { visible: false, reason: "on-break" };
-  if (!status.collecting) return { visible: false, reason: "consent-required" };
+  const paused = pausedBecause(status);
+  if (paused !== null) return { visible: false, reason: paused };
 
   if (hasPermissionGap(status.permissions)) {
     return { visible: true, tone: "limited", label: "Monitoring — limited" };

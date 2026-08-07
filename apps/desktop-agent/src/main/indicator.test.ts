@@ -64,6 +64,22 @@ describe("indicatorStateFor", () => {
     expect(state).toEqual({ visible: false, reason: "on-break" });
   });
 
+  // Reported from a real desktop: End day was pressed, the loop stopped recording, and
+  // the pill went on saying "Monitoring". `collecting` is `mayCollect(config)` — the
+  // consent record — and ending the day does not touch consent, so every surface that
+  // forgot to subtract `dayEnded` claimed collection over a stopped agent.
+  it("stays off after the employee has ended their day", () => {
+    const state = indicatorStateFor(status({ collecting: true, dayEnded: true }));
+    expect(state).toEqual({ visible: false, reason: "day-ended" });
+  });
+
+  // Ending the day is offered *from* a break, so the two overlap. "Finished for today"
+  // is the truer of the two, and a reader must not be told they are merely paused.
+  it("prefers the finished day over the break it was ended from", () => {
+    const state = indicatorStateFor(status({ collecting: true, onBreak: true, dayEnded: true }));
+    expect(state).toEqual({ visible: false, reason: "day-ended" });
+  });
+
   // The flags above are how collection stops *today*. Keying the last word on
   // `collecting` itself means a future stop signal cannot light the pill by omission.
   it("stays off whenever the agent reports it is not collecting, whatever else it says", () => {
