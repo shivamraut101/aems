@@ -278,8 +278,19 @@ client's call.
 4. **Revocation is immediate.** Withdrawn consent, a disabled employee, or a revoked
    device stops collection on the agent's next request.
 5. **The audit log is append-only.** No update or delete policy exists on it.
-6. **Location tracking is not implemented.** `docs/scope.md` marks it optional and
-   client-dependent. Do not add it without an explicit decision.
+6. **Location tracking is in scope as of 2026-08-07, and is the most sensitive thing
+   this product collects.** `docs/scope.md` §3.5 marks it optional and client-dependent;
+   the client asked for it by name on 2026-08-07, choosing current location **plus
+   history** and collection while the app is closed. Geofencing — the third item in
+   §3.5 — was offered and deferred, and no zones table exists.
+   Three things follow and none of them are optional:
+   - **An employee sees their own trail and nobody else's.** Non-negotiable #3 applied
+     to the one dataset where getting it wrong follows someone home.
+   - **Points are written only against a device whose consent is in force**, gated by
+     `assertConsent` on the same path as every other event.
+   - **Retention is deliberately unset.** A location history kept forever is a
+     different product from one kept for 30 days. That is the client's call to make
+     explicitly, and it is still outstanding — chase it before the demo.
 
 ## Scope decisions taken after the documents were locked
 
