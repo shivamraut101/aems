@@ -32,7 +32,13 @@ import { queryViewState } from "@/components/states";
 import { describeError, useApiQuery, useSession, type DeviceRow } from "@/lib/api";
 import { devicesForProfile, gigabytes, osLabel, platformLabel } from "@/lib/queries/usage";
 
-import { sortApplications, useDeviceApplications, useRevokeDevice } from "./device-queries";
+import {
+  sortApplications,
+  useDeviceApplications,
+  useDeviceTelemetry,
+  useRevokeDevice,
+  type DeviceTelemetryRow,
+} from "./device-queries";
 
 /**
  * Presence, once.
@@ -150,11 +156,17 @@ function Lead({ devices }: { devices: DeviceRow[] }) {
 }
 
 function DevicePanel({ device }: { device: DeviceRow }) {
-  const Icon = device.platform === "android" ? Smartphone : Laptop;
+  const isPhone = device.platform === "android";
+  const Icon = isPhone ? Smartphone : Laptop;
   const status = DEVICE_STATUS[device.status];
 
   const { data: session } = useSession();
   const [revoking, setRevoking] = useState(false);
+
+  // Only phones send these. Fetching for a laptop would be a request that can only
+  // ever answer `null`.
+  const telemetry = useDeviceTelemetry(device.id, isPhone);
+  const latest = telemetry.data?.latest ?? null;
 
   // Revoking is `requireSuperAdmin` on the API. This only stops a manager being
   // offered a button that ends in a 403.
@@ -198,9 +210,25 @@ function DevicePanel({ device }: { device: DeviceRow }) {
 
       {/* A definition list rather than a table: these are facts about one machine, not
           rows to compare against each other. */}
+      {/* Phones report live state a laptop has no equivalent for — battery, network,
+          screen-on time — and cannot report a CPU model at all. Rendering one grid for
+          both made "Android does not expose this" indistinguishable from "collection
+          failed": a permanent `CPU —` reads as a gap rather than as a category error.
+          So the phone gets the fields it actually has, and is not asked the rest. */}
+      {isPhone ? (
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3.5 px-4 py-4 text-sm sm:grid-cols-4 sm:px-5">
+          <Spec label="Battery" value={batteryLabel(latest, telemetry.isPending)} />
+          <Spec label="Network" value={networkLabel(latest, telemetry.isPending)} />
+          <Spec label="Screen on today" value={screenOnLabel(latest, telemetry.isPending)} />
+          <Spec label="Storage free" value={freeStorageLabel(latest, device, telemetry.isPending)} />
+        </dl>
+      ) : null}
+
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3.5 px-4 py-4 text-sm sm:grid-cols-3 sm:px-5 lg:grid-cols-4">
         <Spec label="Operating system" value={osLabel(device.platform, device.os_version)} />
-        <Spec label="CPU" value={device.cpu?.trim() || null} />
+        {/* Android exposes no CPU model, so the phone is not asked. A dash here is
+            permanent and says nothing a reader can act on. */}
+        {isPhone ? null : <Spec label="CPU" value={device.cpu?.trim() || null} />}
         <Spec label="Memory" value={gigabytes(device.ram_mb)} />
         <Spec label="Storage" value={gigabytes(device.storage_mb)} />
         <Spec label="Agent" value={device.agent_version?.trim() || null} />
@@ -208,20 +236,36 @@ function DevicePanel({ device }: { device: DeviceRow }) {
         <Spec label="Device label" value={device.label} />
         <Spec label="Device ID" value={device.id} mono />
         {/* Scope §7 lists installed applications as part of desktop inventory. The
-            agent has been reporting them since enrolment; nothing read them back. */}
+            agent has been reporting them since enrolment; nothing read them back.
+            On Android this is not the same list: since API 30 the full inventory needs
+            QUERY_ALL_PACKAGES, which this app does not request, so only apps that were
+            actually used appear. Labelled differently so the two are not compared. */}
         <Spec
-          label="Applications"
+          label={isPhone ? "Apps seen" : "Applications"}
           value={
             applications.isPending
               ? "Reading…"
               : applications.isError
                 ? "Unavailable"
                 : installed.length === 0
-                  ? "None reported"
+                  ? isPhone
+                    ? "Usage access not granted"
+                    : "None reported"
                   : `${installed.length} reported`
           }
         />
       </dl>
+
+      {/* Said once, plainly, rather than left to be inferred from four empty tabs.
+          docs/design.md positions this as workforce intelligence rather than
+          surveillance, and the honest form of that is stating what is NOT collected —
+          this is also the disclosure the employee sees on their own phone. */}
+      {isPhone ? (
+        <p className="border-t px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          Phones do not record screenshots, window titles or websites. What is collected
+          is app usage, screen-on time and the device readings above.
+        </p>
+      ) : null}
 
       {installed.length > 0 ? <InstalledApplications rows={installed} /> : null}
 
@@ -358,6 +402,66 @@ function RevokeDeviceDialog({ device, onClose }: { device: DeviceRow; onClose: (
  * An unreported value renders as a dash, never as an empty cell: an agent that has not
  * sent a CPU string and a machine with no CPU must not look the same.
  */
+/**
+ * The four phone readings, each said only when it is actually known.
+ *
+ * `null` renders as an em dash, which is right here and wrong on the desktop grid:
+ * these are live values that legitimately have not arrived yet, not fields the
+ * platform cannot answer. "Reading…" while the request is in flight keeps the two
+ * apart, because a phone that has not checked in and a phone with a flat battery must
+ * not look the same.
+ */
+function batteryLabel(row: DeviceTelemetryRow | null, pending: boolean): string | null {
+  if (pending) return "Reading…";
+  if (!row || row.battery_level === null) return null;
+  return `${String(row.battery_level)}%${row.battery_charging === true ? " · charging" : ""}`;
+}
+
+const NETWORK_LABEL: Record<string, string> = {
+  wifi: "Wi-Fi",
+  cellular: "Mobile data",
+  ethernet: "Ethernet",
+  offline: "No connection",
+};
+
+function networkLabel(row: DeviceTelemetryRow | null, pending: boolean): string | null {
+  if (pending) return "Reading…";
+  if (!row?.network_type) return null;
+  return NETWORK_LABEL[row.network_type] ?? row.network_type;
+}
+
+/**
+ * Today's total, from the newest sample — never a sum.
+ *
+ * `screen_active_seconds` accumulates from local midnight and is reset by the agent at
+ * the day boundary, so the latest row already IS the day's figure. Migration …0015
+ * carries the same warning on the column itself.
+ */
+function screenOnLabel(row: DeviceTelemetryRow | null, pending: boolean): string | null {
+  if (pending) return "Reading…";
+  const seconds = row?.screen_active_seconds;
+  if (seconds === null || seconds === undefined) return null;
+
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return hours > 0 ? `${String(hours)}h ${String(minutes)}m` : `${String(minutes)}m`;
+}
+
+/** Free space against the total, because 4 GB free means nothing without the capacity. */
+function freeStorageLabel(
+  row: DeviceTelemetryRow | null,
+  device: DeviceRow,
+  pending: boolean,
+): string | null {
+  if (pending) return "Reading…";
+  const free = row?.storage_free_mb;
+  if (free === null || free === undefined) return null;
+
+  const freeGb = Math.round(free / 1024);
+  const total = device.storage_mb;
+  return total ? `${String(freeGb)} of ${String(Math.round(total / 1024))} GB` : `${String(freeGb)} GB`;
+}
+
 function Spec({ label, value, mono }: { label: string; value: string | null; mono?: boolean }) {
   const text = value && value !== "—" ? value : null;
 
