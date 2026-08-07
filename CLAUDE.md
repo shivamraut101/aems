@@ -234,11 +234,21 @@ strings. Run them with `pnpm check` before any push.
 | --- | --- |
 | `pnpm check:wiring` | A table, column or embed the API or an Edge Function names that the schema does not have |
 | `pnpm check:routes` | An `/api/...` path the dashboard or SDK calls that Fastify never registers |
+| `pnpm check:schema` | A table the API names that the **live database** does not have — i.e. a migration committed but never applied |
 
 The second exists because that failure already shipped: the dashboard called
 `GET /api/analytics/insights` and `GET /api/policies/current`, neither of which
 existed, and both 404s rendered as ordinary empty states — so the AI Insights page
 and the Settings policy block were permanently blank with nothing reporting an error.
+
+So did the third. `…0014_location_tracking.sql` was written, reviewed and committed
+but never applied, and `GET /api/activity/locations` answered `500 Could not find the
+table 'public.location_points' in the schema cache` to every caller. The first two
+checks could not see it — both read the schema this repo *believes* in, and so does
+the code, so a migration that exists on disk and nowhere else looks perfectly wired.
+`check:schema` is the only one that asks the database instead. It **skips**, rather
+than failing, without `SUPABASE_SERVICE_ROLE_KEY` or a network, so a contributor with
+no production credentials can still run `pnpm check`.
 
 ---
 
