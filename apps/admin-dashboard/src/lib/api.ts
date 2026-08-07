@@ -376,6 +376,13 @@ export interface DeviceRow {
   status: "active" | "offline" | "revoked";
   last_seen_at: string | null;
   enrolled_at: string;
+  /**
+   * The machine this person's working hours are computed from (migration …0016).
+   *
+   * At most one per person. When none is set, the day is the union across all their
+   * devices — which is what every day before this was computed with.
+   */
+  is_primary: boolean;
 }
 
 // ---------------------------------------------------------------------------

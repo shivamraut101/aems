@@ -42,6 +42,7 @@ function device(overrides: Partial<DeviceRow> = {}): DeviceRow {
     device_name: "ADA-WIN-01",
     os_version: "11",
     agent_version: "0.1.0",
+    is_primary: false,
     model: "ThinkPad X1",
     cpu: "Intel i7",
     ram_mb: 16384,

@@ -11,6 +11,8 @@ import {
   TableRow,
 } from "@aems/ui";
 import { Laptop, ShieldOff, Smartphone } from "lucide-react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import {
@@ -37,8 +39,10 @@ import {
   useDeviceApplications,
   useDeviceTelemetry,
   useRevokeDevice,
+  useSetPrimaryDevice,
   type DeviceTelemetryRow,
 } from "./device-queries";
+import { dayHref } from "@/components/employee/tabs";
 
 /**
  * Presence, once.
@@ -168,6 +172,14 @@ function DevicePanel({ device }: { device: DeviceRow }) {
   const telemetry = useDeviceTelemetry(device.id, isPhone);
   const latest = telemetry.data?.latest ?? null;
 
+  const search = useSearchParams();
+  const primary = useSetPrimaryDevice();
+  // `requireManager` on the API. This only avoids offering an employee reading their
+  // own devices a button that ends in a 403.
+  const canSetPrimary =
+    (session?.role === "super_admin" || session?.role === "manager") &&
+    device.status !== "revoked";
+
   // Revoking is `requireSuperAdmin` on the API. This only stops a manager being
   // offered a button that ends in a 403.
   const canRevoke = session?.role === "super_admin" && device.status !== "revoked";
@@ -193,6 +205,37 @@ function DevicePanel({ device }: { device: DeviceRow }) {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          {/* The day view for this one machine. Everything above this row answers
+              "what is this device"; this answers "what did it do", which is the
+              question the seven person-level tabs could not be asked. */}
+          <Link
+            href={dayHref(
+              `/people/${device.profile_id}/devices/${device.id}`,
+              search.toString(),
+              search.get("date"),
+            )}
+            className="text-xs font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+          >
+            View activity
+          </Link>
+
+          {device.is_primary ? (
+            <Badge variant="secondary">Primary</Badge>
+          ) : canSetPrimary ? (
+            <button
+              type="button"
+              onClick={() => primary.mutate(device.id)}
+              disabled={primary.isPending}
+              className="rounded text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              // Said in full here rather than as a bare "Make primary", because the
+              // consequence is not obvious from the words: it moves which machine
+              // this person's reported hours are computed from.
+              title="Compute this person's working hours from this device"
+            >
+              {primary.isPending ? "Setting…" : "Make primary"}
+            </button>
+          ) : null}
+
           <span className="tabular text-xs text-muted-foreground">
             Last heartbeat <RelativeTime iso={device.last_seen_at} />
           </span>

@@ -13,6 +13,7 @@ function device(overrides: Partial<MyDeviceRow> & Pick<MyDeviceRow, "id" | "prof
     device_name: "EVAN-WIN11",
     os_version: "11",
     agent_version: "0.1.0",
+    is_primary: false,
     model: null,
     cpu: null,
     ram_mb: null,

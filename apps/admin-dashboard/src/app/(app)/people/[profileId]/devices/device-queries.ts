@@ -106,6 +106,34 @@ export function sortApplications(rows: readonly DeviceApplicationRow[]): DeviceA
  * screen is a claim that a machine has stopped collecting, and showing it before the
  * server agrees is the one lie a monitoring product cannot afford.
  */
+/**
+ * `POST /api/devices/:deviceId/primary` — names the machine that defines this
+ * person's working hours (migration …0016).
+ *
+ * Not optimistic. The same rule as revoking: this changes the hours a person is
+ * judged on, and showing the badge before the server agrees would state something
+ * about somebody's day that might not be true.
+ *
+ * Invalidates the timeline as well as the device list, because the number on every
+ * other tab is computed from whichever device this now is.
+ */
+export function useSetPrimaryDevice() {
+  const queryClient = useQueryClient();
+
+  return useMutation<unknown, unknown, string>({
+    mutationFn: (deviceId) =>
+      apiFetch<unknown>(`/api/devices/${encodeURIComponent(deviceId)}/primary`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["devices"] });
+      void queryClient.invalidateQueries({ queryKey: ["timeline"] });
+      void queryClient.invalidateQueries({ queryKey: ["analytics"] });
+    },
+    retry: false,
+  });
+}
+
 export function useRevokeDevice() {
   const queryClient = useQueryClient();
 
