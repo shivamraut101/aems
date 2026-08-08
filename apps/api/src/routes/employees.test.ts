@@ -8,6 +8,7 @@ import {
   managerAssignmentDenial,
   newTemporaryPassword,
   offboardingDenial,
+  roleChangeDenial,
   rosterQuerySchema,
   updateSchema,
   type AuthAdminPort,
@@ -261,6 +262,41 @@ describe("offboardingDenial", () => {
     expect(offboardingDenial({ id: ADMIN, role: "super_admin" }, ADMIN, 0)?.error).toBe(
       "cannot_deactivate_self",
     );
+  });
+});
+
+/**
+ * The second door into the same unrecoverable state.
+ *
+ * `offboardingDenial` stops the last super admin being deactivated. This stops them
+ * demoting themselves, which locks a company out just as completely — no route promotes
+ * anyone without an existing super admin to call it, so the only way back is
+ * hand-written SQL against production.
+ *
+ * The guard was already in the route and had no test at all, which is how a five-line
+ * conditional inside a handler quietly survives a refactor that removes it.
+ */
+describe("roleChangeDenial", () => {
+  it("refuses a super admin demoting themselves", () => {
+    for (const role of ["manager", "employee"] as const) {
+      expect(roleChangeDenial(ADMIN, ADMIN, role)?.error).toBe("cannot_demote_self");
+    }
+  });
+
+  it("allows demoting somebody else", () => {
+    // Safe by construction: the caller is a super admin and cannot demote themselves,
+    // so at least one always survives the change.
+    expect(roleChangeDenial(SUBJECT, ADMIN, "employee")).toBeNull();
+  });
+
+  it("allows a no-op that leaves you a super admin", () => {
+    expect(roleChangeDenial(ADMIN, ADMIN, "super_admin")).toBeNull();
+  });
+
+  it("does not touch a patch that never mentions a role", () => {
+    // The regression this exists to prevent: an admin correcting their own department
+    // or display name must not be refused because the guard fired on an absent field.
+    expect(roleChangeDenial(ADMIN, ADMIN, undefined)).toBeNull();
   });
 });
 

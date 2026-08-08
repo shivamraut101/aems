@@ -210,6 +210,43 @@ export function offboardingDenial(
 }
 
 /**
+ * The other way a company locks itself out: the last super admin demotes themselves.
+ *
+ * Same unrecoverable outcome as deactivating them — no route promotes anyone without an
+ * existing super admin to call it, so the only fix is hand-written SQL against
+ * production — reached by a different door. `offboardingDenial` guards deactivation and
+ * says nothing about roles, which is why this is its own function rather than a third
+ * branch there: they are called from different handlers and one must not start
+ * depending on the other's argument list.
+ *
+ * Lives beside its sibling deliberately. Somebody auditing "what stops a company losing
+ * its last admin" should find both answers in one place, and the reason this one had no
+ * test for so long is that it was five lines inside a route handler where nobody looking
+ * for a lockout guard would think to check.
+ *
+ * Only self-demotion is refused. Demoting *another* super admin is safe by construction:
+ * the caller is a super admin and cannot demote themselves, so at least one always
+ * survives the change.
+ */
+export function roleChangeDenial(
+  targetProfileId: string,
+  actorProfileId: string,
+  nextRole: Tables<"profiles">["role"] | undefined,
+): RouteDenial | null {
+  // `undefined` means the patch does not touch the role at all — a name or department
+  // edit must not be refused because the editor happens to be looking at themselves.
+  if (nextRole === undefined) return null;
+  if (targetProfileId !== actorProfileId) return null;
+  if (nextRole === "super_admin") return null;
+
+  return {
+    statusCode: 400,
+    error: "cannot_demote_self",
+    message: "Ask another super admin to change your role",
+  };
+}
+
+/**
  * A first password an admin can read out loud.
  *
  * Returned once, in the create response, and never stored, logged or written to
@@ -628,12 +665,14 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const body = parsed.data;
 
-    // Demoting yourself could leave a company with no super admin at all.
-    if (profileId === session.profileId && body.role && body.role !== "super_admin") {
-      return reply.code(400).send({
-        error: "cannot_demote_self",
-        message: "Ask another super admin to change your role",
-        statusCode: 400,
+    // Demoting yourself could leave a company with no super admin at all — the same
+    // unrecoverable state `offboardingDenial` guards, reached by a different door.
+    const roleDenial = roleChangeDenial(profileId, session.profileId, body.role);
+    if (roleDenial) {
+      return reply.code(roleDenial.statusCode).send({
+        error: roleDenial.error,
+        message: roleDenial.message,
+        statusCode: roleDenial.statusCode,
       });
     }
 
