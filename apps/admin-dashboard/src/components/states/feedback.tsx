@@ -1,5 +1,5 @@
-import { cn } from "@aems/ui";
-import { AlertTriangle, Inbox, RotateCw } from "lucide-react";
+import { Badge, cn } from "@aems/ui";
+import { AlertTriangle, EyeOff, Inbox, RotateCw } from "lucide-react";
 
 /**
  * Empty and error, as two visibly different surfaces.
@@ -200,6 +200,139 @@ export function DegradedNotice({
   );
 }
 
+/** One data type an administrator switched off, and the decision behind it. */
+export interface CollectionOffType {
+  /** As a reader knows the column — "Screenshots", not "screenshots". */
+  label: string;
+  /** Who decided. Null when the profile behind the decision no longer exists. */
+  byName: string | null;
+  /** When they decided. Null only where the surface genuinely holds no timestamp. */
+  atISO: string | null;
+}
+
+/**
+ * "This was switched off" — the third state, and the only one that names a person.
+ *
+ * A monitoring product has three reasons a figure can be missing, and they are not
+ * interchangeable:
+ *
+ *  - **Nothing recorded.** The day was quiet, or the agent was not running. That is
+ *    {@link EmptyState}, and it invites the reader to look at another day.
+ *  - **This platform cannot report it.** Android exposes no idle signal and captures
+ *    no screen, so a zero would be a claim. `phone-day.tsx` says "Not reported" and
+ *    `devices-view.tsx` simply omits the field — a permanent, structural absence.
+ *  - **Somebody turned it off.** This one. It is a decision, it has an author and a
+ *    date, and both belong on screen: an employee reading an empty Screenshots tab
+ *    must be able to tell "nobody captured anything" from "your manager stopped it on
+ *    the 8th", and so must the manager who is about to ask why the day looks thin.
+ *
+ * Renders nothing when `types` is empty, so a caller lists its types unconditionally
+ * rather than guarding the whole block — the same property that lets `DegradedNotice`
+ * be dropped in above a table.
+ *
+ * **Never rendered on a failed read.** Absence of a settings row and a settings query
+ * that 500'd both produce no entries here, and that is the safe direction: this
+ * component only ever makes the positive claim "switched off", never the negative one.
+ * Telling somebody nothing is being recorded while it is, is the failure that matters.
+ *
+ * No Retry, unlike the two amber notices above it. Both of those describe something
+ * that might have recovered since; this describes a decision, and re-asking spends a
+ * round trip to be told the same thing.
+ */
+export function CollectionOff({
+  types,
+  scopes,
+  tone = "neutral",
+  compact = false,
+  className,
+}: {
+  types: readonly CollectionOffType[];
+  /** Which machines, when the surface unions more than one. Omitted for a single device. */
+  scopes?: readonly string[];
+  /**
+   * `"neutral"` on manager-facing screens — a correctly recorded decision is not a
+   * fault, and amber there would read as an incident. `"subject"` on the employee's
+   * own screens, where the reader is the person the decision was made about.
+   */
+  tone?: "neutral" | "subject";
+  /** One line, no per-type attribution list. For table cells and dense headers. */
+  compact?: boolean;
+  className?: string;
+}) {
+  if (types.length === 0) return null;
+
+  const labels = types.map((type) => type.label);
+  const where = scopes && scopes.length > 0 ? ` on ${formatList([...scopes])}` : "";
+  const headline = `${formatList(labels)} ${types.length === 1 ? "is" : "are"} switched off${where}.`;
+
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-sm",
+        tone === "subject" ? "border-warning/40 bg-warning/10" : "border-border bg-secondary/40",
+        className,
+      )}
+    >
+      <EyeOff
+        className={cn(
+          "mt-0.5 h-4 w-4 shrink-0",
+          tone === "subject" ? "text-warning" : "text-muted-foreground",
+        )}
+        aria-hidden
+      />
+      <div className="min-w-0 space-y-1.5">
+        <p className="min-w-0">
+          <span className="font-medium">{headline}</span>{" "}
+          <span className="text-muted-foreground">
+            {tone === "subject"
+              ? "Nothing of that kind is being recorded from your devices. What is missing below was not collected, rather than not happening."
+              : "Nothing of that kind was collected here. This is a recorded decision, not a gap in the data."}
+          </span>
+        </p>
+
+        {compact ? null : (
+          <ul className="space-y-0.5">
+            {types.map((type) => (
+              <li key={type.label} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <Badge variant="offline">{type.label}</Badge>
+                <span className="text-muted-foreground">{attribution(type)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Switched off by Sam Patel on 8 Aug 2026" — who, then when, in that order.
+ *
+ * A missing name is stated rather than swallowed. `changed_by` is `on delete set null`
+ * because the administrator who made the call may have left the company, and losing
+ * the row would lose the decision along with them — so the row survives with no name,
+ * and the sentence has to survive with it.
+ */
+function attribution(type: CollectionOffType): React.ReactNode {
+  const who = type.byName?.trim() || "an administrator who is no longer listed";
+  if (!type.atISO) return `Switched off by ${who}`;
+  return (
+    <>
+      Switched off by {who} on <time dateTime={type.atISO}>{calendarDate(type.atISO)}</time>
+    </>
+  );
+}
+
+function calendarDate(iso: string): string {
+  const parsed = Date.parse(iso);
+  if (!Number.isFinite(parsed)) return "an unrecorded date";
+  return new Date(parsed).toLocaleDateString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 /** "A", "A and B", "A, B and C" — Oxford-less, which is the house style in this UI. */
 function formatList(items: readonly string[]): string {
   if (items.length <= 1) return items[0] ?? "";
@@ -214,4 +347,9 @@ function formatList(items: readonly string[]): string {
  * favour of a re-export from here, so the seven employee tabs and the three screens
  * below cannot drift apart. That file was outside this change's ownership, so the
  * merge is left as one small follow-up rather than done half-way.
+ *
+ * `CollectionOff` is re-exported from that file rather than duplicated into it, which
+ * is the property the merge was wanted for: the seven employee tabs and the screens
+ * here render the same switched-off state from the same implementation, whichever
+ * import path they already had.
  */

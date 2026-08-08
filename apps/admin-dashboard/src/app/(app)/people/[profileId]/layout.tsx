@@ -2,6 +2,7 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { CollectionNotice } from "@/components/employee/collection-notice";
 import { EmployeeHeader } from "@/components/employee/employee-header";
 import { employeeQuery, rosterQuery } from "@/components/employee/employee-queries";
 import { EmployeeTabs } from "@/components/employee/employee-tabs";
@@ -68,6 +69,13 @@ export default async function EmployeeLayout({
             so the tabs and everything under them rose the moment they hydrated. */}
         <Suspense fallback={<div className="h-[38px] border-b" />}>
           <EmployeeTabs profileId={profileId} />
+        </Suspense>
+
+        {/* Said above the tab it applies to, not inside it. A data type an admin
+            switched off has to be distinguishable from a quiet day and from a platform
+            that cannot report it, on every tab — including one added after this. */}
+        <Suspense fallback={null}>
+          <CollectionNotice profileId={profileId} />
         </Suspense>
 
         {/* 16px gutters on a phone, 24px from `sm` up. Six of the seven tabs put a

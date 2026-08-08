@@ -10,6 +10,17 @@ import { AlertTriangle, Inbox } from "lucide-react";
  * and empty the same way.
  */
 
+/*
+ * The switched-off state is not redeclared here.
+ *
+ * Re-exported from the shared module instead, so the seven employee tabs and the
+ * screens that import from `@/components/states` render the same component. A second
+ * copy of *this* state would be a compliance defect rather than a cosmetic one: two
+ * implementations means one of them eventually stops naming who turned a data type
+ * off, on half the surfaces, with nothing to notice it.
+ */
+export { CollectionOff, type CollectionOffType } from "@/components/states";
+
 export function SectionHeading({
   title,
   hint,

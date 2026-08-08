@@ -3,6 +3,7 @@
 import {
   Badge,
   Button,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -32,6 +33,13 @@ import {
 } from "@/components/employee/states";
 import { queryViewState } from "@/components/states";
 import { describeError, useApiQuery, useSession, type DeviceRow } from "@/lib/api";
+import {
+  DATA_TYPE_LABEL,
+  oneType,
+  typesFor,
+  useDeviceCollection,
+  useUpdateDeviceCollection,
+} from "@/lib/queries/collection";
 import { devicesForProfile, gigabytes, osLabel, platformLabel } from "@/lib/queries/usage";
 
 import {
@@ -184,6 +192,12 @@ function DevicePanel({ device }: { device: DeviceRow }) {
   // offered a button that ends in a 403.
   const canRevoke = session?.role === "super_admin" && device.status !== "revoked";
 
+  // `PATCH .../collection` is `requireManager`. An employee still *reads* the list —
+  // non-negotiable #3 — they are just not offered switches that would end in a 403.
+  const canEdit =
+    (session?.role === "super_admin" || session?.role === "manager") &&
+    device.status !== "revoked";
+
   const applications = useDeviceApplications(device.id);
   const installed = useMemo(
     () => sortApplications(applications.data ?? []),
@@ -312,6 +326,8 @@ function DevicePanel({ device }: { device: DeviceRow }) {
 
       {installed.length > 0 ? <InstalledApplications rows={installed} /> : null}
 
+      <CollectionScope device={device} canEdit={canEdit} />
+
       {device.status === "revoked" ? (
         <p className="border-t px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
           This device was revoked and stops collecting on its next request. Its history is kept as a
@@ -323,6 +339,118 @@ function DevicePanel({ device }: { device: DeviceRow }) {
         <RevokeDeviceDialog device={device} onClose={() => setRevoking(false)} />
       ) : null}
     </Panel>
+  );
+}
+
+/**
+ * What this one machine may collect, and who last decided each answer.
+ *
+ * Always rendered, never conditional on something being switched off: the reader's
+ * question is "what is this laptop recording", and a panel that only appears once
+ * somebody has narrowed the scope answers it for the exceptional case and stays silent
+ * for the normal one. That is also what makes it the read surface for an employee
+ * looking at their own devices, which non-negotiable #3 requires.
+ *
+ * Only the types the platform can physically report are listed. Offering an admin a
+ * Location switch on a laptop would be a control that changes nothing — desktop
+ * "location" is a Wi-Fi lookup accurate to tens of metres and the agents do not collect
+ * it — and a switch that does nothing is worse than an absent one.
+ *
+ * A switch is used rather than a checkbox because this takes effect on save, not on a
+ * later submit; it is navy rather than indigo because indigo marks model output, and
+ * nothing here is inferred.
+ */
+function CollectionScope({ device, canEdit }: { device: DeviceRow; canEdit: boolean }) {
+  const collection = useDeviceCollection(device.id);
+  const update = useUpdateDeviceCollection(device.id);
+
+  const settings = useMemo(() => {
+    const byType = new Map(collection.data?.map((row) => [row.dataType, row]) ?? []);
+    return typesFor(device.platform).map((id) => ({ id, row: byType.get(id) ?? null }));
+  }, [collection.data, device.platform]);
+
+  const offCount = settings.filter((entry) => entry.row?.enabled === false).length;
+
+  return (
+    <details className="border-t">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-2.5 text-xs font-medium transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-5 [&::-webkit-details-marker]:hidden">
+        What this device collects
+        {/* The count is the reason to open it. "6 of 6" is as worth saying as "4 of 6":
+            a reader who cannot see the total cannot tell a full scope from an unread one. */}
+        <Badge variant={offCount > 0 ? "offline" : "secondary"}>
+          {collection.isPending
+            ? "Reading…"
+            : collection.isError
+              ? "Could not be read"
+              : `${settings.length - offCount} of ${settings.length} on`}
+        </Badge>
+      </summary>
+
+      <div className="space-y-3 border-t px-4 py-3 sm:px-5">
+        {collection.isError ? (
+          /* Never "everything is on" on a failed read. An unanswered question and a
+             known answer must not look the same on the one screen that says what is
+             being recorded about a person. */
+          <p role="alert" className="text-xs text-muted-foreground">
+            This device&apos;s collection settings could not be read, so what is listed
+            below cannot be confirmed either way.{" "}
+            <button
+              type="button"
+              onClick={() => void collection.refetch()}
+              className="rounded font-medium underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Try again
+            </button>
+          </p>
+        ) : (
+          <>
+            <ul className="divide-y">
+              {settings.map(({ id, row }) => {
+                const enabled = row?.enabled ?? true;
+                return (
+                  <li key={id} className="flex items-start justify-between gap-4 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-sm">{DATA_TYPE_LABEL[id]}</p>
+                      {/* Who and when, on the row it belongs to. Attribution is stored
+                          per (device, type) precisely so two administrators' two
+                          decisions on two days do not both read as the later one. */}
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {row
+                          ? `${enabled ? "Switched on" : "Switched off"} by ${
+                              row.changedByName?.trim() || "an administrator who is no longer listed"
+                            } on ${calendarDate(row.changedAt) ?? "an unrecorded date"}`
+                          : "Collected since this device was enrolled"}
+                      </p>
+                    </div>
+
+                    {canEdit ? (
+                      <Switch
+                        checked={enabled}
+                        disabled={update.isPending}
+                        aria-label={DATA_TYPE_LABEL[id]}
+                        onCheckedChange={(next) => update.mutate(oneType(id, next))}
+                      />
+                    ) : (
+                      <Badge variant={enabled ? "success" : "offline"} dot>
+                        {enabled ? "On" : "Off"}
+                      </Badge>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+
+            {update.isError ? <FormError message={describeError(update.error)} /> : null}
+
+            <p className="text-xs text-muted-foreground">
+              {canEdit
+                ? "The agent picks this up on its next heartbeat, within a minute. Switching something off stops it immediately and keeps what was already recorded. Switching one back on collects nothing until the employee has agreed to it on the device — they were never asked about a type that was off."
+                : "This is the list you agreed to on this device. Only an administrator can change it, and anything switched back on has to be agreed to again before it is collected."}
+            </p>
+          </>
+        )}
+      </div>
+    </details>
   );
 }
 

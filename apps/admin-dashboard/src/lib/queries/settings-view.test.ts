@@ -484,15 +484,21 @@ describe("policyDraftToInput", () => {
 
 describe("POLICY_ROLLOUT_NOTE", () => {
   /**
-   * The API hands a policy to a device at `POST /api/devices/enroll` and nowhere
-   * else — `/heartbeat` answers `{ ok: true }`. The previous copy said agents pick a
-   * change up "at their next check-in", which the server does not do. In a compliance
-   * product the panel that states the terms must not be the least accurate thing on
-   * the page.
+   * Both halves, because this note has now been wrong in each direction. It first
+   * claimed agents picked a change up "at their next check-in", which the server did
+   * not do; it then said "the heartbeat does not carry a policy today", which stopped
+   * being true when the heartbeat began answering with the version and the permitted
+   * data types.
+   *
+   * What the heartbeat still does **not** deliver is the interval and the threshold —
+   * those arrive at enrolment — so the note has to name both mechanisms and must not
+   * promise a live rollout of the cadence.
    */
-  it("describes enrolment, not a check-in rollout the server does not perform", () => {
+  it("names both delivery mechanisms and over-claims neither", () => {
     expect(POLICY_ROLLOUT_NOTE).toContain("enrol");
     expect(POLICY_ROLLOUT_NOTE).toContain("heartbeat");
+    expect(POLICY_ROLLOUT_NOTE).toContain("interval");
+    expect(POLICY_ROLLOUT_NOTE).not.toContain("does not carry a policy");
   });
 });
 

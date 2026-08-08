@@ -10,10 +10,12 @@
  */
 
 export {
+  CollectionOff,
   DegradedNotice,
   EmptyState,
   ErrorState,
   StaleNotice,
+  type CollectionOffType,
   type DegradedSource,
 } from "./feedback";
 export {

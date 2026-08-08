@@ -455,14 +455,20 @@ export function trackedCategoriesLabel(categories: readonly string[]): string {
 /**
  * When a published policy actually reaches an agent.
  *
- * Says "enrolled after" rather than "at the next check-in" because that is what the
- * API does: `POST /api/devices/enroll` hands the newest policy to a device once, and
- * `POST /api/devices/heartbeat` answers `{ ok: true }` and nothing else. Claiming a
- * live rollout the server does not perform would make this panel the least reliable
- * statement in a compliance product. See the reported gap.
+ * Rewritten with the per-device collection scope, because the sentence it replaced —
+ * "the heartbeat does not carry a policy today" — stopped being true the moment
+ * `POST /api/devices/heartbeat` began answering with `policyVersion`, `collection` and
+ * `pendingTypes` instead of a bare `{ ok: true }`.
+ *
+ * It is still careful about what the heartbeat does *not* do. It carries the version
+ * number and the permitted data types; it does not hand down a new screenshot interval
+ * or idle threshold, which still arrive at enrolment. A note that over-claims a live
+ * rollout is the same defect as one that under-claims it — this panel is the statement
+ * of record for what agents are running under, and in a compliance product it must not
+ * be the least reliable thing on the page.
  */
 export const POLICY_ROLLOUT_NOTE =
-  "A published version is handed to every device that enrols after it. Devices already enrolled keep the interval they were given until they enrol again — the heartbeat does not carry a policy today.";
+  "A published version is handed to every device that enrols after it. Devices already enrolled learn on their next heartbeat, within a minute, that a newer version exists and which data types they may collect — but they keep the interval and threshold they were given until they enrol again.";
 
 function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && value > 0;

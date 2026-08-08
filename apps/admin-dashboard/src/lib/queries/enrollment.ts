@@ -2,6 +2,8 @@
 
 import { useMutation } from "@tanstack/react-query";
 
+import type { DataTypeId, DevicePlatform } from "@aems/types";
+
 import { apiFetch } from "@/lib/api";
 
 /**
@@ -23,9 +25,28 @@ export interface EnrollmentCode {
  * A mutation rather than a query, and that distinction matters here: every call
  * creates a live credential. A `useQuery` would refetch on window focus and leave a
  * trail of valid codes behind every time someone alt-tabbed away from the dialog.
+ *
+ * `deniedTypes` is the collection scope chosen at mint time, and it rides on the code
+ * rather than being sent by the agent that redeems it: `POST /enroll-with-code` is
+ * unauthenticated by design, so nothing a machine says about its own scope can be
+ * trusted. Omitted or empty means "everything the redeeming platform supports".
  */
 export function useCreateEnrollmentCode() {
-  return useMutation<EnrollmentCode, unknown, { profileId?: string } | void>({
+  return useMutation<
+    EnrollmentCode,
+    unknown,
+    {
+      profileId?: string;
+      /**
+       * Which kind of machine this code is for. Decides the types the dialog offers,
+       * and is checked at redemption — a Windows code presented by a phone is refused,
+       * because a laptop's deny list applied to a phone would silently permit things
+       * the admin was never shown a checkbox for.
+       */
+      platform?: DevicePlatform;
+      deniedTypes?: DataTypeId[];
+    } | void
+  >({
     mutationFn: (input) =>
       apiFetch<EnrollmentCode>("/api/devices/enrollment-codes", {
         method: "POST",
