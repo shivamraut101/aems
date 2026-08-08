@@ -80,6 +80,17 @@ insert into public.category_rules (id, company_id, priority, category_path, prod
   ('ca000001-0000-4000-8000-000000000021','11111111-0000-4000-8000-000000000001',10,array['Development'],'productive','code.exe'),
   ('ca000002-0000-4000-8000-000000000022','22222222-0000-4000-8000-000000000002',10,array['Browsing'],'neutral','safari');
 
+-- One collection decision per tenant. Write access to this table is write access to
+-- whether a machine records anything at all: an employee who could insert
+-- `enabled = false` for their own device would switch monitoring off without ever
+-- touching `profiles.monitoring_enabled`, which is the hole migration 20260805000005
+-- exists to close. So it is tested like a privilege boundary, not like a settings row —
+-- while an employee must still be able to READ it, because non-negotiable #3 says they
+-- can see what is collected about them.
+insert into public.device_collection_settings (company_id, device_id, data_type, enabled, changed_by) values
+  ('11111111-0000-4000-8000-000000000001','de000001-0000-4000-8000-000000000011','screenshots',false,'bbbbbbbb-0000-4000-8000-000000000002'),
+  ('22222222-0000-4000-8000-000000000002','de000002-0000-4000-8000-000000000012','screenshots',false,'cccccccc-0000-4000-8000-000000000003');
+
 -- ---------------------------------------------------------------------------
 -- Part 1 - visibility
 -- ---------------------------------------------------------------------------
@@ -97,6 +108,7 @@ insert into results select 'alice(employee): own company only',         '1', cou
 -- fixed number here breaks the day someone edits that default set.
 insert into results select 'alice(employee): NO other-tenant rules',    '0', count(*)::text from public.category_rules where company_id <> '11111111-0000-4000-8000-000000000001';
 insert into results select 'alice(employee): CAN see own company rule', 'yes', case when count(*) = 1 then 'yes' else 'no' end from public.category_rules where id = 'ca000001-0000-4000-8000-000000000021';
+insert into results select 'alice(employee): CAN read own collection scope', '1', count(*)::text from public.device_collection_settings;
 reset role;
 
 set local role authenticated;
@@ -104,6 +116,7 @@ set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-4000-8000-000000000002","r
 insert into results select 'bob(manager): sees ALL Acme activity',      '2', count(*)::text from public.activity_events;
 insert into results select 'bob(manager): NO cross-tenant leak',        '0', count(*)::text from public.activity_events where company_id='22222222-0000-4000-8000-000000000002';
 insert into results select 'bob(manager): NO audit log (admin only)',   '0', count(*)::text from public.audit_log_entries;
+insert into results select 'bob(manager): sees Acme collection scope',  '1', count(*)::text from public.device_collection_settings;
 reset role;
 
 set local role authenticated;
@@ -111,6 +124,7 @@ set local request.jwt.claims = '{"sub":"cccccccc-0000-4000-8000-000000000003","r
 insert into results select 'carol(super_admin): only Globex activity',  '1', count(*)::text from public.activity_events;
 insert into results select 'carol(super_admin): NO Acme leak',          '0', count(*)::text from public.activity_events where company_id='11111111-0000-4000-8000-000000000001';
 insert into results select 'carol(super_admin): NO Acme audit log',     '0', count(*)::text from public.audit_log_entries;
+insert into results select 'carol(super_admin): NO Acme collection scope', '0', count(*)::text from public.device_collection_settings where company_id='11111111-0000-4000-8000-000000000001';
 reset role;
 
 set local role authenticated;
@@ -185,6 +199,20 @@ begin
   get diagnostics n = row_count;
   insert into results values ('employee tampers audit log', '0 rows', n || ' rows');
 
+  -- Switching off your own collection is `monitoring_enabled=false` by another route.
+  -- No write policy exists for authenticated on this table, so the insert must raise
+  -- and the update must match nothing — the same two signals as above.
+  begin
+    insert into public.device_collection_settings (company_id, device_id, data_type, enabled)
+    values ('11111111-0000-4000-8000-000000000001','de000001-0000-4000-8000-000000000011','idle',false);
+    insert into results values ('employee denies own collection type', 'BLOCKED', 'NOT BLOCKED');
+  exception when others then insert into results values ('employee denies own collection type', 'BLOCKED', 'BLOCKED'); end;
+
+  update public.device_collection_settings set enabled=true
+    where device_id='de000001-0000-4000-8000-000000000011' and data_type='screenshots';
+  get diagnostics n = row_count;
+  insert into results values ('employee edits own collection scope', '0 rows', n || ' rows');
+
   -- legitimate: renaming yourself must still work
   update public.profiles set full_name='Alice Smith' where id='aaaaaaaa-0000-4000-8000-000000000001';
   get diagnostics n = row_count;
@@ -206,6 +234,14 @@ begin
     where id='ca000001-0000-4000-8000-000000000021';
   get diagnostics n = row_count;
   insert into results values ('manager rescores company rule', '0 rows', n || ' rows');
+
+  -- A manager MAY change a device's collection scope — through the API, which checks
+  -- the role and writes the attribution. Not through PostgREST, which would write
+  -- neither.
+  update public.device_collection_settings set enabled=true
+    where device_id='de000001-0000-4000-8000-000000000011' and data_type='screenshots';
+  get diagnostics n = row_count;
+  insert into results values ('manager edits collection scope directly', '0 rows', n || ' rows');
 
   -- Switch identity WITHOUT dropping back to the table owner in between. A bare
   -- `reset role` here would run the next two statements as the superuser, which
@@ -233,6 +269,7 @@ insert into results select 'GROUND TRUTH: audit entry untampered', 'yes', case w
 insert into results select 'GROUND TRUTH: monitoring still on',    'yes', case when bool_and(monitoring_enabled) then 'yes' else 'NO - DISABLED' end from public.profiles where id='aaaaaaaa-0000-4000-8000-000000000001';
 insert into results select 'GROUND TRUTH: role unchanged',         'employee', max(role) from public.profiles where id='aaaaaaaa-0000-4000-8000-000000000001';
 insert into results select 'GROUND TRUTH: Acme rule unrescored',   'productive', max(productivity) from public.category_rules where id='ca000001-0000-4000-8000-000000000021';
+insert into results select 'GROUND TRUTH: collection scope unflipped', 'false', bool_or(enabled)::text from public.device_collection_settings where device_id='de000001-0000-4000-8000-000000000011';
 
 select
   test,

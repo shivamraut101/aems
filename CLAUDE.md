@@ -200,6 +200,50 @@ Android only. Kotlin native modules for app usage tracking, battery information,
 device details, and network state; React Native calls into them. Anything needing an
 Android API goes in the Kotlin layer, not a JS shim.
 
+### Per-device collection scope
+
+What a given machine may record is chosen when its **enrolment code is minted**, and can
+be changed later per device by a manager. Three sets are intersected, most-restrictive
+wins, in `packages/types/src/collection.ts`:
+
+```text
+PLATFORM_DATA_TYPES[platform]     what the platform can physically do
+  minus device_collection_settings rows with enabled = false
+  intersect consent_records.granted_types
+```
+
+- **It is a deny list, not an allow list.** An enrolment code does not know whether a
+  laptop or a phone will redeem it, so an allow list would arrive at a phone as "collect
+  only the four types the dialog listed", and any type added later would be denied on
+  every device already in the field. **No row means permitted** — which is also why the
+  migration needed no backfill and changed no behaviour on deploy.
+- **Enforced on the server, not just the agent** — non-negotiable #1. An agent is a
+  binary on someone's laptop; the ingest routes refuse a forbidden type themselves.
+- **The consent screen renders exactly the permitted set.** A consent that promises more
+  or less than what is collected is not consent.
+- Where a type is switched off, the dashboard says so and **names who did it and when**
+  — never a plain empty state, which reads as "they did nothing".
+
+### Email
+
+Resend, over its REST API — no SMTP anywhere, and no `resend` npm package in a service
+that holds the service-role key. `apps/api/src/lib/email/`.
+
+- **`RESEND_API_KEY` is the only variable needed, and it is optional.** Unset, every
+  message is composed, addressed and logged instead of sent. An unconfigured mailer must
+  never stop the API booting: a missing key taking monitoring down for a whole company
+  over a notification is the worse failure by far.
+- **Sending never throws and never blocks.** Every caller is doing something else, and a
+  bounced mailbox must not roll back an account that was created. `sendInBackground`.
+- **Every template writes HTML *and* plain text.** A message with no text part lands in
+  spam far more often and is unreadable wherever HTML is blocked.
+- `node scripts/email-preview.mjs` renders them all to `.tmp-email/` with no key and
+  sends nothing. **Copy is not reviewable in a diff** — these are read by the people
+  being monitored, and the difference between a notification and a warning is not
+  visible in a template literal.
+- The one thing no env var fixes: the **From domain must be verified in Resend**, or
+  every send is refused with a 403.
+
 ### AI layer
 
 `activity events → analytics processing → AI model → summary storage`.
@@ -320,6 +364,8 @@ until they confirm the edit.
 | 2026-08-05 | **Website restriction is in scope.** The admin panel can set rules that block sites, enforced by a managed browser extension. | `docs/scope.md` §8 lists control features under *Later — not part of MVP* |
 | 2026-08-05 | **The dashboard may go beyond `docs/design.md`** where a change demonstrably improves the product. Asked for by name: "if you can improve the design rather than just docs/design.md and if you have better ideas according to this project please proceed." | `docs/design.md` was previously followed to the letter |
 | 2026-08-06 | **The Android agent's tab bar may be translucent.** Asked for by name ("make the tab bar like ios liquid glass"), and confined to `apps/android-agent/src/components/TabBar.tsx` — chosen over glass everywhere, which was offered and declined. The rest of the app takes iOS *structure* only: collapsing large titles, grouped inset lists, hairline separators, spring presses. | `docs/design.md` lists **glassmorphism** under *Avoid*, and the 2026-08-05 permission above named only the dashboard |
+| 2026-08-08 | **Per-device collection scope, chosen at enrolment.** Whoever mints an enrolment code picks which data types that machine may collect; the consent screen renders exactly that set; a manager can change it later per device and the employee is emailed. Asked for by name. Enforced server-side as well as on the agent, because the agent is a binary on a machine we do not control. | `docs/scope.md` treats collection scope as a company-wide policy, not a per-device one |
+| 2026-08-08 | **Email, via Resend.** `docs/stack.md` names no mail provider at all. Resend is an HTTP API, so it needs no SMTP and no new runtime; the key is optional and mail degrades to logging without it. | `docs/stack.md` §13 lists no email in the deployment stack |
 | 2026-08-08 | **Next.js 15 → 16, and the dashboard's request gate is `src/proxy.ts`.** Asked for by name: "the next latest should be used… must be using proxy.ts". `docs/stack.md` §3 is amended in place rather than overridden here, because the client authorised the document edit. Carried three consequences: the `middleware.ts` → `proxy.ts` rename, Turbopack becoming the default builder (which rejected `module.exports` in the ESM `packages/ui/tailwind-preset.js`), and Node ≥ 20.9 / React ^19, both already met. | `docs/stack.md` locked **Next.js 15** |
 | 2026-08-07 | **That tab bar is a floating capsule, not an edge-to-edge bar.** Asked for by name against a reference screenshot. It is inset from both screen edges, fully rounded (radius = half its height), hairline-bordered, and carries a spring-driven pill behind the selected tab. Same file, same exception — `radius` in `theme.ts` is untouched and still 8, so nothing else in the app can pick this radius up by accident. | `docs/design.md` locks an **8px radius** and lists **huge rounded cards** under *Avoid* |
 
