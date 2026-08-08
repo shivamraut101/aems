@@ -9,6 +9,8 @@ import { recordAudit } from "../lib/audit.js";
 import { sendInBackground } from "../lib/email/mailer.js";
 import { accountCreatedEmail, nameOrEmail } from "../lib/email/templates.js";
 import { validationFailure } from "../lib/validation.js";
+import { profileVisibilityDenial } from "../lib/visibility.js";
+import { visibleRoleFilter } from "@aems/auth";
 
 /**
  * A ban long enough to be permanent without being forever.
@@ -462,6 +464,16 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
       .select(ROSTER_COLUMNS)
       .eq("company_id", session.companyId);
 
+    // A manager's roster stops at their own rank. Self is or-ed back in because the
+    // rank comparison is strict, and a manager missing from their own roster reads as
+    // a bug — it is also the row the account page links to.
+    const roles = visibleRoleFilter(session.role);
+    if (roles) {
+      query = query.or(
+        `role.in.(${roles.join(",")}),id.eq.${session.profileId}`,
+      );
+    }
+
     // Off-boarded people are hidden unless asked for. `monitoring_enabled = false`
     // is a pause, not a removal — before this column existed the roster had no way
     // to say "this person has left" at all.
@@ -478,11 +490,8 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
     const { profileId } = request.params as { profileId: string };
     const session = request.session!;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply
-        .code(403)
-        .send({ error: "forbidden", message: "Not your profile", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     const { data } = await app.supabase
       .from("profiles")

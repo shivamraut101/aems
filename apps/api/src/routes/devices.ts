@@ -23,6 +23,7 @@ import {
   normaliseCode,
 } from "../lib/enrollment-code.js";
 import { collectionDenial, deniedTypesFor, resolveCollection } from "../plugins/context.js";
+import { hiddenProfileIds, profileVisibilityDenial } from "../lib/visibility.js";
 
 const KNOWN_TYPES = new Set<string>(DATA_TYPE_IDS);
 
@@ -150,6 +151,34 @@ export function deviceReadDenial(
 }
 
 export const deviceRoutes: FastifyPluginAsync = async (app) => {
+  /**
+   * Fetch a device, confirm it is in this company, and rule on whether the caller may
+   * read it — the whole gate for the three per-device read routes, in one place.
+   *
+   * `deviceReadDenial` alone was not enough. It knows the owner's *id* and not their
+   * *rank*, so it waved a manager through to the super admin's applications, telemetry
+   * and collection settings: a device is a person's data wearing a serial number.
+   *
+   * The company scope on the query is the tenant boundary, because the service-role
+   * key has already bypassed RLS by the time it runs.
+   */
+  async function deviceAccessDenial(
+    session: SessionProfile,
+    deviceId: string,
+  ): Promise<{ error: string; message: string; statusCode: number } | null> {
+    const { data: device } = await app.supabase
+      .from("devices")
+      .select("id, profile_id")
+      .eq("id", deviceId)
+      .eq("company_id", session.companyId)
+      .maybeSingle();
+
+    const denial = deviceReadDenial(device, session);
+    if (denial) return denial;
+
+    return profileVisibilityDenial(app, session, device!.profile_id);
+  }
+
   /**
    * The decisions on record for one device, newest first, with the name attached.
    *
@@ -344,12 +373,12 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const subjectId = parsed.data.profileId ?? session.profileId;
 
-    if (subjectId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({
-        error: "forbidden",
-        message: "You can only generate a code for your own device",
-        statusCode: 403,
-      });
+    // Minting a code binds a device to `subjectId`, so the rank rule governs it for
+    // the same reason it governs reads: a manager must not enrol a device against the
+    // super admin and then read everything that device reports.
+    const denial = await profileVisibilityDenial(app, session, subjectId);
+    if (denial) {
+      return reply.code(denial.statusCode).send({ ...denial });
     }
 
     // Company-scoped: the service-role key bypasses RLS, so this lookup is the whole
@@ -584,6 +613,12 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     // inherit the whole estate because it happens not to equal "employee".
     if (session.role !== "manager" && session.role !== "super_admin") {
       query = query.eq("profile_id", session.profileId);
+    } else {
+      // A manager's estate stops at their own rank, matching the roster. Without this
+      // the Devices page listed the super admin's laptop by name and last-seen time —
+      // and every per-device link on it was a live route until `deviceAccessDenial`.
+      const hidden = await hiddenProfileIds(app, session);
+      if (hidden.length) query = query.not("profile_id", "in", `(${hidden.join(",")})`);
     }
 
     const { data } = await query;
@@ -942,14 +977,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
 
     // Company-scoped: this read is the tenant boundary, because the service-role key
     // has already bypassed RLS by the time the query runs.
-    const { data: device } = await app.supabase
-      .from("devices")
-      .select("id, profile_id")
-      .eq("id", deviceId)
-      .eq("company_id", session.companyId)
-      .maybeSingle();
-
-    const denial = deviceReadDenial(device, session);
+    const denial = await deviceAccessDenial(session, deviceId);
     if (denial) return reply.code(denial.statusCode).send(denial);
 
     const { data } = await app.supabase
@@ -985,14 +1013,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
 
     const session = request.session!;
 
-    const { data: device } = await app.supabase
-      .from("devices")
-      .select("id, profile_id")
-      .eq("id", deviceId)
-      .eq("company_id", session.companyId)
-      .maybeSingle();
-
-    const denial = deviceReadDenial(device, session);
+    const denial = await deviceAccessDenial(session, deviceId);
     if (denial) return reply.code(denial.statusCode).send(denial);
 
     const { data } = await app.supabase
@@ -1031,14 +1052,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
 
     const session = request.session!;
 
-    const { data: device } = await app.supabase
-      .from("devices")
-      .select("id, profile_id")
-      .eq("id", deviceId)
-      .eq("company_id", session.companyId)
-      .maybeSingle();
-
-    const denial = deviceReadDenial(device, session);
+    const denial = await deviceAccessDenial(session, deviceId);
     if (denial) return reply.code(denial.statusCode).send(denial);
 
     return readCollection(session.companyId, deviceId);

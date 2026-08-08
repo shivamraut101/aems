@@ -12,6 +12,7 @@ import { canViewOthers } from "@aems/auth";
 
 import { resolveCollection } from "../plugins/context.js";
 import { validationFailure } from "../lib/validation.js";
+import { profileVisibilityDenial } from "../lib/visibility.js";
 
 const activityEventSchema = z.object({
   clientEventId: z.string().uuid(),
@@ -548,12 +549,9 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
 
     const profileId = parsed.data.profileId ?? session.profileId;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({
-        error: "forbidden",
-        message: "You can only view your own location history",
-        statusCode: 403,
-      });
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) {
+      return reply.code(denial.statusCode).send({ ...denial });
     }
 
     let query = app.supabase

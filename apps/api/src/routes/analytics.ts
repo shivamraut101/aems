@@ -18,6 +18,8 @@ import { z } from "zod";
 import { productivityLookupFor } from "./activity.js";
 import { SIGNED_URL_TTL_SECONDS } from "./screenshots.js";
 import { validationFailure } from "../lib/validation.js";
+import { excludeHidden, hiddenProfileIds, profileVisibilityDenial } from "../lib/visibility.js";
+import { visibleRoleFilter } from "@aems/auth";
 
 const rangeSchema = z.object({
   profileId: z.string().uuid(),
@@ -211,9 +213,8 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to } = parsed.data;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     // Same scope object as the timeline, for the same reason — see the comment there.
     // These two endpoints answer the same day and must narrow it identically, or the
@@ -277,9 +278,8 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to, bucketSeconds, deviceId } = parsed.data;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     // An explicit deviceId wins; otherwise the primary device governs the day. Both
     // resolve to the same one-object scope, so the five queries below cannot end up
@@ -387,9 +387,8 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to } = parsed.data;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     // Bounded and ordered like every other aggregate here. This was the one read of
     // `activity_events` with neither: PostgREST stops at its own `max-rows` without
@@ -435,6 +434,12 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const now = Date.now();
     const dayStart = new Date(new Date(now).setHours(0, 0, 0, 0)).toISOString();
 
+    // Resolved first, not in parallel: every count below is filtered by it, and a KPI
+    // row that counted people the roster refuses to list is the disagreement this
+    // endpoint has already been bug-fixed for once.
+    const hidden = await hiddenProfileIds(app, session);
+    const excluded = hidden.length ? `(${hidden.join(",")})` : null;
+
     const [{ count: employeeCount }, { data: devices }, { data: sessions }] = await Promise.all([
       // `head: true` asks Postgres for the count and no rows. The previous version
       // requested `{ count: "exact" }` and then returned `employees?.length`, which
@@ -442,27 +447,39 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       // to return — capped at its max-rows setting. It also counted off-boarded
       // people, so the moment an admin deactivated someone the home KPI said 4
       // while the People page said 3, on the same screen at the same moment.
-      app.supabase
-        .from("profiles")
-        .select("id", { count: "exact", head: true })
-        .eq("company_id", session.companyId)
-        .is("deactivated_at", null),
+      excludeHidden(
+        app.supabase
+          .from("profiles")
+          .select("id", { count: "exact", head: true })
+          .eq("company_id", session.companyId)
+          .is("deactivated_at", null),
+        "id",
+        excluded,
+      ),
       // "Heard from in the last two minutes" is a filter Postgres can apply, and only
       // `profile_id` is read from the result. Pulling the whole estate back to count
       // the online part costs rows in proportion to devices OWNED rather than devices
       // online — a 500-machine company shipped 500 rows to answer "how many are up".
       // `.gt` drops a null `last_seen_at` exactly as the JS guard it replaces did.
-      app.supabase
-        .from("devices")
-        .select("profile_id")
-        .eq("company_id", session.companyId)
-        .neq("status", "revoked")
-        .gt("last_seen_at", new Date(now - OFFLINE_AFTER_MS).toISOString()),
-      app.supabase
-        .from("work_sessions")
-        .select("profile_id, clock_in_at, clock_out_at")
-        .eq("company_id", session.companyId)
-        .gte("clock_in_at", dayStart),
+      excludeHidden(
+        app.supabase
+          .from("devices")
+          .select("profile_id")
+          .eq("company_id", session.companyId)
+          .neq("status", "revoked")
+          .gt("last_seen_at", new Date(now - OFFLINE_AFTER_MS).toISOString()),
+        "profile_id",
+        excluded,
+      ),
+      excludeHidden(
+        app.supabase
+          .from("work_sessions")
+          .select("profile_id, clock_in_at, clock_out_at")
+          .eq("company_id", session.companyId)
+          .gte("clock_in_at", dayStart),
+        "profile_id",
+        excluded,
+      ),
     ]);
 
     const activeProfiles = new Set((devices ?? []).map((d) => d.profile_id));
@@ -498,13 +515,23 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const now = Date.now();
 
+    // Built ahead of the Promise.all because the rank filter is conditional and a
+    // super admin's query must carry no `or` at all.
+    let peopleQuery = app.supabase
+      .from("profiles")
+      .select("id, full_name, email, devices(id, platform, label, last_seen_at, status)")
+      .eq("company_id", session.companyId)
+      .is("deactivated_at", null);
+
+    const liveRoles = visibleRoleFilter(session.role);
+    if (liveRoles) {
+      peopleQuery = peopleQuery.or(
+        `role.in.(${liveRoles.join(",")}),id.eq.${session.profileId}`,
+      );
+    }
+
     const [{ data: people }, { data: openIdle }, { data: todaySessions }] = await Promise.all([
-      app.supabase
-        .from("profiles")
-        .select("id, full_name, email, devices(id, platform, label, last_seen_at, status)")
-        .eq("company_id", session.companyId)
-        .is("deactivated_at", null)
-        .order("full_name", { ascending: true }),
+      peopleQuery.order("full_name", { ascending: true }),
       // An idle stretch with no end is one still running. This is the only source
       // for the amber row scope 4.3 shows literally — without it `StatusDot` can
       // render three states but `/live` can only ever produce two, so "Sarah, Idle"

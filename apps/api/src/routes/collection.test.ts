@@ -59,6 +59,9 @@ const CHAINABLE = [
   "lte",
   "order",
   "limit",
+  // Rank visibility filters the roster with these two.
+  "not",
+  "or",
 ];
 
 function fakeSupabase(results: Record<string, Result[]>) {
@@ -493,7 +496,11 @@ describe("a data type the device may not collect", () => {
 describe("POST /api/devices/enrollment-codes", () => {
   it("stores the chosen scope on the code and names it in the audit entry", async () => {
     const { client, calls } = fakeSupabase({
-      profiles: [{ data: { id: ALICE, full_name: "Alice", email: "a@x", deactivated_at: null } }],
+      profiles: [
+        // Minting a code is now rank-gated too, so the owner is resolved first.
+        { data: { id: ALICE, role: "employee" } },
+        { data: { id: ALICE, full_name: "Alice", email: "a@x", deactivated_at: null } },
+      ],
       device_enrollment_codes: [{}],
       audit_log_entries: [{}],
     });
@@ -517,6 +524,8 @@ describe("POST /api/devices/enrollment-codes", () => {
 
   it("defaults to denying nothing, so an old dashboard build mints an unrestricted code", async () => {
     const { client, calls } = fakeSupabase({
+      // No rank lookup here: Alice is enrolling her own machine, and
+      // `profileVisibilityDenial` short-circuits on self before it queries.
       profiles: [{ data: { id: ALICE, full_name: "Alice", email: "a@x", deactivated_at: null } }],
       device_enrollment_codes: [{}],
       audit_log_entries: [{}],
@@ -784,6 +793,7 @@ describe("GET /api/devices/:deviceId/collection", () => {
   it("returns an empty list for a device nobody has made a decision about", async () => {
     const { client } = fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_collection_settings: [{ data: null }],
     });
     const app = await buildTestApp({ supabase: client, session: manager });
