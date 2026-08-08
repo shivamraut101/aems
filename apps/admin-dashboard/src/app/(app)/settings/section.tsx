@@ -181,7 +181,8 @@ export function ConfirmPanel({
       <AlertTriangle className="mt-0.5 hidden h-4 w-4 shrink-0 text-warning sm:block" aria-hidden />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{title}</p>
-        <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>
+        {/* A div, not a p: callers pass a diff list, and a ul inside a p is invalid HTML. */}
+        <div className="mt-0.5 text-sm text-muted-foreground">{detail}</div>
         {error ? (
           <p role="alert" className="mt-1.5 text-sm text-destructive">
             {error}
