@@ -683,7 +683,18 @@ describe("POST /api/devices/heartbeat", () => {
   it("carries the enforced scope and the types still awaiting agreement", async () => {
     const { client } = fakeSupabase({
       devices: [{}],
-      policies: [{ data: { version: "1.2.0" } }],
+      policies: [
+        {
+          data: {
+            version: "1.2.0",
+            name: "Standard",
+            screenshot_interval_seconds: 600,
+            idle_threshold_seconds: 300,
+            max_open_break_seconds: 18000,
+            tracked_categories: [],
+          },
+        },
+      ],
       // Screenshots were switched back on after the employee agreed without them.
       consent_records: [{ data: { granted_types: ["applications", "idle"] } }],
       device_collection_settings: [settings(["telemetry", false], ["screenshots", true])],
@@ -691,19 +702,39 @@ describe("POST /api/devices/heartbeat", () => {
     const app = await buildTestApp({ supabase: client, device: laptop });
     const res = await app.inject({ method: "POST", url: "/api/devices/heartbeat", payload: BODY });
 
-    expect(res.json()).toEqual({
+    expect(res.json()).toMatchObject({
       ok: true,
       policyVersion: "1.2.0",
       collection: ["applications", "idle"],
       // Widening does not resume collection; it asks.
       pendingTypes: ["websites", "screenshots", "installed_apps"],
     });
+
+    // The policy rides every beat now. Before it did, an agent kept whatever policy it
+    // enrolled with for the life of the install, and Settings changed nothing.
+    expect(res.json().policy).toMatchObject({
+      version: "1.2.0",
+      screenshotIntervalSeconds: 600,
+      maxOpenBreakSeconds: 18000,
+      websiteRestrictions: { rules: [], contact: null },
+    });
   });
 
   it("reports nothing collectable while consent is missing", async () => {
     const { client } = fakeSupabase({
       devices: [{}],
-      policies: [{ data: { version: "1.2.0" } }],
+      policies: [
+        {
+          data: {
+            version: "1.2.0",
+            name: "Standard",
+            screenshot_interval_seconds: 600,
+            idle_threshold_seconds: 300,
+            max_open_break_seconds: 18000,
+            tracked_categories: [],
+          },
+        },
+      ],
       consent_records: [{ data: null }],
       device_collection_settings: [NO_SETTINGS],
     });
@@ -719,15 +750,31 @@ describe("POST /api/devices/heartbeat", () => {
     // Guessing "nothing is denied" would tell it to resume a type an admin switched off.
     const { client } = fakeSupabase({
       devices: [{}],
-      policies: [{ data: { version: "1.2.0" } }],
+      policies: [
+        {
+          data: {
+            version: "1.2.0",
+            name: "Standard",
+            screenshot_interval_seconds: 600,
+            idle_threshold_seconds: 300,
+            max_open_break_seconds: 18000,
+            tracked_categories: [],
+          },
+        },
+      ],
       consent_records: [CONSENT_ANY],
       device_collection_settings: [{ error: { message: "timeout" } }],
     });
     const app = await buildTestApp({ supabase: client, device: laptop });
 
-    expect(
-      (await app.inject({ method: "POST", url: "/api/devices/heartbeat", payload: BODY })).json(),
-    ).toEqual({ ok: true, policyVersion: "1.2.0" });
+    // The policy still rides along: it does not come from the failed read, and
+    // withholding it would freeze the fleet's policy on one bad query.
+    const failed = (
+      await app.inject({ method: "POST", url: "/api/devices/heartbeat", payload: BODY })
+    ).json();
+    expect(failed.collection).toBeUndefined();
+    expect(failed.pendingTypes).toBeUndefined();
+    expect(failed.policyVersion).toBe("1.2.0");
   });
 
   it("still answers ok for a company with no published policy", async () => {
@@ -817,6 +864,8 @@ describe("PATCH /api/devices/:deviceId/collection", () => {
   function patchable() {
     return fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      // The rank gate resolves the owner before any write to what their machine records.
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_collection_settings: [
         // Current state, then the upsert, then the read-back.
         settings(["screenshots", false]),
@@ -890,6 +939,8 @@ describe("PATCH /api/devices/:deviceId/collection", () => {
   it("reads absence as permitted when describing what changed", async () => {
     const { client, calls } = fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      // The rank gate resolves the owner before any write to what their machine records.
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_collection_settings: [NO_SETTINGS, {}, settings(["telemetry", false])],
       audit_log_entries: [{}],
     });
@@ -940,6 +991,8 @@ describe("PATCH /api/devices/:deviceId/collection", () => {
     // change to what a machine records is the one thing this table exists to prevent.
     const { client, calls } = fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      // The rank gate resolves the owner before any write to what their machine records.
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_collection_settings: [{ error: { message: "timeout" } }],
     });
     const app = await buildTestApp({ supabase: client, session: manager });

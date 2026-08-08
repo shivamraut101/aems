@@ -24,6 +24,7 @@ import {
 } from "../lib/enrollment-code.js";
 import { collectionDenial, deniedTypesFor, resolveCollection } from "../plugins/context.js";
 import { hiddenProfileIds, profileVisibilityDenial } from "../lib/visibility.js";
+import { loadWebsiteRestrictions } from "../lib/website-restrictions.js";
 
 const KNOWN_TYPES = new Set<string>(DATA_TYPE_IDS);
 
@@ -655,18 +656,36 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "forbidden", message: "Token does not match device", statusCode: 403 });
     }
 
-    const [, policyResult, consentResult, denied] = await Promise.all([
+    const [, policyResult, restrictions, consentResult, denied] = await Promise.all([
       app.supabase
         .from("devices")
         .update({ last_seen_at: new Date().toISOString(), status: "active" })
         .eq("id", device.deviceId),
+      // Full policy, not just the version.
+      //
+      // The agent fetched its policy once at enrolment and never again: `onHeartbeat`
+      // wrote `collection` and `pendingTypes` and dropped `policyVersion` on the floor.
+      // So every published policy change — screenshot interval, idle threshold, the
+      // forgotten-break limit, tracked categories — reached the dashboard, reached the
+      // database, and never reached a single enrolled machine. The Settings screen has
+      // been showing admins a policy their fleet was not running.
+      //
+      // Sent whole on every beat rather than diffed against `policyVersion`: the row is
+      // a few hundred bytes, this query already ran for the version alone, and a
+      // "fetch it when the version changes" path is a second endpoint plus a cache plus
+      // the bug where a missed beat leaves an agent stale forever.
       app.supabase
         .from("policies")
-        .select("version")
+        .select(
+          "version, name, screenshot_interval_seconds, idle_threshold_seconds, max_open_break_seconds, tracked_categories",
+        )
         .eq("company_id", device.companyId)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
+      // ponytail: two extra reads per beat per device. Fine at this fleet size; cache
+      // by company with a short TTL if a large tenant makes it show up in the metrics.
+      loadWebsiteRestrictions(app.supabase, device.companyId),
       app.supabase
         .from("consent_records")
         .select("granted_types")
@@ -678,11 +697,31 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
 
     const policyVersion = policyResult.data?.version;
 
+    // The agent shape, not the row. `websiteRestrictions` is the field the extension
+    // bridge already reads — see `websiteRestrictionsOf` in the desktop agent — so
+    // attaching it here is what turns website restriction from stored to enforced,
+    // with no change on either the agent or the extension side.
+    const policy = policyResult.data
+      ? {
+          version: policyResult.data.version,
+          name: policyResult.data.name,
+          screenshotIntervalSeconds: policyResult.data.screenshot_interval_seconds,
+          idleThresholdSeconds: policyResult.data.idle_threshold_seconds,
+          maxOpenBreakSeconds: policyResult.data.max_open_break_seconds,
+          trackedCategories: policyResult.data.tracked_categories,
+          websiteRestrictions: { rules: restrictions.rules, contact: restrictions.contact },
+        }
+      : undefined;
+
     // A failed settings read omits both arrays rather than guessing. Absent means "no
     // new information" to the agent, which keeps whatever it last heard; guessing
     // "nothing is denied" would tell it to resume a type an admin switched off.
+    //
+    // The policy still rides along: it is not derived from the settings read, and
+    // withholding it would freeze the fleet's policy on a transient failure of an
+    // unrelated query.
     if (denied === null) {
-      return { ok: true as const, ...(policyVersion ? { policyVersion } : {}) };
+      return { ok: true as const, ...(policyVersion ? { policyVersion } : {}), ...(policy ? { policy } : {}) };
     }
 
     // No live consent means nothing may be collected at all, whatever the settings say.
@@ -691,6 +730,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     return {
       ok: true as const,
       ...(policyVersion ? { policyVersion } : {}),
+      ...(policy ? { policy } : {}),
       collection: consentResult.data ? effectiveTypes(device.platform, denied, granted) : [],
       pendingTypes: consentResult.data ? pendingTypes(device.platform, denied, granted) : [],
     };
@@ -1107,6 +1147,12 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "not_found", message: "Device not found", statusCode: 404 });
     }
 
+    // Rank, on a write. Reading the super admin's device is a privacy failure; deciding
+    // what it records is a control one — a manager who could switch the owner's
+    // screenshots off would be editing the evidence rather than merely reading it.
+    const rank = await profileVisibilityDenial(app, session, device.profile_id);
+    if (rank) return reply.code(rank.statusCode).send({ ...rank });
+
     const previous = await deniedTypesFor(app.supabase, deviceId);
     if (previous === null) {
       return reply.code(500).send({
@@ -1241,6 +1287,11 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     if (!device) {
       return reply.code(404).send({ error: "not_found", message: "No such device", statusCode: 404 });
     }
+
+    // Which machine defines somebody's working hours is not a manager's call to make
+    // about someone who outranks them.
+    const rank = await profileVisibilityDenial(app, session, device.profile_id);
+    if (rank) return reply.code(rank.statusCode).send({ ...rank });
 
     if (device.status === "revoked") {
       return reply.code(409).send({

@@ -86,6 +86,19 @@ export interface AgentPolicy {
    */
   maxOpenBreakSeconds?: number;
   trackedCategories: string[];
+  /**
+   * Sites the managed browser extension must refuse, and who to ask about one.
+   *
+   * Optional for the same reason as `maxOpenBreakSeconds`, and read defensively by
+   * `websiteRestrictionsOf` in the desktop agent — the extension was written against
+   * this field before anything populated it. Only `block` rules with a `domain` match
+   * appear: the bridge's rule is a host and a sentence, and a URL pattern squeezed into
+   * that shape would refuse the wrong pages. See `lib/website-restrictions.ts`.
+   */
+  websiteRestrictions?: {
+    rules: { id: number; domain: string; reason: string | null }[];
+    contact: string | null;
+  };
 }
 
 export interface ConsentSubmission {
@@ -117,6 +130,16 @@ export interface HeartbeatResponse {
   ok: true;
   /** The company policy in force, for comparison against the consented version. */
   policyVersion?: string;
+  /**
+   * The whole policy in force, so a published change reaches an already-enrolled agent.
+   *
+   * Before this the agent read its policy once, at enrolment, and never again — every
+   * later edit to the screenshot interval, the idle threshold, the forgotten-break
+   * limit or the tracked categories stopped at the database. Optional so an agent built
+   * against the older contract is unaffected, and so the field can be omitted rather
+   * than guessed when the policy read fails.
+   */
+  policy?: AgentPolicy;
   /** What the server is enforcing right now: granted ∩ allowed. */
   collection?: DataTypeId[];
   /**

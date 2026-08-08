@@ -406,6 +406,15 @@ function attachDevice(deviceId: string, deviceToken: string): void {
       rt.store.update({
         collection: response.collection ?? null,
         pendingTypes: response.pendingTypes ?? [],
+        // A policy published after this machine enrolled arrives here and nowhere else.
+        // The agent used to read its policy once, at enrolment, so an admin who changed
+        // the screenshot interval or the forgotten-break limit changed it for new
+        // devices only — silently, with the Settings screen reporting success.
+        //
+        // Absent means "no new information", exactly as it does for `collection`:
+        // keeping the last known policy is right when a read failed, and blanking it
+        // would drop the fleet to defaults on one bad query.
+        ...(response.policy ? { policy: response.policy } : {}),
       });
     },
   });

@@ -588,6 +588,38 @@ describe("rank visibility", () => {
     expect(forTable(calls, "devices")[0]!.ops.some((op) => op.fn === "not")).toBe(false);
   });
 
+  /**
+   * Reads were the reported bug; these two are writes, and they are worse. Reading the
+   * owner's screenshots is a privacy failure — deciding what their machine records, or
+   * which machine defines their hours, is a control one.
+   */
+  it("refuses a manager changing the super admin's collection scope", async () => {
+    const { client, calls } = fakeSupabase({
+      devices: [{ data: { id: DEVICE, profile_id: SUPER, label: "Erin Laptop" } }],
+      profiles: [{ data: { id: SUPER, role: "super_admin" } }],
+    });
+    const app = await buildTestApp({ supabase: client, session: manager });
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/devices/${DEVICE}/collection`,
+      payload: { types: { screenshots: false } },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(forTable(calls, "device_collection_settings")).toHaveLength(0);
+  });
+
+  it("refuses a manager making the super admin's device primary", async () => {
+    const { client } = fakeSupabase({
+      devices: [{ data: { id: DEVICE, profile_id: SUPER, status: "active", label: "Erin Laptop" } }],
+      profiles: [{ data: { id: SUPER, role: "super_admin" } }],
+    });
+    const app = await buildTestApp({ supabase: client, session: manager });
+    const res = await app.inject({ method: "POST", url: `/api/devices/${DEVICE}/primary` });
+
+    expect(res.statusCode).toBe(404);
+  });
+
   it("excludes higher ranks from a manager's device roster", async () => {
     const { client, calls } = fakeSupabase({
       profiles: [{ data: [{ id: SUPER, role: "super_admin" }] }],
