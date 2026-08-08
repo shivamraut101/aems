@@ -30,19 +30,14 @@ if (process.argv.includes('--print-schema')) {
   process.exit(0)
 }
 
-// Snapshot of the live schema. Last refreshed 2026-08-05 against project
-// dayyrqcfktwwnkttlres after migrations 20260805000007 (categories),
-// 20260805000008 (ai_summaries uniqueness), 20260805000010 (report specs),
-// 20260805000011 (profiles.deactivated_at), 20260805000012 (device enrolment codes)
-// and 20260805000013 (website restrictions).
+// Snapshot of the live schema. Last refreshed 2026-08-08 against project
+// dayyrqcfktwwnkttlres, after 20260808000017 (device_collection_settings,
+// device_enrollment_codes.denied_types, consent_records.granted_types).
 //
-// ⚠️ `location_points` below is the one entry NOT yet confirmed against the live
-// database. Migration 20260807000014 (location tracking, scope §3.5) is written and
-// committed but has not been applied — the CLI on the machine that wrote it is
-// authenticated to a different organisation and cannot reach project
-// dayyrqcfktwwnkttlres. Until somebody applies it, this check passes while the live
-// database would answer `POST /api/activity/events` with a 500 on any batch carrying
-// locations. Re-run the query above and refresh this whole snapshot once it is applied.
+// The earlier warning here — that `location_points` was unconfirmed because migration
+// 20260807000014 had never been applied — is resolved: it is applied, along with
+// 20260808000015 and 20260808000016, and the three tables touched by ...0017 were
+// re-read from information_schema rather than assumed.
 const SCHEMA = {
   activity_events: 'id,company_id,profile_id,device_id,work_session_id,app_name,window_title,url,category,started_at,ended_at,client_event_id,created_at,domain',
   ai_summaries: 'id,company_id,profile_id,kind,period_start,period_end,provider,model,content,created_at',
@@ -50,9 +45,10 @@ const SCHEMA = {
   break_events: 'id,company_id,profile_id,device_id,work_session_id,break_start_at,break_end_at,duration_seconds,client_event_id,created_at',
   category_rules: 'id,company_id,priority,category_path,productivity,match_app,match_title,match_domain,ignore_case,created_at,updated_at',
   companies: 'id,name,created_at,updated_at',
-  consent_records: 'id,company_id,profile_id,device_id,policy_version,method,ip_address,consented_at,revoked_at',
+  consent_records: 'id,company_id,profile_id,device_id,policy_version,method,ip_address,consented_at,revoked_at,granted_types',
   device_applications: 'id,company_id,device_id,name,version,identifier,first_seen_at,last_seen_at',
-  device_enrollment_codes: 'id,company_id,profile_id,code_hash,expires_at,consumed_at,consumed_device_id,created_by,created_at',
+  device_collection_settings: 'company_id,device_id,data_type,enabled,changed_by,changed_at',
+  device_enrollment_codes: 'id,company_id,profile_id,code_hash,expires_at,consumed_at,consumed_device_id,created_by,created_at,platform,denied_types',
   device_telemetry: 'id,company_id,device_id,recorded_at,battery_level,battery_charging,network_type,storage_free_mb,screen_active_seconds',
   devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb,is_primary',
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',

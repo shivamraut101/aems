@@ -8,6 +8,7 @@
 
 import type {
   ConsentMethod,
+  DataTypeId,
   DevicePlatform,
   NetworkType,
   ReportFormat,
@@ -55,6 +56,17 @@ export interface DeviceEnrollmentResponse {
   /** Agents must block all collection until this is true. */
   consentRequired: boolean;
   policy: AgentPolicy;
+  /**
+   * What this machine may collect — the platform's capability minus whatever the
+   * enrolment code denied. Optional, and absent means "everything the platform
+   * supports", the same rule as a missing `device_collection_settings` row: an agent
+   * built before this field existed must not read its absence as "collect nothing".
+   *
+   * Deliberately not a field on `AgentPolicy`: a policy is company-scoped and its
+   * `version` is compared against the consented version, so hanging a per-device value
+   * off it would make that comparison mean two different things.
+   */
+  collection?: DataTypeId[];
 }
 
 /** The subset of a policy row an agent needs in order to behave correctly. */
@@ -70,6 +82,58 @@ export interface ConsentSubmission {
   deviceId: string;
   policyVersion: string;
   method: ConsentMethod;
+  /**
+   * The data types the screen actually listed, and therefore what was agreed to.
+   *
+   * Optional because an agent that predates per-type consent submits without it, and
+   * the row it writes keeps `granted_types` NULL — "the platform default of the day",
+   * which is precisely what those signatures meant.
+   */
+  grantedTypes?: DataTypeId[];
+}
+
+/**
+ * The heartbeat's answer, widened from `{ ok: true }`.
+ *
+ * This is how a change of scope reaches a running agent, and it is a widened heartbeat
+ * rather than a new endpoint because heartbeat already runs every 60 seconds, already
+ * re-reads the device row, and is already the consent-exempt channel revocation travels
+ * on. A second poll for two string arrays buys nothing.
+ *
+ * Every field past `ok` is optional so an agent that ignores them — the Android one
+ * does — keeps working unchanged.
+ */
+export interface HeartbeatResponse {
+  ok: true;
+  /** The company policy in force, for comparison against the consented version. */
+  policyVersion?: string;
+  /** What the server is enforcing right now: granted ∩ allowed. */
+  collection?: DataTypeId[];
+  /**
+   * Types an admin switched on that the employee has not yet agreed to. Non-empty means
+   * the agent should route back to the consent screen; it must not collect them first.
+   */
+  pendingTypes?: DataTypeId[];
+}
+
+/**
+ * One row of a device's collection scope, as the dashboard reads it.
+ *
+ * Only types with an explicit decision appear — everything else is permitted by
+ * absence. `changedByName` is null when the person who made the change has left; the
+ * decision outlives them, which is why the attribution is on the settings row rather
+ * than looked up from the audit log.
+ */
+export interface DeviceCollectionSetting {
+  dataType: DataTypeId;
+  enabled: boolean;
+  changedByName: string | null;
+  changedAt: string;
+}
+
+/** Manager-only. Absent keys are left alone rather than reset to permitted. */
+export interface DeviceCollectionUpdate {
+  types: Partial<Record<DataTypeId, boolean>>;
 }
 
 /**
@@ -167,6 +231,16 @@ export interface ActivityBatchResult {
   acceptedLocations: number;
   /** Rows skipped because their clientEventId was already stored. */
   duplicates: number;
+  /**
+   * Rows the server refused because the device may not collect that type.
+   *
+   * Reported separately rather than folded into `duplicates`, which would tell an agent
+   * its data had already been stored when in fact it was dropped. Optional so an older
+   * API's response still parses; absent means nothing was refused.
+   */
+  refusedActivity?: number;
+  refusedIdle?: number;
+  refusedLocations?: number;
 }
 
 export interface HeartbeatInput {
