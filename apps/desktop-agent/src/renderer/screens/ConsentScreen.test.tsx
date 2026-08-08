@@ -41,6 +41,8 @@ const CONSENTED: AgentStatus = {
   permissions: { screenRecording: "granted", accessibility: "granted", websiteTracking: "browser-url" },
   totals: emptyTotals(),
   onBreak: false,
+  collection: null,
+  pendingTypes: [],
   dayEnded: false,
 };
 
@@ -140,7 +142,7 @@ afterEach(() => {
 describe("the gate cannot be bypassed", () => {
   it("keeps the accept control disabled until the employee agrees", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(acceptButton().disabled).toBe(true);
@@ -163,7 +165,7 @@ describe("the gate cannot be bypassed", () => {
     const acceptConsent = vi.fn(() => Promise.resolve(CONSENTED));
     const onAccepted = vi.fn();
     window.aems = bridge({ acceptConsent });
-    mount(<ConsentScreen onAccepted={onAccepted} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={onAccepted} />);
     await settle();
 
     click(acceptButton());
@@ -178,7 +180,7 @@ describe("the gate cannot be bypassed", () => {
   // running past a gate it has not passed.
   it("offers exactly two ways out, and neither of them is a dismissal", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(buttons()).toHaveLength(2);
@@ -188,7 +190,7 @@ describe("the gate cannot be bypassed", () => {
 
   it("stays on screen when the window is dismissed with the keyboard", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     act(() => {
@@ -206,7 +208,7 @@ describe("the gate cannot be bypassed", () => {
     const acceptConsent = vi.fn(() => Promise.resolve(CONSENTED));
     const onAccepted = vi.fn();
     window.aems = bridge({ quit, acceptConsent });
-    mount(<ConsentScreen onAccepted={onAccepted} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={onAccepted} />);
     await settle();
 
     click(declineButton());
@@ -223,7 +225,7 @@ describe("accepting", () => {
     const acceptConsent = vi.fn(() => Promise.resolve(CONSENTED));
     const onAccepted = vi.fn();
     window.aems = bridge({ acceptConsent });
-    mount(<ConsentScreen onAccepted={onAccepted} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={onAccepted} />);
     await settle();
 
     click(agreementCheckbox());
@@ -245,7 +247,7 @@ describe("accepting", () => {
         }),
     );
     window.aems = bridge({ acceptConsent });
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     click(agreementCheckbox());
@@ -271,7 +273,7 @@ describe("accepting", () => {
           release = resolve;
         }),
     });
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     click(agreementCheckbox());
@@ -293,7 +295,7 @@ describe("when something fails", () => {
     window.aems = bridge({
       acceptConsent: () => Promise.reject(new Error("the server rejected this device")),
     });
-    mount(<ConsentScreen onAccepted={onAccepted} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={onAccepted} />);
     await settle();
 
     click(agreementCheckbox());
@@ -312,7 +314,7 @@ describe("when something fails", () => {
       .mockResolvedValueOnce(CONSENTED);
     const onAccepted = vi.fn();
     window.aems = bridge({ acceptConsent });
-    mount(<ConsentScreen onAccepted={onAccepted} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={onAccepted} />);
     await settle();
 
     click(agreementCheckbox());
@@ -331,7 +333,7 @@ describe("when something fails", () => {
   // exact intervals, but a blank or half-rendered gate would be consent to nothing.
   it("still sets out everything collected when the policy cannot be fetched", async () => {
     window.aems = bridge({ getPolicy: () => Promise.reject(new Error("offline")) });
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     for (const subject of [/application/i, /website/i, /idle/i, /screenshot/i, /device/i]) {
@@ -346,7 +348,7 @@ describe("when something fails", () => {
       getPolicy: () => Promise.reject(new Error("offline")),
       acceptConsent,
     });
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     click(agreementCheckbox());
@@ -360,7 +362,7 @@ describe("when something fails", () => {
 describe("what the gate discloses", () => {
   it("names the policy version being agreed to once it is known", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(text()).toMatch(POLICY.version);
@@ -369,7 +371,7 @@ describe("what the gate discloses", () => {
 
   it("states the screenshot interval the policy actually carries", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(text()).toMatch(/every 5 minutes/i);
@@ -379,7 +381,7 @@ describe("what the gate discloses", () => {
   // directions. Stating them is the difference between disclosure and a checkbox.
   it("states the limits as well as the collection", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(text()).toMatch(/what you type is never recorded/i);
@@ -388,7 +390,7 @@ describe("what the gate discloses", () => {
 
   it("promises the visible indicator and the right to withdraw", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(text()).toMatch(/tray icon/i);
@@ -413,7 +415,7 @@ describe("what the gate promises is what this platform can do", () => {
 
   it("does not promise website addresses on a computer that cannot read them", async () => {
     window.aems = bridge({ getPermissions: () => Promise.resolve(titleOnly) });
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(text()).not.toContain("Website domains you visit");
@@ -422,10 +424,64 @@ describe("what the gate promises is what this platform can do", () => {
 
   it("still promises them where the address really is read", async () => {
     window.aems = bridge();
-    mount(<ConsentScreen onAccepted={() => undefined} />);
+    mount(<ConsentScreen status={CONSENTED} onAccepted={() => undefined} />);
     await settle();
 
     expect(text()).toContain("Website domains you visit");
     expect(text()).not.toContain("cannot report the addresses of pages you open");
+  });
+});
+
+/**
+ * The gate lists what this device will actually collect, and nothing else.
+ *
+ * Asking somebody to agree to something that will not happen is not disclosure — it is
+ * the same defect as promising website addresses on a machine that cannot read them,
+ * which is why the two are now one code path rather than two lists that can drift.
+ */
+describe("what the gate lists is what this device is scoped to", () => {
+  function scoped(collection: AgentStatus["collection"], pendingTypes: AgentStatus["pendingTypes"] = []) {
+    return { ...CONSENTED, collection, pendingTypes };
+  }
+
+  it("does not mention a type an administrator has switched off", async () => {
+    window.aems = bridge();
+    mount(
+      <ConsentScreen
+        status={scoped(["applications", "idle"])}
+        onAccepted={() => undefined}
+      />,
+    );
+    await settle();
+
+    expect(text()).toMatch(/applications you use/i);
+    expect(text()).toMatch(/idle periods/i);
+    expect(text()).not.toMatch(/screenshot/i);
+    expect(text()).not.toMatch(/battery/i);
+  });
+
+  it("lists everything the platform supports when no scope has reached the agent", async () => {
+    // The deploy case: null means "the platform default of the day", so the gate must
+    // read exactly as it did before per-device scope existed.
+    window.aems = bridge();
+    mount(<ConsentScreen status={scoped(null)} onAccepted={() => undefined} />);
+    await settle();
+
+    for (const subject of [/application/i, /website/i, /idle/i, /screenshot/i, /device/i]) {
+      expect(text()).toMatch(subject);
+    }
+  });
+
+  it("includes a type an administrator has added, because that is what is being asked", async () => {
+    window.aems = bridge();
+    mount(
+      <ConsentScreen
+        status={scoped(["applications"], ["screenshots"])}
+        onAccepted={() => undefined}
+      />,
+    );
+    await settle();
+
+    expect(text()).toMatch(/screenshot/i);
   });
 });

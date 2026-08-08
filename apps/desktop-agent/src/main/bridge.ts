@@ -27,7 +27,7 @@
  * drop the port. All logging here goes to stderr, which Chrome captures separately.
  */
 
-import type { AgentPolicy } from "../shared/types/index.js";
+import type { AgentPolicy, DataTypeId } from "../shared/types/index.js";
 import type {
   BridgeStateMessage,
   ExtensionMessage,
@@ -195,6 +195,14 @@ export interface BridgeConfigFacts {
   deviceId: string | null;
   consentedPolicyVersion: string | null;
   policy: AgentPolicy | null;
+  /**
+   * The device's collection scope, or null when no per-device scope has arrived.
+   *
+   * Read here as well as in the collection loop because this is a *separate process*
+   * reading the same JSON — an administrator switching websites off has to reach the
+   * browser half at the next navigation, not at the next browser restart.
+   */
+  collection: DataTypeId[] | null;
   revoked: boolean;
 }
 
@@ -212,6 +220,26 @@ export function monitoringStateOf(facts: BridgeConfigFacts): MonitoringState {
   if (facts.deviceId === null) return "not-enrolled";
   if (facts.policy === null || facts.consentedPolicyVersion === null) return "consent-required";
   return facts.policy.version === facts.consentedPolicyVersion ? "collecting" : "consent-required";
+}
+
+/**
+ * Whether an address reported by the browser may be recorded at all.
+ *
+ * Separate from {@link monitoringStateOf} rather than folded into it, and that is a
+ * decision rather than an oversight. `MonitoringState` is shared byte-for-byte with the
+ * extension and has no member for "collecting, but not websites"; borrowing
+ * `consent-required` to mean it would make the extension's own status panel tell the
+ * employee to go and accept a policy they have already accepted, and would switch off
+ * the restriction rules too — which are enforcement, not observation, and are not what
+ * a `websites` setting governs.
+ *
+ * So the refusal lands here, on the host side of the pipe, which is the process that
+ * would otherwise write the address down. The gate mirrors `mayCollectType`: an absent
+ * or unusable scope permits, exactly as an absent settings row does.
+ */
+export function mayRecordWebsites(facts: BridgeConfigFacts): boolean {
+  if (monitoringStateOf(facts) !== "collecting") return false;
+  return Array.isArray(facts.collection) ? facts.collection.includes("websites") : true;
 }
 
 /**
@@ -330,8 +358,10 @@ export class NativeBridge {
   }
 
   private apply(message: ExtensionMessage): void {
-    const state = stateMessageOf(this.ports.readFacts());
+    const facts = this.ports.readFacts();
+    const state = stateMessageOf(facts);
     const collecting = state.monitoring === "collecting";
+    const websites = mayRecordWebsites(facts);
 
     switch (message.type) {
       case "hello":
@@ -347,7 +377,16 @@ export class NativeBridge {
         break;
 
       case "page":
-        if (collecting) this.ports.observe({ url: message.url, at: this.ports.now().toISOString() });
+        // Recorded as "nothing in view" rather than skipped when websites are off, so
+        // the first navigation after the switch also clears whatever the last permitted
+        // one left in the link file — otherwise a stale address would go on being
+        // offered to the tracker until the browser happened to restart.
+        if (collecting) {
+          this.ports.observe({
+            url: websites ? message.url : null,
+            at: this.ports.now().toISOString(),
+          });
+        }
         break;
 
       case "cleared":

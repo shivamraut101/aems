@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentPolicy } from "@aems/types";
 
-import { emptyConfig, mayCollect, type AgentConfig } from "./index.js";
+import {
+  emptyConfig,
+  mayCollect,
+  mayCollectType,
+  offeredTypes,
+  type AgentConfig,
+} from "./index.js";
 
 /**
  * The consent gate — non-negotiable #1 in CLAUDE.md.
@@ -90,5 +96,72 @@ describe("mayCollect", () => {
 
   it("refuses a freshly initialised config", () => {
     expect(mayCollect(emptyConfig("http://localhost:3001"))).toBe(false);
+  });
+});
+
+/**
+ * The per-device half of the same gate.
+ *
+ * Every per-type check in `main/` routes through `mayCollectType`, so the rules that
+ * matter are: an absent scope changes nothing, a denied type is refused, and consent
+ * still outranks both. Verified by mutation — dropping the `mayCollect` call, and
+ * flipping the `Array.isArray` default to `false`, each broke a case below.
+ */
+describe("mayCollectType", () => {
+  it("permits everything when no per-device scope has arrived", () => {
+    // The deploy case, and the whole reason this defaults open: the eight devices in
+    // the field have no settings rows and must keep collecting exactly what they did.
+    const config = consented({ collection: null });
+
+    expect(mayCollectType(config, "screenshots")).toBe(true);
+    expect(mayCollectType(config, "websites")).toBe(true);
+    expect(mayCollectType(config, "telemetry")).toBe(true);
+  });
+
+  it("refuses a type the scope leaves out, and permits the ones it names", () => {
+    const config = consented({ collection: ["applications", "idle"] });
+
+    expect(mayCollectType(config, "applications")).toBe(true);
+    expect(mayCollectType(config, "idle")).toBe(true);
+    expect(mayCollectType(config, "screenshots")).toBe(false);
+    expect(mayCollectType(config, "websites")).toBe(false);
+  });
+
+  it("still refuses a permitted type when there is no consent behind it", () => {
+    // The order matters: a scope is an administrator narrowing what may be collected,
+    // never a second route to collecting it. Consent is checked first and separately.
+    const config = consented({
+      collection: ["screenshots"],
+      consentedPolicyVersion: null,
+    });
+
+    expect(mayCollectType(config, "screenshots")).toBe(false);
+  });
+
+  it("refuses everything on a revoked device whatever the scope says", () => {
+    expect(mayCollectType(consented({ collection: ["idle"], revoked: true }), "idle")).toBe(false);
+  });
+
+  it("permits when the stored scope is not a list at all", () => {
+    // A hand-edited config must cost the narrowing, not the day: the API enforces the
+    // same set independently, so a degraded agent over-reports to a server that
+    // refuses it rather than silently recording nothing and telling nobody.
+    const damaged = consented({ collection: "screenshots" as unknown as null });
+
+    expect(mayCollectType(damaged, "screenshots")).toBe(true);
+  });
+});
+
+describe("offeredTypes", () => {
+  it("lists what is permitted plus what an administrator has added, without duplicates", () => {
+    expect(offeredTypes(["applications", "idle"], ["screenshots", "idle"])).toEqual([
+      "applications",
+      "idle",
+      "screenshots",
+    ]);
+  });
+
+  it("stays null when no scope has arrived, so the caller falls back to the default", () => {
+    expect(offeredTypes(null, ["screenshots"])).toBeNull();
   });
 });

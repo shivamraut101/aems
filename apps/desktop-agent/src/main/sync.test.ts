@@ -2,6 +2,7 @@ import type {
   ActivityBatch,
   ActivityBatchResult,
   HeartbeatInput,
+  HeartbeatResponse,
   ScreenshotUploadResult,
 } from "@aems/types";
 import { describe, expect, it } from "vitest";
@@ -80,10 +81,13 @@ class FakeApi {
     return this.uploadResult ?? { screenshotId: this.uploads.length };
   }
 
-  async heartbeat(body: HeartbeatInput): Promise<{ ok: true }> {
+  /** What the next heartbeat answers with, beyond `ok`. The scope arrives on this route. */
+  heartbeatResponse: HeartbeatResponse = { ok: true };
+
+  async heartbeat(body: HeartbeatInput): Promise<HeartbeatResponse> {
     this.heartbeats.push(body);
     if (this.heartbeatError !== null) throw this.heartbeatError;
-    return { ok: true };
+    return this.heartbeatResponse;
   }
 }
 
@@ -628,5 +632,58 @@ describe("SyncQueue durability", () => {
 
     const restored = new SyncQueue(new FakeApi(), DEVICE, { lastSyncAt: stamps[0] ?? null });
     expect(restored.lastSyncAt).toBe(T0.toISOString());
+  });
+});
+
+/**
+ * The heartbeat as the delivery channel for this device's collection scope.
+ *
+ * Chosen over a route of its own because it already runs every 60 s, already re-reads
+ * the device row and is already the consent-exempt channel revocation travels on — a
+ * second poll for two string arrays buys nothing. Every field is optional, so an API
+ * that does not send them leaves the agent collecting exactly what it collected before.
+ */
+describe("SyncQueue heartbeat scope delivery", () => {
+  it("hands the scope and the pending set to the caller", async () => {
+    const api = new FakeApi();
+    const seen: HeartbeatResponse[] = [];
+    const queue = new SyncQueue(api, DEVICE, { onHeartbeat: (response) => seen.push(response) });
+
+    api.heartbeatResponse = {
+      ok: true,
+      collection: ["applications", "idle"],
+      pendingTypes: ["screenshots"],
+    };
+    await queue.heartbeat(null);
+
+    expect(seen).toEqual([
+      { ok: true, collection: ["applications", "idle"], pendingTypes: ["screenshots"] },
+    ]);
+  });
+
+  it("says nothing to the caller when the heartbeat never landed", async () => {
+    // A network blip must not be read as "the administrator switched everything off".
+    const api = new FakeApi();
+    const seen: HeartbeatResponse[] = [];
+    const queue = new SyncQueue(api, DEVICE, { onHeartbeat: (response) => seen.push(response) });
+
+    api.heartbeatError = new TypeError("fetch failed");
+
+    await expect(queue.heartbeat(null)).resolves.toBe("retry");
+    expect(seen).toEqual([]);
+  });
+
+  it("lets the caller's own write fail as itself rather than as a refused heartbeat", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE, {
+      onHeartbeat: () => {
+        throw new Error("ENOSPC");
+      },
+    });
+
+    // The callback writes the config to disk. A full disk there is not the API refusing
+    // the heartbeat, and classifying it as one would stop the loop for the wrong reason.
+    await expect(queue.heartbeat(null)).rejects.toThrow("ENOSPC");
+    expect(api.heartbeats).toHaveLength(1);
   });
 });

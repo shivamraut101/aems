@@ -102,8 +102,17 @@ export class ConfigStore {
    * this file, instead of landing in plaintext because nobody remembered to exclude it.
    */
   private writeJson(): void {
-    const { apiUrl, deviceId, profileId, companyId, consentedPolicyVersion, policy, revoked } =
-      this.config;
+    const {
+      apiUrl,
+      deviceId,
+      profileId,
+      companyId,
+      consentedPolicyVersion,
+      policy,
+      collection,
+      pendingTypes,
+      revoked,
+    } = this.config;
 
     writeFileSync(
       this.file,
@@ -115,6 +124,11 @@ export class ConfigStore {
           companyId,
           consentedPolicyVersion,
           policy,
+          // Written here and not only held in memory because the bridge process reads
+          // this file: the browser half of website tracking has to see the same scope
+          // the collection loop does, at the next navigation rather than the next launch.
+          collection,
+          pendingTypes,
           revoked,
         },
         null,

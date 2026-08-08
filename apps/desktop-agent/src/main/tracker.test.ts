@@ -426,3 +426,76 @@ describe("Tracker.resume", () => {
     expect(tracker.openFocus).toBeNull();
   });
 });
+
+/**
+ * The `websites` data type, at the only two lines in the agent that produce either field.
+ *
+ * Gating the URL *reader* instead would have missed half the feature: the managed
+ * browser extension's addresses arrive through `state/browser-link.json`, not through
+ * the focus sample, and both paths converge here. So the gate sits on the tracker, is a
+ * function rather than a captured flag, and is asked again at close time — an interval
+ * opened while websites were permitted must not carry an address off a machine where
+ * they have since been switched off.
+ */
+describe("Tracker with websites switched off", () => {
+  const CHROME = focus("Google Chrome", "AEMS", "https://github.com/aems/agent");
+
+  function offTracker(): Tracker {
+    return new Tracker(() => "id", macosBrowserUrlReader, () => false);
+  }
+
+  it("reports neither the address nor the domain", () => {
+    const tracker = offTracker();
+    tracker.observeFocus(CHROME, at(0));
+
+    const event = tracker.flush(at(60));
+
+    expect(event?.url).toBeNull();
+    expect(event?.domain).toBeNull();
+  });
+
+  it("still reports the application, because that is a different type and still true", () => {
+    // Dropping the row to enforce a website setting would silently blank the Apps view
+    // as well — deleting activity the employee did agree to.
+    const tracker = offTracker();
+    tracker.observeFocus(CHROME, at(0));
+    const closed = tracker.flush(at(60));
+
+    expect(closed?.appName).toBe("Google Chrome");
+    expect(closed?.windowTitle).toBe("AEMS");
+  });
+
+  it("stops splitting the interval when the browser moves between sites", () => {
+    // Identity is the app plus the site. With no site to see, two hosts in one browser
+    // are one stretch of "Google Chrome" — which is exactly what a machine that cannot
+    // read addresses already produces, and the honest shape here too.
+    const tracker = offTracker();
+
+    tracker.observeFocus(CHROME, at(0));
+    const split = tracker.observeFocus(
+      focus("Google Chrome", "AEMS", "https://stackoverflow.com/q/1"),
+      at(30),
+    );
+
+    expect(split).toBeNull();
+  });
+
+  it("nulls an address on an interval that opened while websites were still permitted", () => {
+    let permitted = true;
+    const tracker = new Tracker(() => "id", macosBrowserUrlReader, () => permitted);
+
+    tracker.observeFocus(CHROME, at(0));
+    permitted = false;
+    const event = tracker.flush(at(60));
+
+    expect(event?.domain).toBeNull();
+    expect(event?.url).toBeNull();
+  });
+
+  it("reports the domain as before when nothing has switched it off", () => {
+    const tracker = new Tracker(() => "id", macosBrowserUrlReader);
+    tracker.observeFocus(CHROME, at(0));
+
+    expect(tracker.flush(at(60))?.domain).toBe("github.com");
+  });
+});

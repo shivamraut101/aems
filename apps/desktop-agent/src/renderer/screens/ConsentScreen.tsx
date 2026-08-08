@@ -1,17 +1,15 @@
+import { describeDataTypes } from "@aems/types";
 import { useEffect, useState, type ReactElement } from "react";
 
 import type { AgentPolicy, AgentStatus, UrlFidelity } from "../../shared/types/index.js";
 import { Shell } from "../components/Shell.js";
 import { agentBridge, bridgeErrorMessage } from "../lib/bridge.js";
 import { formatSpan } from "../lib/format.js";
+import { consentTypes } from "../lib/view.js";
 
 interface ConsentScreenProps {
+  status: AgentStatus;
   onAccepted: (status: AgentStatus) => void;
-}
-
-interface CollectedItem {
-  title: string;
-  detail: string;
 }
 
 /**
@@ -26,7 +24,7 @@ interface CollectedItem {
  * is where the employee is told what they are agreeing to, in the words the policy
  * actually means, before any of it happens.
  */
-export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement {
+export function ConsentScreen({ status, onAccepted }: ConsentScreenProps): ReactElement {
   const [policy, setPolicy] = useState<AgentPolicy | null>(null);
   /**
    * What this machine can see of a browser address.
@@ -151,8 +149,8 @@ export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement 
       </p>
 
       <ul className="consent-list">
-        {collectedItems(policy, websiteTracking).map((item) => (
-          <li className="consent-list__item" key={item.title}>
+        {collectedItems(status, policy, websiteTracking).map((item) => (
+          <li className="consent-list__item" key={item.id}>
             <p className="consent-list__title">{item.title}</p>
             <p className="consent-list__detail">{item.detail}</p>
           </li>
@@ -180,52 +178,27 @@ export function ConsentScreen({ onAccepted }: ConsentScreenProps): ReactElement 
 }
 
 /**
- * What the agent records, in plain terms.
+ * What the agent records on *this* machine, in plain terms.
  *
- * Written against what the main-process modules actually do rather than against the
- * policy row, so a wording that drifts from the behaviour is a bug someone can see.
- * The negatives — keystrokes, page contents — are stated because their absence is
- * the part employees most often assume wrongly.
+ * The wording lives in `@aems/types` rather than here, because the dashboard shows the
+ * same list to the same employee and two hardcoded copies of it drift — at which point
+ * one of them is lying and neither is trustworthy. This screen supplies the two policy
+ * numbers and the one platform fact the copy is parameterised by, and nothing else.
+ *
+ * The list is the device's permitted set, not the vocabulary: a type an administrator
+ * has switched off is not shown, because asking somebody to agree to something that
+ * will not happen is not disclosure. This is the same rule the Windows website line
+ * already followed for a different reason — a promise the machine cannot keep is
+ * dropped rather than printed — and it is why the two are now one code path.
  */
-function collectedItems(policy: AgentPolicy | null, websiteTracking: UrlFidelity): CollectedItem[] {
-  const screenshotEvery =
-    policy === null
-      ? "at regular intervals"
-      : `about every ${formatSpan(policy.screenshotIntervalSeconds)}`;
-  const idleAfter =
-    policy === null ? "for a few minutes" : `for ${formatSpan(policy.idleThresholdSeconds)}`;
-
-  return [
-    {
-      title: "Applications you use",
-      detail: "The name of the application in focus and how long it stays in focus.",
-    },
-    // Windows exposes no supported way to read a browser tab's address, so promising
-    // one there would be a description of a capability this binary does not have —
-    // on the single screen whose validity rests on the description being accurate.
-    websiteTracking === "browser-url"
-      ? {
-          title: "Website domains you visit",
-          detail:
-            "The domain of the page open in your browser — github.com, for example — and the time spent there. Page contents are not read.",
-        }
-      : {
-          title: "Not the websites you visit",
-          detail:
-            "This computer cannot report the addresses of pages you open, so no website activity is recorded from it. Your browser is recorded only as an application, by name and by how long it is in focus.",
-        },
-    {
-      title: "Idle periods",
-      detail: `When there has been no keyboard or mouse activity ${idleAfter}. What you type is never recorded — only whether input happened.`,
-    },
-    {
-      title: "Screenshots",
-      detail: `A picture of your screen ${screenshotEvery}, covering every display connected to this computer.`,
-    },
-    {
-      title: "This device",
-      detail:
-        "Device name, operating system and version, CPU and memory, and the list of applications installed on it.",
-    },
-  ];
+function collectedItems(
+  status: AgentStatus,
+  policy: AgentPolicy | null,
+  websiteTracking: UrlFidelity,
+) {
+  return describeDataTypes(consentTypes(status), {
+    screenshotInterval: policy === null ? null : formatSpan(policy.screenshotIntervalSeconds),
+    idleThreshold: policy === null ? null : formatSpan(policy.idleThresholdSeconds),
+    readsBrowserAddress: websiteTracking === "browser-url",
+  });
 }

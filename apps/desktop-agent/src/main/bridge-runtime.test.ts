@@ -28,6 +28,7 @@ describe("readBridgeConfigFacts", () => {
       deviceId: "device-1",
       consentedPolicyVersion: "2026.08.01",
       policy: { version: "2026.08.01", name: "Standard", screenshotIntervalSeconds: 600 },
+      collection: null,
       revoked: false,
     });
   });
@@ -52,7 +53,13 @@ describe("readBridgeConfigFacts", () => {
   });
 
   it("lands on not-enrolled for a missing, unparseable or wrong-shaped file", () => {
-    const empty = { deviceId: null, consentedPolicyVersion: null, policy: null, revoked: false };
+    const empty = {
+      deviceId: null,
+      consentedPolicyVersion: null,
+      policy: null,
+      collection: null,
+      revoked: false,
+    };
 
     expect(readBridgeConfigFacts(null)).toEqual(empty);
     expect(readBridgeConfigFacts("{half written")).toEqual(empty);
@@ -63,6 +70,20 @@ describe("readBridgeConfigFacts", () => {
   it("refuses a policy without the two fields the blocked page has to quote", () => {
     expect(readBridgeConfigFacts(JSON.stringify({ policy: { version: 1, name: "x" } })).policy).toBeNull();
     expect(readBridgeConfigFacts(JSON.stringify({ policy: { version: "1" } })).policy).toBeNull();
+  });
+
+  it("reads the device's collection scope, so the browser half sees the same set", () => {
+    const scoped = JSON.stringify({ deviceId: "d", collection: ["applications", "websites"] });
+
+    expect(readBridgeConfigFacts(scoped).collection).toEqual(["applications", "websites"]);
+  });
+
+  it("reads an absent or malformed scope as null, which permits — same as an absent row", () => {
+    expect(readBridgeConfigFacts(JSON.stringify({ deviceId: "d" })).collection).toBeNull();
+    expect(readBridgeConfigFacts(JSON.stringify({ collection: "websites" })).collection).toBeNull();
+    expect(readBridgeConfigFacts(JSON.stringify({ collection: [1, "websites"] })).collection).toEqual(
+      ["websites"],
+    );
   });
 
   it("reads revocation as true only when it is explicitly true", () => {

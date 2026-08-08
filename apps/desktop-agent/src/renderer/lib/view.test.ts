@@ -38,7 +38,9 @@ function status(overrides: Partial<AgentStatus> = {}): AgentStatus {
     permissions: { screenRecording: "granted", accessibility: "granted", websiteTracking: "browser-url" },
     totals: emptyTotals(),
     onBreak: false,
-    dayEnded: false,
+    collection: null,
+  pendingTypes: [],
+  dayEnded: false,
     ...overrides,
   };
 }

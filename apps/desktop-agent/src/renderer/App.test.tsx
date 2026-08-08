@@ -34,6 +34,8 @@ const READY: AgentStatus = {
   permissions: { screenRecording: "granted", accessibility: "granted", websiteTracking: "browser-url" },
   totals: emptyTotals(),
   onBreak: false,
+  collection: null,
+  pendingTypes: [],
   dayEnded: false,
 };
 
@@ -411,5 +413,50 @@ describe("what this computer cannot see", () => {
     await showing(status());
 
     expect(text()).not.toContain("cannot report the addresses of pages you open");
+  });
+});
+
+/**
+ * What the readout says about the per-device collection scope.
+ *
+ * Two statements, and they answer different questions. "What this computer records" is
+ * the standing answer to what is being collected right now — until this existed the
+ * employee could only get it by re-reading a consent screen they can no longer reach.
+ * The other is the one change to the agreement the employee did not make, so it is put
+ * in front of them rather than left to be noticed on the web.
+ */
+describe("the collection scope on the readout", () => {
+  it("names what this machine is recording", async () => {
+    await showing(status({ collection: ["applications", "idle"] }));
+
+    expect(text()).toContain("What this computer records");
+    expect(text()).toMatch(/applications you use/i);
+  });
+
+  it("does not name a type an administrator has switched off", async () => {
+    await showing(status({ collection: ["applications", "idle"] }));
+
+    expect(text()).not.toMatch(/screenshots ·|· screenshots/i);
+  });
+
+  it("says so when an administrator has switched something back on", async () => {
+    await showing(status({ collection: ["applications"], pendingTypes: ["screenshots"] }));
+
+    expect(text()).toContain("Your administrator has changed what is collected");
+    // The employee must not be left thinking it has already started.
+    expect(text()).toMatch(/none of it is being recorded until you agree/i);
+  });
+
+  it("stays quiet when nothing has been added", async () => {
+    await showing(status());
+
+    expect(text()).not.toContain("Your administrator has changed what is collected");
+  });
+
+  it("claims nothing on a revoked device, which is recording none of it", async () => {
+    await showing(status({ revoked: true, collection: ["applications"], pendingTypes: ["idle"] }));
+
+    expect(text()).not.toContain("What this computer records");
+    expect(text()).not.toContain("Your administrator has changed what is collected");
   });
 });

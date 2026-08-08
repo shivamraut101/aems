@@ -1,5 +1,5 @@
 import type { AgentConfig, DaySpan, DayTotals } from "../shared/types/index.js";
-import { emptyTotals, mayCollect } from "../shared/types/index.js";
+import { emptyTotals, mayCollect, mayCollectType } from "../shared/types/index.js";
 import type { IdleState } from "./idle.js";
 import { IdleWatcher, readIdleSeconds, readIdleState } from "./idle.js";
 import type { DayState } from "./persistence.js";
@@ -315,7 +315,8 @@ export class Collector {
     // depend on what any other part of the system currently believes.
     if (this.dayEndedAt !== null) return;
 
-    const collecting = mayCollect(this.parts.config.current);
+    const config = this.parts.config.current;
+    const collecting = mayCollect(config);
 
     if (collecting) {
       await this.ensureSession();
@@ -335,7 +336,7 @@ export class Collector {
     // Telemetry IS collection — the route gates on consent exactly as ingestion does —
     // so it runs only inside the gate, and after the totals are recomputed because the
     // sample carries today's active seconds.
-    if (collecting) await this.maybeTelemetry(now);
+    if (collecting && mayCollectType(config, "telemetry")) await this.maybeTelemetry(now);
 
     this.persistDay();
     this.adapters.onChanged();
@@ -352,11 +353,36 @@ export class Collector {
     // window through one would make those signals a lie, and would record exactly
     // the private browsing a break exists for.
     if (!this.parts.idle.onBreak) {
-      await this.observeFocus(now);
-      this.observeIdle(threshold, now);
+      // Each type is gated on its own, and a switched-off one is not sampled at all —
+      // the stretch that was open when it went off is closed here rather than left to
+      // be emitted by a later drain, which would report an interval spanning hours
+      // during which the employee had been told nothing was being watched.
+      if (mayCollectType(config, "applications")) await this.observeFocus(now);
+      else this.closeFocus(now);
+
+      if (mayCollectType(config, "idle")) this.observeIdle(threshold, now);
+      else this.closeIdle(now);
     }
 
     await this.capture(config, now, state === "locked");
+  }
+
+  /** Closes the focus interval a disabled `applications` setting stopped us extending. */
+  private closeFocus(now: Date): void {
+    const open = this.parts.tracker.flush(now);
+    if (open !== null) this.parts.queue.enqueueActivity(open);
+  }
+
+  /** The same, for the idle stretch. What was observed while permitted is still true. */
+  private closeIdle(now: Date): void {
+    const closed = this.parts.idle.flush(now);
+    if (closed === null) return;
+
+    this.parts.queue.enqueueIdle(closed);
+    this.idleSpans.push({
+      startedAt: closed.idleStartAt,
+      endedAt: closed.idleEndAt ?? null,
+    });
   }
 
   private readState(threshold: number): IdleState {

@@ -8,6 +8,7 @@ import {
   encodeFrame,
   FrameDecoder,
   isAllowedExtension,
+  mayRecordWebsites,
   monitoringStateOf,
   NativeBridge,
   readBridgeInvocation,
@@ -34,6 +35,7 @@ function facts(patch: Partial<BridgeConfigFacts> = {}): BridgeConfigFacts {
     deviceId: "device-1",
     consentedPolicyVersion: "2026.08.01",
     policy: policy(),
+    collection: null,
     revoked: false,
     ...patch,
   };
@@ -368,5 +370,70 @@ describe("NativeBridge", () => {
     h.bridge.send({ v: BRIDGE_PROTOCOL_VERSION, type: "error", message: "x" });
 
     expect(h.closed()).toBe(1);
+  });
+});
+
+/**
+ * The browser half of the `websites` setting.
+ *
+ * The extension is a separate process reading the same JSON, so missing this would
+ * leave the browser reporting addresses long after the collection loop had stopped —
+ * the "revocation is immediate" failure mode, one process further out.
+ *
+ * The refusal lands on the host rather than on `MonitoringState` because that enum is
+ * byte-identical with the extension's copy and has no member for "collecting, but not
+ * websites". Borrowing `consent-required` for it would tell the employee to go and
+ * accept a policy they have already accepted, and would switch off the restriction
+ * rules too — which are enforcement, not observation.
+ */
+describe("mayRecordWebsites", () => {
+  it("permits when the device has no scope of its own", () => {
+    expect(mayRecordWebsites(facts())).toBe(true);
+  });
+
+  it("permits when the scope names websites and refuses when it does not", () => {
+    expect(mayRecordWebsites(facts({ collection: ["applications", "websites"] }))).toBe(true);
+    expect(mayRecordWebsites(facts({ collection: ["applications"] }))).toBe(false);
+  });
+
+  it("refuses whenever the consent gate itself is shut, whatever the scope says", () => {
+    for (const shut of [
+      facts({ collection: ["websites"], revoked: true }),
+      facts({ collection: ["websites"], deviceId: null }),
+      facts({ collection: ["websites"], consentedPolicyVersion: "old" }),
+    ]) {
+      expect(mayRecordWebsites(shut)).toBe(false);
+    }
+  });
+});
+
+describe("NativeBridge with websites switched off", () => {
+  const OFF = facts({ collection: ["applications", "screenshots"] });
+
+  it("records nothing from a page report, and clears what the last one left behind", () => {
+    // Reported as "nothing in view" rather than skipped: the address the last permitted
+    // navigation wrote is still in the link file, and the tracker would go on being
+    // offered it until the browser happened to restart.
+    const h = harness(OFF);
+
+    send(h.bridge, { v: BRIDGE_PROTOCOL_VERSION, type: "page", url: "https://a.test/x", at: "t" });
+
+    expect(h.observed).toEqual([{ url: null, at: "2026-08-05T09:00:00.000Z" }]);
+  });
+
+  it("still tells the extension it is collecting, so the rules stay enforced", () => {
+    const h = harness(OFF);
+
+    send(h.bridge, { v: BRIDGE_PROTOCOL_VERSION, type: "page", url: "https://a.test/x", at: "t" });
+
+    expect((h.sent[0] as { monitoring: string }).monitoring).toBe("collecting");
+  });
+
+  it("still records the link on hello, which is a capability rather than an observation", () => {
+    const h = harness(OFF);
+
+    send(h.bridge, { v: BRIDGE_PROTOCOL_VERSION, type: "hello", extensionVersion: "0.1.0" });
+
+    expect(h.observed[0]?.linked).toBe(true);
   });
 });

@@ -4,6 +4,7 @@ import type {
   ActivityEventInput,
   BreakEventInput,
   HeartbeatInput,
+  HeartbeatResponse,
   IdleEventInput,
   ScreenshotUploadResult,
 } from "@aems/types";
@@ -26,7 +27,7 @@ export const MAX_EVENTS_PER_BATCH = 1000;
 export interface SyncApiClient {
   ingestActivity(batch: ActivityBatch): Promise<ActivityBatchResult>;
   uploadScreenshot(form: FormData): Promise<ScreenshotUploadResult>;
-  heartbeat(body: HeartbeatInput): Promise<{ ok: true }>;
+  heartbeat(body: HeartbeatInput): Promise<HeartbeatResponse>;
 }
 
 /**
@@ -163,6 +164,16 @@ export interface SyncQueueOptions {
   lastSyncAt?: string | null;
   /** Fires only when the API actually took a batch, which is what makes it worth storing. */
   onSynced?: (at: string) => void;
+  /**
+   * What the server answered the last heartbeat with.
+   *
+   * The heartbeat is where a change to this device's collection scope arrives. It was
+   * chosen over a route of its own because it already runs every 60 s, is already the
+   * consent-exempt channel revocation travels on, and a second poll for two string
+   * arrays buys nothing. Every field on the response is optional, so an API that does
+   * not send them leaves the agent collecting exactly what it collected before.
+   */
+  onHeartbeat?: (response: HeartbeatResponse) => void;
 }
 
 /**
@@ -367,12 +378,17 @@ export class SyncQueue {
    * rather than appearing to have vanished.
    */
   async heartbeat(workSessionId: number | null): Promise<SyncOutcome> {
+    let response: HeartbeatResponse;
+
     try {
-      await this.client.heartbeat({ deviceId: this.deviceId, workSessionId });
+      response = await this.client.heartbeat({ deviceId: this.deviceId, workSessionId });
     } catch (error) {
       return classifyError(error);
     }
 
+    // Outside the catch on purpose: this writes the config to disk, and a full disk
+    // there must not be classified as the API having refused the heartbeat.
+    this.options.onHeartbeat?.(response);
     return "sent";
   }
 

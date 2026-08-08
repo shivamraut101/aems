@@ -12,7 +12,7 @@
  * captures separately and a support call can ask for.
  */
 
-import type { AgentPolicy } from "../shared/types/index.js";
+import type { AgentPolicy, DataTypeId } from "../shared/types/index.js";
 import type { BridgeConfigFacts, BridgeInvocation, BridgePorts } from "./bridge.js";
 import { isAllowedExtension, NativeBridge, stateMessageOf } from "./bridge.js";
 import { AEMS_EXTENSION_IDS, BRIDGE_PROTOCOL_VERSION } from "./bridge-protocol.js";
@@ -35,6 +35,7 @@ export function readBridgeConfigFacts(raw: string | null): BridgeConfigFacts {
     deviceId: null,
     consentedPolicyVersion: null,
     policy: null,
+    collection: null,
     revoked: false,
   };
 
@@ -57,10 +58,24 @@ export function readBridgeConfigFacts(raw: string | null): BridgeConfigFacts {
         ? record["consentedPolicyVersion"]
         : null,
     policy: readPolicy(record["policy"]),
+    collection: readCollection(record["collection"]),
     // Anything other than an explicit `false` is treated as revoked once the key is
     // present at all: failing closed is the only safe direction for a stop signal.
     revoked: record["revoked"] === true,
   };
+}
+
+/**
+ * The device's scope, or null when the file does not carry one.
+ *
+ * Deliberately not checked against the known vocabulary: this file is compiled into the
+ * bridge entry, which a browser spawns, and a value import of the type package to
+ * validate a list that can only ever *narrow* what is recorded would be weight for
+ * nothing. An unrecognised member is simply not `"websites"`.
+ */
+function readCollection(value: unknown): DataTypeId[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((entry): entry is DataTypeId => typeof entry === "string");
 }
 
 /**

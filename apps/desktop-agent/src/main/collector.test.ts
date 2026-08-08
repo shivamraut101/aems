@@ -184,9 +184,16 @@ interface Harness {
   capturer: FakeCapturer;
   telemetry: FakeTelemetry;
   logs: string[];
-  /** What the next focus read returns. Reassign between ticks to move the focus. */
-  focus: { sample: FocusSample | null; error: unknown };
-  idleSeconds: { value: number };
+  /**
+   * What the next focus read returns. Reassign between ticks to move the focus.
+   *
+   * `reads` counts the OS calls rather than the events they produce, because a
+   * switched-off data type must not be *observed* — the tray and the indicator claim
+   * what is being collected, and sampling something the employee was told is off makes
+   * those claims false whether or not the sample is ever sent.
+   */
+  focus: { sample: FocusSample | null; error: unknown; reads: number };
+  idleSeconds: { value: number; reads: number };
   lockState: { locked: boolean };
 }
 
@@ -201,15 +208,21 @@ function harness(config: AgentConfig = consented(), dayState?: FakeDayStore): Ha
   const focus: Harness["focus"] = {
     sample: { appName: "Code", windowTitle: "collector.ts", url: null },
     error: null,
+    reads: 0,
   };
-  const idleSeconds = { value: 0 };
+  const idleSeconds = { value: 0, reads: 0 };
   const lockState = { locked: false };
   const logs: string[] = [];
 
   const adapters: Partial<CollectorAdapters> = {
-    sampleFocus: () =>
-      focus.error === null ? Promise.resolve(focus.sample) : Promise.reject(focus.error),
-    readIdleSeconds: () => idleSeconds.value,
+    sampleFocus: () => {
+      focus.reads += 1;
+      return focus.error === null ? Promise.resolve(focus.sample) : Promise.reject(focus.error);
+    },
+    readIdleSeconds: () => {
+      idleSeconds.reads += 1;
+      return idleSeconds.value;
+    },
     readIdleState: () => (lockState.locked ? "locked" : "active"),
     now: () => at(0),
     log: (message) => logs.push(message),
@@ -1200,5 +1213,150 @@ describe("an abandoned break", () => {
     // Lunch is not an abandoned day.
     expect(h.collector.dayEnded).toBe(false);
     expect(h.sessions.current).not.toBeNull();
+  });
+});
+
+/**
+ * The per-device collection scope, at the loop that acts on it.
+ *
+ * The rule these defend is stricter than "do not send it": a switched-off type must
+ * never be *observed*. The tray tooltip and the always-on-top indicator both claim what
+ * is being collected, so an agent that samples the focused window while the employee
+ * has been told applications are off is making those two signals false — and they are
+ * what non-negotiable #2 is made of.
+ *
+ * Each was verified by mutation: every `mayCollectType` call below was replaced with
+ * `mayCollect`, the corresponding case was confirmed to fail, and the call restored.
+ */
+describe("Collector per-device collection scope", () => {
+  const EVERYTHING = [
+    "applications",
+    "websites",
+    "screenshots",
+    "idle",
+    "telemetry",
+    "installed_apps",
+  ] as const;
+
+  it("behaves exactly as before on a device with no scope of its own", async () => {
+    // The deploy case. Zero settings rows exist, so every enrolled device holds a null
+    // scope and must go on collecting precisely what it collected yesterday.
+    const h = harness(consented({ collection: null }));
+
+    await h.collector.tick(at(0));
+
+    expect(h.focus.reads).toBe(1);
+    expect(h.idleSeconds.reads).toBe(1);
+    expect(h.capturer.calls).toBe(1);
+    expect(h.telemetry.samples).toHaveLength(1);
+  });
+
+  it("collects the same four things when the scope names everything", async () => {
+    const h = harness(consented({ collection: [...EVERYTHING] }));
+
+    await h.collector.tick(at(0));
+
+    expect(h.focus.reads).toBe(1);
+    expect(h.idleSeconds.reads).toBe(1);
+    expect(h.capturer.calls).toBe(1);
+    expect(h.telemetry.samples).toHaveLength(1);
+  });
+
+  it("never reads the focused window when applications are switched off", async () => {
+    const h = harness(consented({ collection: ["idle", "screenshots", "telemetry"] }));
+
+    await h.collector.tick(at(0));
+    h.focus.sample = { appName: "Chrome", windowTitle: "github.com", url: null };
+    await h.collector.tick(at(30));
+    await h.collector.shutdown(at(60));
+
+    expect(h.focus.reads).toBe(0);
+    expect(sentActivity(h)).toHaveLength(0);
+  });
+
+  it("never reads the OS idle counter when idle is switched off", async () => {
+    const h = harness(consented({ collection: ["applications", "screenshots", "telemetry"] }));
+
+    h.idleSeconds.value = 600;
+    await h.collector.tick(at(0));
+    await h.collector.tick(at(300));
+    await h.collector.shutdown(at(600));
+
+    expect(h.idleSeconds.reads).toBe(0);
+    expect(sentIdle(h)).toHaveLength(0);
+  });
+
+  it("takes no frame when screenshots are switched off", async () => {
+    const h = harness(consented({ collection: ["applications", "idle", "telemetry"] }));
+
+    await h.collector.tick(at(0));
+    await h.collector.tick(at(600));
+
+    expect(h.capturer.calls).toBe(0);
+  });
+
+  it("sends no battery or network sample when telemetry is switched off", async () => {
+    const h = harness(consented({ collection: ["applications", "idle", "screenshots"] }));
+
+    await h.collector.tick(at(0));
+    await h.collector.tick(new Date(EPOCH + TELEMETRY_INTERVAL_MS));
+
+    expect(h.telemetry.samples).toHaveLength(0);
+  });
+
+  it("keeps heartbeating with everything switched off, so the device is not read as gone", async () => {
+    // A scope of nothing is still an enrolled, consented device. `last_seen_at` drives
+    // online/offline in the dashboard and carries no observation, which is why the
+    // heartbeat is not a switchable type.
+    const h = harness(consented({ collection: [] }));
+
+    await h.collector.tick(at(0));
+
+    expect(h.api.heartbeats).toEqual([{ deviceId: DEVICE, workSessionId: 7 }]);
+    expect(h.focus.reads).toBe(0);
+    expect(h.capturer.calls).toBe(0);
+  });
+
+  it("closes the interval that was open when applications were switched off, once", async () => {
+    // Left open it would be flushed hours later as one unbroken stretch of focused
+    // work — an event produced by a type the employee had been told was off.
+    const h = harness();
+
+    await h.collector.tick(at(0));
+    h.store.update({ collection: ["idle"] });
+    await h.collector.tick(at(30));
+    await h.collector.tick(at(60));
+    await h.collector.shutdown(at(90));
+
+    const activity = sentActivity(h);
+    expect(activity).toHaveLength(1);
+    expect(activity[0]?.endedAt).toBe(at(30).toISOString());
+  });
+
+  it("closes the idle stretch that was open when idle was switched off, once", async () => {
+    const h = harness();
+
+    h.idleSeconds.value = 600;
+    await h.collector.tick(at(0));
+    h.store.update({ collection: ["applications"] });
+    await h.collector.tick(at(30));
+    await h.collector.tick(at(60));
+    await h.collector.shutdown(at(90));
+
+    const idle = sentIdle(h);
+    expect(idle).toHaveLength(1);
+    expect(idle[0]?.idleEndAt).toBe(at(30).toISOString());
+  });
+
+  it("resumes collecting a type an administrator switches back on, without a restart", async () => {
+    const h = harness(consented({ collection: ["idle"] }));
+
+    await h.collector.tick(at(0));
+    expect(h.capturer.calls).toBe(0);
+
+    h.store.update({ collection: ["idle", "screenshots"] });
+    await h.collector.tick(at(5));
+
+    expect(h.capturer.calls).toBe(1);
   });
 });

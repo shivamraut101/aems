@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import type { ScreenshotMetadataInput } from "@aems/types";
 
 import type { AgentConfig } from "../shared/types/index.js";
-import { mayCollect } from "../shared/types/index.js";
+import { mayCollectType } from "../shared/types/index.js";
 
 export interface CapturedScreenshot extends ScreenshotMetadataInput {
   /** Which monitor the frame came from, so the timeline can label multi-monitor captures. */
@@ -202,9 +202,11 @@ export class ScreenshotScheduler {
    * the failure is raised rather than swallowed into an empty array.
    */
   async tick(context: CaptureContext, now: Date): Promise<CapturedScreenshot[]> {
-    // Re-read on every tick rather than caching: consent withdrawn from the
-    // dashboard, a revoked device or a policy bump must stop capture without a restart.
-    if (!mayCollect(context.config)) return [];
+    // Re-read on every tick rather than caching: consent withdrawn from the dashboard,
+    // a revoked device, a policy bump or an administrator switching screenshots off for
+    // this machine must stop capture without a restart. The interval below stays the
+    // company policy's — the company sets how often, the device setting sets whether.
+    if (!mayCollectType(context.config, "screenshots")) return [];
     if (context.sessionLocked === true) return [];
 
     const interval = context.config.policy?.screenshotIntervalSeconds ?? DEFAULT_INTERVAL_SECONDS;

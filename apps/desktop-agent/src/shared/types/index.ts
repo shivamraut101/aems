@@ -7,9 +7,9 @@
  * file describes.
  */
 
-import type { AgentPolicy } from "@aems/types";
+import type { AgentPolicy, DataTypeId } from "@aems/types";
 
-export type { AgentPolicy };
+export type { AgentPolicy, DataTypeId };
 
 /**
  * IPC channel names.
@@ -120,6 +120,27 @@ export interface AgentConfig {
    */
   consentedPolicyVersion: string | null;
   policy: AgentPolicy | null;
+  /**
+   * The data types this device may collect, or null when nobody has told us otherwise.
+   *
+   * Beside `policy` rather than inside it: the policy is company-scoped and its
+   * `version` is what `mayCollect` compares against `consentedPolicyVersion`, so
+   * hanging a per-device value off it would make that comparison mean two things.
+   *
+   * Null is the degrade-safe default and it is the same rule as an absent
+   * `device_collection_settings` row — an agent that has not yet heartbeated after an
+   * upgrade, or one talking to an API that does not send the field, collects exactly
+   * what it collected before.
+   */
+  collection: DataTypeId[] | null;
+  /**
+   * Types an administrator has switched on that the employee has not yet agreed to.
+   *
+   * Never collected — they are absent from `collection` precisely because the server
+   * enforces `granted ∩ allowed`. Carried so the readout can say a change was made
+   * rather than leaving the employee to notice it from the dashboard.
+   */
+  pendingTypes: DataTypeId[];
   /** Set when the server has told us to stop. Re-consent must not clear it. */
   revoked: boolean;
 }
@@ -133,6 +154,8 @@ export function emptyConfig(apiUrl: string): AgentConfig {
     companyId: null,
     consentedPolicyVersion: null,
     policy: null,
+    collection: null,
+    pendingTypes: [],
     revoked: false,
   };
 }
@@ -151,6 +174,40 @@ export function mayCollect(config: AgentConfig): boolean {
   if (config.revoked) return false;
   if (!config.deviceToken || !config.policy || !config.consentedPolicyVersion) return false;
   return config.policy.version === config.consentedPolicyVersion;
+}
+
+/**
+ * Whether one particular kind of observation is permitted on this device.
+ *
+ * Every per-type gate in `main/` calls this and nothing else, so there is one place
+ * where "switched off" is defined. A type that is off must not be *observed* — not
+ * merely not sent: the tray and the indicator both claim what is being collected, and
+ * sampling something the employee was told is off makes those claims false.
+ *
+ * An unusable `collection` — absent, or a hand-edited config holding something that is
+ * not an array — permits, in the same direction an absent settings row does. Failing
+ * open is right here and only here: the API enforces the same set independently, so a
+ * degraded agent over-reports to a server that refuses it rather than silently
+ * recording nothing all day.
+ */
+export function mayCollectType(config: AgentConfig, type: DataTypeId): boolean {
+  if (!mayCollect(config)) return false;
+  return Array.isArray(config.collection) ? config.collection.includes(type) : true;
+}
+
+/**
+ * What the consent screen lists, and what accepting it agrees to.
+ *
+ * Permitted now, plus anything an administrator has added since — the pending types
+ * are exactly what the employee is being asked about, and they stay uncollected until
+ * this set is submitted. Null means no scope has arrived, i.e. the platform default.
+ */
+export function offeredTypes(
+  collection: DataTypeId[] | null,
+  pending: readonly DataTypeId[],
+): DataTypeId[] | null {
+  if (collection === null) return null;
+  return [...collection, ...pending.filter((type) => !collection.includes(type))];
 }
 
 // -- observed time --------------------------------------------------------
@@ -196,6 +253,10 @@ export interface AgentStatus {
    */
   revoked: boolean;
   policyVersion: string | null;
+  /** What this device may record. Null when no per-device scope has been received. */
+  collection: DataTypeId[] | null;
+  /** What an administrator has switched on since the employee last agreed. */
+  pendingTypes: DataTypeId[];
   workSessionId: number | null;
   /** Observed but not yet acknowledged by the API. */
   pendingEvents: number;
@@ -237,6 +298,8 @@ export function statusOf(
     consentRequired: enrolled && !config.revoked && !collecting,
     revoked: config.revoked,
     policyVersion: config.policy?.version ?? null,
+    collection: config.collection,
+    pendingTypes: config.pendingTypes,
     ...extra,
   };
 }
