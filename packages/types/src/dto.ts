@@ -75,6 +75,16 @@ export interface AgentPolicy {
   name: string;
   screenshotIntervalSeconds: number;
   idleThresholdSeconds: number;
+  /**
+   * How long a declared break may run before the agent closes the day, backdated to
+   * when the break began.
+   *
+   * Optional because an agent built before this field existed still enrols against a
+   * server that sends it, and one built after it may talk to a server that does not.
+   * Both agents fall back to their own default — absence means "use your default", not
+   * "never close an abandoned break".
+   */
+  maxOpenBreakSeconds?: number;
   trackedCategories: string[];
 }
 

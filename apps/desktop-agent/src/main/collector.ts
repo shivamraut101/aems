@@ -301,10 +301,13 @@ export class Collector {
      * manager reading it has no way to tell the difference.
      */
     const openBreak = this.parts.idle.openBreakSince;
+    const maxOpenBreakMs =
+      (this.parts.config.current.policy?.maxOpenBreakSeconds ?? DEFAULT_MAX_OPEN_BREAK_SECONDS) *
+      1000;
     if (
       this.dayEndedAt === null &&
       openBreak !== null &&
-      now.getTime() - openBreak.getTime() > MAX_OPEN_BREAK_MS
+      now.getTime() - openBreak.getTime() > maxOpenBreakMs
     ) {
       await this.endDay(openBreak);
       return;
@@ -816,16 +819,21 @@ function discardBefore(spans: DaySpan[], dayStart: Date): void {
 }
 
 /**
- * How long a declared break may run before the day is closed for the employee.
+ * How long a declared break may run before the day is closed for the employee, when the
+ * policy does not say. An admin sets the real value in Settings → Monitoring policy.
  *
- * Three hours is deliberately generous — longer than any lunch, a school run or a
- * dentist appointment, so a real break is never cut short — while being far below the
- * overnight case this exists to catch. The cost of being wrong in each direction is
- * asymmetric: too short and someone's genuine long break becomes a second work session
- * they have to explain, too long and the dashboard reports a night's sleep as tracked
- * time. Three hours sits well clear of both.
+ * Five hours is deliberately generous — longer than any lunch, a school run, a dentist
+ * appointment or half a shift off, so a real break is never cut short — while being far
+ * below the overnight case this exists to catch. The cost of being wrong in each
+ * direction is asymmetric: too short and someone's genuine long break becomes a second
+ * work session they have to explain, too long and the dashboard reports a night's sleep
+ * as tracked time. Five hours sits well clear of both.
+ *
+ * The fallback matters: a policy fetched before this field existed has no value for it,
+ * and reading that absence as "never close an abandoned break" would restore exactly the
+ * overnight-billing bug the guard was added for.
  */
-export const MAX_OPEN_BREAK_MS = 3 * 60 * 60 * 1000;
+export const DEFAULT_MAX_OPEN_BREAK_SECONDS = 5 * 60 * 60;
 
 /** Local midnight — the day boundary an employee and their manager both mean. */
 function startOfDay(now: Date): Date {

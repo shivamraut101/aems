@@ -178,6 +178,18 @@ describe("policyDraftSchema", () => {
     expect(policyDraftSchema.safeParse({ ...DRAFT, idleThresholdSeconds: 86_400 }).success).toBe(false);
   });
 
+  it("keeps the forgotten-break limit inside the column check and a sane ceiling", () => {
+    expect(policyDraftSchema.safeParse({ ...DRAFT, maxOpenBreakSeconds: 3599 }).success).toBe(false);
+    expect(policyDraftSchema.safeParse({ ...DRAFT, maxOpenBreakSeconds: 3600 }).success).toBe(true);
+    // A guard that outlasts the working day it protects would let the overnight case it
+    // exists to catch sail straight through.
+    expect(policyDraftSchema.safeParse({ ...DRAFT, maxOpenBreakSeconds: 86_400 }).success).toBe(
+      false,
+    );
+    // Omitted by an older dashboard: the five-hour default lands rather than a rejection.
+    expect(policyDraftSchema.parse(DRAFT).maxOpenBreakSeconds).toBe(18_000);
+  });
+
   it("defaults trackedCategories rather than demanding one", () => {
     const { name, screenshotIntervalSeconds, idleThresholdSeconds } = DRAFT;
     const parsed = policyDraftSchema.parse({ name, screenshotIntervalSeconds, idleThresholdSeconds });
@@ -296,6 +308,10 @@ describe("POST /api/policies", () => {
       name: DRAFT.name,
       screenshot_interval_seconds: 300,
       idle_threshold_seconds: 120,
+      // The draft omits it, so the schema's default lands in the row. Asserted rather
+      // than elided: a publish that silently wrote no break limit would leave the column
+      // to the database default, which is the same number today and need not stay so.
+      max_open_break_seconds: 18_000,
       tracked_categories: ["development", "communication"],
     });
   });

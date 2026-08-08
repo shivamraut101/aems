@@ -19,7 +19,7 @@ import {
   TICK_INTERVAL_MS,
 } from "./collector.js";
 import type { CollectorAdapters } from "./collector.js";
-import { MAX_OPEN_BREAK_MS } from "./collector.js";
+import { DEFAULT_MAX_OPEN_BREAK_SECONDS } from "./collector.js";
 import { IdleWatcher } from "./idle.js";
 import type { DayState } from "./persistence.js";
 import { emptyDayState } from "./persistence.js";
@@ -1184,11 +1184,11 @@ describe("an abandoned break", () => {
     h.collector.startBreak(at(60));
 
     // Still a plausible break: nothing happens.
-    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 - 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS - 60));
     expect(h.collector.dayEnded).toBe(false);
 
     // Past the ceiling: the person went home.
-    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 + 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS + 60));
     expect(h.collector.dayEnded).toBe(true);
     expect(h.sessions.current).toBeNull();
   });
@@ -1197,11 +1197,50 @@ describe("an abandoned break", () => {
     const h = harness();
     await h.collector.tick(at(0));
     h.collector.startBreak(at(60));
-    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 + 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS + 60));
 
     // The whole point. Ending at `now` would count every hour of the break as tracked;
     // ending at the break start says what happened — work stopped there.
-    expect(h.collector.dayTotals.breakSeconds).toBeLessThan(MAX_OPEN_BREAK_MS / 1000);
+    expect(h.collector.dayTotals.breakSeconds).toBeLessThan(DEFAULT_MAX_OPEN_BREAK_SECONDS);
+  });
+
+  /*
+   * The limit is an admin's, not the agent's. A workforce that takes a two-hour site
+   * visit and one that never breaks past lunch want different numbers, and the agent is
+   * a binary on someone's laptop — the wrong place to decide it.
+   */
+  it("obeys the policy's limit over its own default", async () => {
+    const policy = consented().policy!;
+    const h = harness(consented({ policy: { ...policy, maxOpenBreakSeconds: 3600 } }));
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+
+    // Past the policy's hour but nowhere near the five-hour default. A collector still
+    // reading its own constant would leave the day open here.
+    await h.collector.tick(at(60 + 3600 + 60));
+    expect(h.collector.dayEnded).toBe(true);
+  });
+
+  /*
+   * A policy stored before the field existed carries no value for it. Reading that
+   * absence as "no limit" would restore the overnight-billing bug the guard was added
+   * for, which is the expensive direction to be wrong in.
+   */
+  it("falls back to its default when the policy does not say", async () => {
+    const h = harness();
+    // What the case rests on, asserted rather than assumed: the harness policy predates
+    // the field, so the two tests above are exercising the fallback too. Setting it in
+    // `consented()` would quietly turn all three into tests of the policy path.
+    expect(consented().policy?.maxOpenBreakSeconds).toBeUndefined();
+
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS - 60));
+    expect(h.collector.dayEnded).toBe(false);
+
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS + 60));
+    expect(h.collector.dayEnded).toBe(true);
   });
 
   it("leaves a short break alone", async () => {

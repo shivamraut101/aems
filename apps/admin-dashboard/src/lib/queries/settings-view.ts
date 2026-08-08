@@ -34,6 +34,7 @@ export interface PolicyRecord {
   name: string;
   screenshot_interval_seconds: number;
   idle_threshold_seconds: number;
+  max_open_break_seconds: number;
   tracked_categories: string[];
   created_at: string;
   updated_at: string;
@@ -171,6 +172,7 @@ export interface PolicyPublishInput {
   name: string;
   screenshotIntervalSeconds: number;
   idleThresholdSeconds: number;
+  maxOpenBreakSeconds: number;
   trackedCategories: string[];
 }
 
@@ -187,6 +189,7 @@ export interface PolicyDraft {
   name: string;
   screenshotIntervalSeconds: number;
   idleThresholdSeconds: number;
+  maxOpenBreakSeconds: number;
   /** Comma-separated. Empty means "record everything", which is the common case. */
   trackedCategories: string;
 }
@@ -218,6 +221,26 @@ export const IDLE_THRESHOLD_OPTIONS: readonly { seconds: number; label: string }
   { seconds: 300, label: "5 min" },
   { seconds: 600, label: "10 min" },
   { seconds: 900, label: "15 min" },
+];
+
+/**
+ * How long a declared break may run before the agent closes the day for the employee,
+ * backdated to when the break began.
+ *
+ * The range is a judgement about how a particular workforce actually breaks, which is
+ * why it is an admin's to set rather than a constant in the agents. The offered values
+ * start at an hour — below that a genuine lunch becomes a second work session someone
+ * has to explain — and stop well short of overnight, which is the case the guard exists
+ * to catch in the first place.
+ */
+export const MAX_OPEN_BREAK_OPTIONS: readonly { seconds: number; label: string }[] = [
+  { seconds: 3600, label: "1 hour" },
+  { seconds: 7200, label: "2 hours" },
+  { seconds: 10_800, label: "3 hours" },
+  { seconds: 14_400, label: "4 hours" },
+  { seconds: 18_000, label: "5 hours" },
+  { seconds: 21_600, label: "6 hours" },
+  { seconds: 28_800, label: "8 hours" },
 ];
 
 /**
@@ -277,6 +300,7 @@ export function policyDraftFrom(current: PolicyRecord | null | undefined): Polic
     name: current?.name ?? "Standard monitoring policy",
     screenshotIntervalSeconds: current?.screenshot_interval_seconds ?? 300,
     idleThresholdSeconds: current?.idle_threshold_seconds ?? 300,
+    maxOpenBreakSeconds: current?.max_open_break_seconds ?? 18_000,
     trackedCategories: (current?.tracked_categories ?? []).join(", "),
   };
 }
@@ -350,6 +374,12 @@ export function validatePolicyDraft(
     errors.idleThresholdSeconds = "The threshold must be between 30 seconds and 1 hour.";
   }
 
+  if (!isPositiveInteger(draft.maxOpenBreakSeconds)) {
+    errors.maxOpenBreakSeconds = "Choose a break limit.";
+  } else if (draft.maxOpenBreakSeconds < 3600 || draft.maxOpenBreakSeconds > 43_200) {
+    errors.maxOpenBreakSeconds = "The break limit must be between 1 and 12 hours.";
+  }
+
   const categories = parseTrackedCategories(draft.trackedCategories);
   if (categories.length > MAX_TRACKED_CATEGORIES) {
     errors.trackedCategories = `${MAX_TRACKED_CATEGORIES} categories is the limit for one policy.`;
@@ -377,6 +407,7 @@ export function policyFormSchema(existingVersions: readonly string[] = []) {
       name: z.string(),
       screenshotIntervalSeconds: z.number(),
       idleThresholdSeconds: z.number(),
+      maxOpenBreakSeconds: z.number(),
       trackedCategories: z.string(),
     })
     .superRefine((draft, ctx) => {
@@ -395,6 +426,7 @@ export function policyDraftToInput(draft: PolicyDraft): PolicyPublishInput {
     name: draft.name.trim(),
     screenshotIntervalSeconds: draft.screenshotIntervalSeconds,
     idleThresholdSeconds: draft.idleThresholdSeconds,
+    maxOpenBreakSeconds: draft.maxOpenBreakSeconds,
     trackedCategories: parseTrackedCategories(draft.trackedCategories),
   };
 }
@@ -436,6 +468,11 @@ export function policyChanges(
       label: "Idle threshold",
       from: current ? intervalLabel(current.idle_threshold_seconds) : null,
       to: intervalLabel(draft.idleThresholdSeconds),
+    },
+    {
+      label: "Forgotten-break limit",
+      from: current ? intervalLabel(current.max_open_break_seconds) : null,
+      to: intervalLabel(draft.maxOpenBreakSeconds),
     },
     {
       label: "Tracked categories",

@@ -31,8 +31,7 @@ if (process.argv.includes('--print-schema')) {
 }
 
 // Snapshot of the live schema. Last refreshed 2026-08-08 against project
-// dayyrqcfktwwnkttlres, after 20260808000017 (device_collection_settings,
-// device_enrollment_codes.denied_types, consent_records.granted_types).
+// dayyrqcfktwwnkttlres, after 20260808000019 (policies.max_open_break_seconds).
 //
 // The earlier warning here — that `location_points` was unconfirmed because migration
 // 20260807000014 had never been applied — is resolved: it is applied, along with
@@ -53,7 +52,7 @@ const SCHEMA = {
   devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb,is_primary',
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',
   location_points: 'id,company_id,profile_id,device_id,work_session_id,recorded_at,latitude,longitude,accuracy_m,client_event_id,created_at',
-  policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at',
+  policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at,max_open_break_seconds',
   profiles: 'id,company_id,email,full_name,role,department,created_at,updated_at,manager_id,monitoring_enabled,deactivated_at',
   reports: 'id,company_id,profile_id,kind,period_start,period_end,status,storage_path,created_at,updated_at,format,grouping,params,requested_by,row_count,failure_reason',
   screenshots: 'id,company_id,profile_id,device_id,work_session_id,captured_at,storage_path,thumbnail_path,blurred,client_event_id,created_at',

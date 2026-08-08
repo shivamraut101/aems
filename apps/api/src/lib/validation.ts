@@ -38,6 +38,7 @@ const FIELD_LABELS: Record<string, string> = {
   kind: "Report type",
   screenshotIntervalSeconds: "Screenshot interval",
   idleThresholdSeconds: "Idle threshold",
+  maxOpenBreakSeconds: "Forgotten-break limit",
   trackedCategories: "Tracked categories",
   clientEventId: "Event id",
 };

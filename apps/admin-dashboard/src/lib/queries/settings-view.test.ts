@@ -50,6 +50,7 @@ const policy: PolicyRecord = {
   name: "Standard monitoring policy",
   screenshot_interval_seconds: 300,
   idle_threshold_seconds: 120,
+  max_open_break_seconds: 18000,
   tracked_categories: [],
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
@@ -221,6 +222,7 @@ const draft: PolicyDraft = {
   name: "Standard monitoring policy",
   screenshotIntervalSeconds: 300,
   idleThresholdSeconds: 300,
+  maxOpenBreakSeconds: 18000,
   trackedCategories: "",
 };
 
@@ -234,6 +236,7 @@ describe("policyDraftFrom", () => {
       ...policy,
       screenshot_interval_seconds: 900,
       idle_threshold_seconds: 45,
+      max_open_break_seconds: 18000,
       tracked_categories: ["Development", "Research"],
     });
     expect(seeded.screenshotIntervalSeconds).toBe(900);
@@ -465,6 +468,7 @@ describe("policyDraftToInput", () => {
       name: "Standard monitoring policy",
       screenshotIntervalSeconds: 300,
       idleThresholdSeconds: 300,
+      maxOpenBreakSeconds: 18000,
       trackedCategories: [],
     });
   });
@@ -476,6 +480,7 @@ describe("policyDraftToInput", () => {
         name: "Standard monitoring policy",
         screenshotIntervalSeconds: 300,
         idleThresholdSeconds: 300,
+        maxOpenBreakSeconds: 18000,
         trackedCategories: ["A", "B"],
       },
     );
