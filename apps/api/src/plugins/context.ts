@@ -1,22 +1,34 @@
 import { AuthError, bearerToken, isManager, isSuperAdmin, resolveSession, type SessionProfile } from "@aems/auth";
 import { createAdminClient, type AemsSupabaseClient } from "@aems/supabase";
+import { effectiveTypes, type DataTypeId, type DevicePlatform } from "@aems/types";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 
 import type { Env } from "../env.js";
 import { verifyDeviceToken } from "../lib/device-token.js";
+import { createMailer, type Mailer } from "../lib/email/mailer.js";
 
 /** The agent behind a request, once its device token has been checked against the database. */
 export interface DeviceContext {
   deviceId: string;
   companyId: string;
   profileId: string;
+  /**
+   * Carried because what a device may collect starts with what its hardware can do.
+   * Without it the ingest routes cannot tell a laptop from a phone, which is how a
+   * desktop token was able to write `location_points` that no screen ever showed.
+   */
+  platform: DevicePlatform;
 }
 
 declare module "fastify" {
   interface FastifyInstance {
     env: Env;
     supabase: AemsSupabaseClient;
+    /** Outbound mail. Never throws and never blocks — see `lib/email/mailer.ts`. */
+    mailer: Mailer;
+    /** The dashboard origin a link in an email points at, with no trailing slash. */
+    dashboardUrl: string;
     requireUser: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireManager: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireSuperAdmin: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
@@ -38,6 +50,14 @@ const plugin: FastifyPluginAsync<{ env: Env }> = async (app, opts) => {
 
   app.decorate("env", opts.env);
   app.decorate("supabase", supabase);
+  app.decorate("mailer", createMailer(opts.env, app.log));
+  // CORS_ORIGIN may hold several origins; a link in an email needs exactly one. The
+  // first is the canonical dashboard in every deployment shape this has had, and
+  // DASHBOARD_URL overrides it for the one where it is not.
+  app.decorate(
+    "dashboardUrl",
+    (opts.env.DASHBOARD_URL ?? opts.env.CORS_ORIGIN.split(",")[0] ?? "").trim().replace(/\/+$/, ""),
+  );
   app.decorateRequest("session", undefined);
   app.decorateRequest("device", undefined);
 
@@ -104,7 +124,9 @@ const plugin: FastifyPluginAsync<{ env: Env }> = async (app, opts) => {
 
     const { data: device, error } = await supabase
       .from("devices")
-      .select("id, company_id, profile_id, status, profiles!inner(monitoring_enabled, deactivated_at)")
+      .select(
+        "id, company_id, profile_id, platform, status, profiles!inner(monitoring_enabled, deactivated_at)",
+      )
       .eq("id", payload.deviceId)
       .single();
 
@@ -150,6 +172,7 @@ const plugin: FastifyPluginAsync<{ env: Env }> = async (app, opts) => {
       deviceId: device.id,
       companyId: device.company_id,
       profileId: device.profile_id,
+      platform: device.platform,
     };
   });
 };
@@ -157,29 +180,91 @@ const plugin: FastifyPluginAsync<{ env: Env }> = async (app, opts) => {
 export const contextPlugin = fp(plugin, { name: "aems-context" });
 
 /**
- * Blocks collection until consent is on file.
+ * The types an admin has switched off for this device. `null` means the read failed.
+ *
+ * A deny list: a type with no row is permitted. That is what lets an existing device —
+ * every device, today, since the table is empty — keep behaving exactly as it did.
+ */
+export async function deniedTypesFor(
+  supabase: AemsSupabaseClient,
+  deviceId: string,
+): Promise<DataTypeId[] | null> {
+  const { data, error } = await supabase
+    .from("device_collection_settings")
+    .select("data_type, enabled")
+    .eq("device_id", deviceId);
+
+  if (error) return null;
+  return (data ?? []).filter((row) => !row.enabled).map((row) => row.data_type);
+}
+
+/**
+ * Blocks collection until consent is on file, and says what that consent covers.
  *
  * Called by every ingestion route. The agents also gate themselves, but an agent is
  * a binary on someone's laptop — the server is where the rule is actually enforced.
+ *
+ * This replaced `assertConsent` rather than sitting beside it, deliberately: six call
+ * sites each needing two calls is twelve places to forget one, and the thing forgotten
+ * would be a data type collected against a consent that excluded it. Deleting the old
+ * name made the compiler enumerate every caller.
+ *
+ * `types` is the intersection of three sets — what the platform can do, minus what an
+ * admin switched off, intersected with what the employee agreed to. Most restrictive
+ * wins in every direction, and a `granted_types` of null (every consent signed before
+ * per-type consent existed) narrows nothing.
  */
-export async function assertConsent(
+export async function resolveCollection(
   supabase: AemsSupabaseClient,
-  deviceId: string,
-): Promise<{ ok: true } | { ok: false; message: string }> {
-  const { data, error } = await supabase
-    .from("consent_records")
-    .select("id")
-    .eq("device_id", deviceId)
-    .is("revoked_at", null)
-    .maybeSingle();
+  device: DeviceContext,
+): Promise<
+  | { ok: true; types: Set<DataTypeId>; grantedTypes: DataTypeId[] | null }
+  | { ok: false; message: string }
+> {
+  const [consent, denied] = await Promise.all([
+    supabase
+      .from("consent_records")
+      .select("id, granted_types")
+      .eq("device_id", device.deviceId)
+      .is("revoked_at", null)
+      .maybeSingle(),
+    deniedTypesFor(supabase, device.deviceId),
+  ]);
 
-  if (error) {
+  if (consent.error) {
     return { ok: false, message: "Could not verify consent" };
   }
 
-  if (!data) {
+  if (!consent.data) {
     return { ok: false, message: "No active consent record for this device" };
   }
 
-  return { ok: true };
+  // Fail closed. A settings read that failed cannot prove a type was *not* switched
+  // off, and guessing "permitted" here collects something an admin turned off.
+  if (denied === null) {
+    return { ok: false, message: "Could not verify what this device may collect" };
+  }
+
+  const grantedTypes = consent.data.granted_types ?? null;
+
+  return {
+    ok: true,
+    types: new Set(effectiveTypes(device.platform, denied, grantedTypes)),
+    grantedTypes,
+  };
+}
+
+/**
+ * The refusal an ingest route sends when consent exists but this type is switched off.
+ *
+ * Distinct from `consent_required` on purpose: one says "nobody agreed", the other says
+ * "somebody decided". An agent that conflated them would route a person to a consent
+ * screen over a decision their administrator made, which they cannot fix by agreeing.
+ */
+export function collectionDenial(type: DataTypeId) {
+  return {
+    error: "collection_disabled",
+    message: `This device is not permitted to collect ${type}`,
+    statusCode: 403,
+  } as const;
 }

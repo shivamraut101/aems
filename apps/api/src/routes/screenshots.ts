@@ -12,7 +12,7 @@ import { AEMS_BUCKET, screenshotPath } from "@aems/supabase";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { assertConsent } from "../plugins/context.js";
+import { collectionDenial, resolveCollection } from "../plugins/context.js";
 import { validationFailure } from "../lib/validation.js";
 
 const metadataSchema = z.object({
@@ -90,11 +90,17 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
   app.post("/", { preHandler: app.requireDevice }, async (request, reply) => {
     const device = request.device!;
 
-    const consent = await assertConsent(app.supabase, device.deviceId);
+    const consent = await resolveCollection(app.supabase, device);
     if (!consent.ok) {
       return reply
         .code(403)
         .send({ error: "consent_required", message: consent.message, statusCode: 403 });
+    }
+
+    // Answered before the multipart body is read: a refused frame must not cost the
+    // agent an upload, and reading it first would mean it did.
+    if (!consent.types.has("screenshots")) {
+      return reply.code(403).send(collectionDenial("screenshots"));
     }
 
     const file = await request.file();

@@ -1,9 +1,18 @@
 import { canViewOthers, type SessionProfile } from "@aems/auth";
-import type { Json } from "@aems/types";
+import {
+  DATA_TYPE_IDS,
+  DATA_TYPE_LABEL,
+  effectiveTypes,
+  pendingTypes,
+  type DataTypeId,
+  type Json,
+} from "@aems/types";
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
+import { sendInBackground } from "../lib/email/mailer.js";
+import { collectionChangedEmail, nameOrEmail } from "../lib/email/templates.js";
 import { validationFailure } from "../lib/validation.js";
 import { issueDeviceToken } from "../lib/device-token.js";
 import {
@@ -13,7 +22,9 @@ import {
   hashCode,
   normaliseCode,
 } from "../lib/enrollment-code.js";
-import { assertConsent } from "../plugins/context.js";
+import { collectionDenial, deniedTypesFor, resolveCollection } from "../plugins/context.js";
+
+const KNOWN_TYPES = new Set<string>(DATA_TYPE_IDS);
 
 /** Body accepted when redeeming a code. Same device facts, plus the code itself. */
 const enrollWithCodeSchema = z.object({
@@ -23,6 +34,47 @@ const enrollWithCodeSchema = z.object({
 const mintCodeSchema = z.object({
   // Omit it and you are enrolling your own machine, which is the common case.
   profileId: z.string().uuid().optional(),
+  /**
+   * Which kind of machine this code is for (migration …0018).
+   *
+   * Optional, so an older dashboard that does not send it keeps working and its codes
+   * stay redeemable by anything — but the dialog now always sends it, because scope is
+   * chosen against a platform's vocabulary. Offering Screenshots for a phone, or
+   * Location for a laptop, is offering a choice that does nothing.
+   */
+  platform: z.enum(["windows", "macos", "android"]).optional(),
+  /**
+   * Types this machine must NOT collect, chosen when the code is minted.
+   *
+   * Still a deny list even now that the code names a platform. An allow list would be
+   * frozen at mint time: a data type added to the product later would be denied on
+   * every code already issued, and on every device that redeemed one. Absent means
+   * everything the platform supports, which is what makes "no policy" the safe default.
+   */
+  deniedTypes: z
+    .array(z.string())
+    .max(DATA_TYPE_IDS.length)
+    .default([])
+    .refine((types) => types.every((type) => KNOWN_TYPES.has(type)), {
+      message: `deniedTypes must be drawn from ${DATA_TYPE_IDS.join(", ")}`,
+    })
+    .transform((types) => [...new Set(types)] as DataTypeId[]),
+});
+
+/**
+ * Manager-only change to a live device's scope.
+ *
+ * Keys are validated against the vocabulary rather than typed as a `z.record` of the
+ * enum, because this body is written straight into a CHECK-constrained column and the
+ * refusal should name the field rather than arrive as a Postgres error.
+ */
+const collectionPatchSchema = z.object({
+  types: z
+    .record(z.string(), z.boolean())
+    .refine((types) => Object.keys(types).length > 0, { message: "types must not be empty" })
+    .refine((types) => Object.keys(types).every((type) => KNOWN_TYPES.has(type)), {
+      message: `types keys must be drawn from ${DATA_TYPE_IDS.join(", ")}`,
+    }),
 });
 
 const enrollSchema = z.object({
@@ -99,6 +151,35 @@ export function deviceReadDenial(
 
 export const deviceRoutes: FastifyPluginAsync = async (app) => {
   /**
+   * The decisions on record for one device, newest first, with the name attached.
+   *
+   * The embed names its foreign key explicitly because `profiles` is reachable from
+   * this table by more than one path once `devices` is joined; `pnpm check:wiring`
+   * verifies the constraint name exists.
+   */
+  async function readCollection(companyId: string, deviceId: string) {
+    const { data } = await app.supabase
+      .from("device_collection_settings")
+      .select(
+        "data_type, enabled, changed_at, profiles!device_collection_settings_changed_by_fkey(full_name)",
+      )
+      .eq("company_id", companyId)
+      .eq("device_id", deviceId)
+      .order("data_type");
+
+    return (data ?? []).map((row) => {
+      const changedBy = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
+      return {
+        dataType: row.data_type,
+        enabled: row.enabled,
+        // Null when the person who made the change has left; the decision outlives them.
+        changedByName: changedBy?.full_name ?? null,
+        changedAt: row.changed_at,
+      };
+    });
+  }
+
+  /**
    * Creates the device row, mints its token and answers the agent.
    *
    * Shared by both enrolment paths so a machine bound with a code is byte-identical
@@ -110,6 +191,15 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     ids: { companyId: string; profileId: string; actorId: string },
     body: z.infer<typeof enrollSchema>,
     audit: Record<string, unknown>,
+    /**
+     * The scope chosen when the code was minted, read off the code row rather than
+     * sent by the agent — `/enroll-with-code` is unauthenticated by design, so nothing
+     * the redeeming machine says about its own scope can be trusted.
+     *
+     * A parameter rather than a lookup inside this function, so both enrolment paths
+     * stay byte-identical: the session path simply has no code to read one from.
+     */
+    scope?: { deniedTypes: DataTypeId[]; changedBy: string | null },
   ) {
     const { data: device, error } = await app.supabase
       .from("devices")
@@ -139,6 +229,34 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       };
     }
 
+    const denied = scope?.deniedTypes ?? [];
+
+    if (denied.length > 0) {
+      const { error: scopeError } = await app.supabase.from("device_collection_settings").insert(
+        denied.map((dataType) => ({
+          company_id: ids.companyId,
+          device_id: device.id,
+          data_type: dataType,
+          enabled: false,
+          changed_by: scope?.changedBy ?? null,
+        })),
+      );
+
+      // Refused rather than enrolled wide open. The alternative is a machine that
+      // collects everything because a write nobody saw fail did not land.
+      if (scopeError) {
+        await app.supabase.from("devices").delete().eq("id", device.id);
+        return {
+          sent: reply.code(500).send({
+            error: "enroll_failed",
+            message: "Could not record what this device may collect, so it was not enrolled",
+            statusCode: 500,
+          }),
+          device: null,
+        };
+      }
+    }
+
     const { data: policy } = await app.supabase
       .from("policies")
       .select("version, name, screenshot_interval_seconds, idle_threshold_seconds, tracked_categories")
@@ -166,7 +284,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         action: "device.enrolled",
         targetType: "device",
         targetId: device.id,
-        metadata: { platform: body.platform, label: body.label, ...audit } as Json,
+        metadata: { platform: body.platform, label: body.label, deniedTypes: denied, ...audit } as Json,
       },
       app.log,
     );
@@ -189,6 +307,10 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         ),
         // Freshly enrolled devices always need consent before collecting anything.
         consentRequired: true,
+        // What this machine may collect, so the consent screen lists exactly that and
+        // does not ask an employee to agree to something the server would refuse.
+        // `null` for granted: nothing has been agreed to yet, and a null narrows nothing.
+        collection: effectiveTypes(body.platform, denied, null),
         policy: {
           version: policy.version,
           name: policy.name,
@@ -260,6 +382,10 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       code_hash: hashCode(code),
       expires_at: expiresAt,
       created_by: session.profileId,
+      denied_types: parsed.data.deniedTypes,
+      // Recorded so redemption can refuse the wrong kind of machine, and so the audit
+      // trail says what the admin was choosing scope FOR.
+      platform: parsed.data.platform ?? null,
     });
 
     if (error) {
@@ -277,8 +403,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         targetType: "profile",
         targetId: subjectId,
         // The code itself is deliberately absent: an audit log readable by admins is
-        // not a place to leave a live credential.
-        metadata: { expiresAt } as Json,
+        // not a place to leave a live credential. The scope is not a credential.
+        metadata: { expiresAt, deniedTypes: parsed.data.deniedTypes } as Json,
       },
       app.log,
     );
@@ -313,12 +439,41 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     // Looked up BY HASH, so there is no query here that could enumerate codes.
     const { data: row } = await app.supabase
       .from("device_enrollment_codes")
-      .select("id, company_id, profile_id, expires_at, consumed_at")
+      .select("id, company_id, profile_id, expires_at, consumed_at, denied_types, created_by, platform")
       .eq("code_hash", hashCode(body.code))
       .maybeSingle();
 
     const rejection = codeRejection(row, Date.now());
     if (rejection) return reply.code(rejection.statusCode).send(rejection);
+
+    /*
+     * The right kind of machine for this code.
+     *
+     * Not tidiness. Scope was chosen against one platform's vocabulary, so a code minted
+     * for Android and redeemed by a laptop applies a phone's deny list to a machine with
+     * different capabilities — quietly collecting things the admin believed they had
+     * excluded, because the checkbox that would have excluded them was never shown.
+     *
+     * Null platform means a code minted before …0018: those accept anything, as they
+     * always did. Reported as `invalid_code` in the same words as every other refusal on
+     * this route — an unauthenticated endpoint must not tell a caller *why* a code was
+     * refused, or it becomes an oracle for what codes exist.
+     */
+    // `== null` catches undefined as well as null, and both mean the same thing here:
+    // no platform was recorded, so anything may redeem it. Strict `!== null` refused
+    // every code that predates …0018 — the exact devices this was supposed to leave
+    // alone — because a row selected before the column existed reads as undefined.
+    if (row!.platform != null && row!.platform !== body.platform) {
+      app.log.warn(
+        { codePlatform: row!.platform, devicePlatform: body.platform },
+        "enrolment code redeemed by the wrong platform",
+      );
+      return reply.code(401).send({
+        error: "invalid_code",
+        message: "That sign-in code is not valid any more. Generate a new one from the dashboard.",
+        statusCode: 401,
+      });
+    }
 
     // Monitoring disabled or the person off-boarded between minting and redeeming.
     const { data: subject } = await app.supabase
@@ -340,6 +495,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       { companyId: row!.company_id, profileId: row!.profile_id, actorId: row!.profile_id },
       body,
       { via: "enrollment_code" },
+      { deniedTypes: row!.denied_types ?? [], changedBy: row!.created_by },
     );
     if (result.sent) return result.sent;
 
@@ -437,7 +593,15 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     }));
   });
 
-  /** Keeps `last_seen_at` fresh — this is what drives online/idle/offline in the UI. */
+  /**
+   * Keeps `last_seen_at` fresh — this is what drives online/idle/offline in the UI —
+   * and carries the current collection scope back to the agent.
+   *
+   * The scope rides the heartbeat rather than a new endpoint because this already runs
+   * every 60 seconds, already re-reads the device row, and is already the consent-exempt
+   * channel a revocation travels on. A second poll would buy nothing but two arrays.
+   * Every field past `ok` is additive, so an agent that ignores them keeps working.
+   */
   app.post("/heartbeat", { preHandler: app.requireDevice }, async (request, reply) => {
     const parsed = heartbeatSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -453,12 +617,45 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "forbidden", message: "Token does not match device", statusCode: 403 });
     }
 
-    await app.supabase
-      .from("devices")
-      .update({ last_seen_at: new Date().toISOString(), status: "active" })
-      .eq("id", device.deviceId);
+    const [, policyResult, consentResult, denied] = await Promise.all([
+      app.supabase
+        .from("devices")
+        .update({ last_seen_at: new Date().toISOString(), status: "active" })
+        .eq("id", device.deviceId),
+      app.supabase
+        .from("policies")
+        .select("version")
+        .eq("company_id", device.companyId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      app.supabase
+        .from("consent_records")
+        .select("granted_types")
+        .eq("device_id", device.deviceId)
+        .is("revoked_at", null)
+        .maybeSingle(),
+      deniedTypesFor(app.supabase, device.deviceId),
+    ]);
 
-    return { ok: true as const };
+    const policyVersion = policyResult.data?.version;
+
+    // A failed settings read omits both arrays rather than guessing. Absent means "no
+    // new information" to the agent, which keeps whatever it last heard; guessing
+    // "nothing is denied" would tell it to resume a type an admin switched off.
+    if (denied === null) {
+      return { ok: true as const, ...(policyVersion ? { policyVersion } : {}) };
+    }
+
+    // No live consent means nothing may be collected at all, whatever the settings say.
+    const granted = consentResult.data ? (consentResult.data.granted_types ?? null) : null;
+
+    return {
+      ok: true as const,
+      ...(policyVersion ? { policyVersion } : {}),
+      collection: consentResult.data ? effectiveTypes(device.platform, denied, granted) : [],
+      pendingTypes: consentResult.data ? pendingTypes(device.platform, denied, granted) : [],
+    };
   });
 
   /** Battery, network, storage, screen time. Append-only series. */
@@ -476,11 +673,15 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     // the same consent gate as /activity and /screenshots applies. Only
     // /heartbeat is exempt, because it carries no observation and is the channel
     // through which a revoked agent finds out it has been revoked.
-    const consent = await assertConsent(app.supabase, device.deviceId);
+    const consent = await resolveCollection(app.supabase, device);
     if (!consent.ok) {
       return reply
         .code(403)
         .send({ error: "consent_required", message: consent.message, statusCode: 403 });
+    }
+
+    if (!consent.types.has("telemetry")) {
+      return reply.code(403).send(collectionDenial("telemetry"));
     }
 
     const body = parsed.data;
@@ -519,11 +720,15 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     // reports inventory before consent is accepted, so without this gate a
     // device that never consented — or whose consent was withdrawn — would still
     // hand over its installed-application list.
-    const consent = await assertConsent(app.supabase, device.deviceId);
+    const consent = await resolveCollection(app.supabase, device);
     if (!consent.ok) {
       return reply
         .code(403)
         .send({ error: "consent_required", message: consent.message, statusCode: 403 });
+    }
+
+    if (!consent.types.has("installed_apps")) {
+      return reply.code(403).send(collectionDenial("installed_apps"));
     }
 
     const now = new Date().toISOString();
@@ -799,6 +1004,189 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
 
     const samples = data ?? [];
     return { latest: samples[0] ?? null, samples };
+  });
+
+  /**
+   * A device's collection scope, with who last changed each entry.
+   *
+   * Only types somebody has made a decision about appear; everything else is permitted
+   * by absence, which is why an empty list is the normal answer and not an error.
+   *
+   * `requireUser` guarded by `deviceReadDenial`, the same as the two reads above, so an
+   * employee can read their own machine's scope without asking anyone — non-negotiable
+   * #3. The attribution comes off the settings row rather than the audit log, because
+   * `audit_log_entries` is readable by super admins only and a manager reading this
+   * screen could not see it there.
+   */
+  app.get("/:deviceId/collection", { preHandler: app.requireUser }, async (request, reply) => {
+    const { deviceId } = request.params as { deviceId: string };
+    if (!deviceIdSchema.safeParse(deviceId).success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_device_id", message: "deviceId must be a uuid", statusCode: 400 });
+    }
+
+    const session = request.session!;
+
+    const { data: device } = await app.supabase
+      .from("devices")
+      .select("id, profile_id")
+      .eq("id", deviceId)
+      .eq("company_id", session.companyId)
+      .maybeSingle();
+
+    const denial = deviceReadDenial(device, session);
+    if (denial) return reply.code(denial.statusCode).send(denial);
+
+    return readCollection(session.companyId, deviceId);
+  });
+
+  /**
+   * Narrow or widen what one machine collects.
+   *
+   * `requireManager`, matching `POST /:deviceId/primary` rather than the super-admin
+   * routes either side: the person who knows what a given machine should be recording
+   * is the manager responsible for it.
+   *
+   * Widening does not resume collection on its own. The server enforces
+   * `granted ∩ allowed`, so a type switched back on is simply not collected until the
+   * employee agrees to it — that is what the heartbeat's `pendingTypes` carries. The
+   * reverse needs no re-consent: collecting less than was agreed is still covered.
+   *
+   * Re-enabling updates the row rather than deleting it. "Sam turned screenshots back
+   * on on 9 Aug" is a fact the compliance surfaces have to be able to state, and a
+   * deleted row states nothing.
+   */
+  app.patch("/:deviceId/collection", { preHandler: app.requireManager }, async (request, reply) => {
+    const { deviceId } = request.params as { deviceId: string };
+    if (!deviceIdSchema.safeParse(deviceId).success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_device_id", message: "deviceId must be a uuid", statusCode: 400 });
+    }
+
+    const parsed = collectionPatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send(validationFailure(parsed.error, "invalid_body"));
+    }
+
+    const session = request.session!;
+    const patch = parsed.data.types as Partial<Record<DataTypeId, boolean>>;
+
+    // Company-scoped: the service-role key has already bypassed RLS, so this read is
+    // the whole tenant boundary on a write that changes what a machine records.
+    // `label` comes back for the email — it is how the owner tells this machine from
+    // the other two assigned to them.
+    const { data: device } = await app.supabase
+      .from("devices")
+      .select("id, profile_id, label")
+      .eq("id", deviceId)
+      .eq("company_id", session.companyId)
+      .maybeSingle();
+
+    if (!device) {
+      return reply
+        .code(404)
+        .send({ error: "not_found", message: "Device not found", statusCode: 404 });
+    }
+
+    const previous = await deniedTypesFor(app.supabase, deviceId);
+    if (previous === null) {
+      return reply.code(500).send({
+        error: "collection_read_failed",
+        message: "Could not read this device's current scope, so nothing was changed",
+        statusCode: 500,
+      });
+    }
+
+    const changedAt = new Date().toISOString();
+    const entries = Object.entries(patch) as [DataTypeId, boolean][];
+
+    const { error } = await app.supabase.from("device_collection_settings").upsert(
+      entries.map(([dataType, enabled]) => ({
+        company_id: session.companyId,
+        device_id: deviceId,
+        data_type: dataType,
+        enabled,
+        changed_by: session.profileId,
+        changed_at: changedAt,
+      })),
+      { onConflict: "device_id,data_type" },
+    );
+
+    if (error) {
+      return reply
+        .code(500)
+        .send({ error: "collection_write_failed", message: error.message, statusCode: 500 });
+    }
+
+    // Before and after, the same shape `policy.published` uses, so a mailer added later
+    // reads the row the in-product notice reads rather than inventing a second source.
+    const wasDenied = new Set(previous);
+    await recordAudit(
+      app.supabase,
+      {
+        companyId: session.companyId,
+        actorId: session.profileId,
+        action: "collection.changed",
+        targetType: "device",
+        targetId: deviceId,
+        metadata: {
+          profileId: device.profile_id,
+          before: Object.fromEntries(entries.map(([type]) => [type, !wasDenied.has(type)])),
+          after: Object.fromEntries(entries),
+        } as Json,
+      },
+      app.log,
+    );
+
+    /*
+     * Tell the person whose device it is.
+     *
+     * Non-negotiable #1 makes consent the basis of collection, so a change to its
+     * scope is a change to what they agreed to — and learning about that by accident
+     * is what turns a workforce product into one people warn each other about.
+     *
+     * In the background: the database has already agreed, and this answer should not
+     * wait on a mail provider or fail because of one. `sendInBackground` swallows
+     * everything, so a bad address costs a log line and not the change.
+     *
+     * Only the types that actually moved are named. Re-sending the full list every
+     * time trains people to stop reading it, and the one line that matters — what is
+     * newly recorded — would be buried among six that did not change.
+     */
+    const moved = entries.filter(([type, enabled]) => wasDenied.has(type) === enabled);
+
+    if (moved.length > 0) {
+      const { data: owner } = await app.supabase
+        .from("profiles")
+        .select("email, full_name, companies(name)")
+        .eq("id", device.profile_id)
+        .maybeSingle();
+
+      if (owner?.email) {
+        const company = Array.isArray(owner.companies) ? owner.companies[0] : owner.companies;
+        const message = collectionChangedEmail(
+          {
+            recipientName: nameOrEmail(owner.full_name, owner.email),
+            companyName: company?.name ?? "your company",
+            dashboardUrl: app.dashboardUrl,
+          },
+          {
+            deviceLabel: device.label,
+            changedByName: session.email,
+            changes: moved.map(([type, enabled]) => ({
+              label: DATA_TYPE_LABEL[type],
+              enabled,
+            })),
+          },
+        );
+
+        sendInBackground(app.mailer, { ...message, to: owner.email }, app.log);
+      }
+    }
+
+    return readCollection(session.companyId, deviceId);
   });
 
   /**

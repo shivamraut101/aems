@@ -6,6 +6,8 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
+import { sendInBackground } from "../lib/email/mailer.js";
+import { accountCreatedEmail, nameOrEmail } from "../lib/email/templates.js";
 import { validationFailure } from "../lib/validation.js";
 
 /**
@@ -560,11 +562,52 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
       app.log,
     );
 
+    /*
+     * Send the new employee their own credentials.
+     *
+     * The gap this closes: the temporary password is shown to the admin exactly once
+     * and then read out or pasted into a chat, so the credential reaches its owner
+     * through a third party over a channel nobody controls. Mail is not a perfect
+     * channel either, but it is addressed to the one person who should have it.
+     *
+     * The password is still returned below, and deliberately. Mail is best-effort —
+     * unconfigured, greylisted, or a wrong address — and an admin left with no way to
+     * onboard someone is worse than one who has the password on screen as well. The
+     * response field is the fallback, not the primary path.
+     */
+    if (result.profile) {
+      // One extra read, on a route an admin hits a handful of times. The company's own
+      // name is what makes this look like their employer's mail rather than a phishing
+      // attempt from a product nobody told the recipient about.
+      const { data: company } = await app.supabase
+        .from("companies")
+        .select("name")
+        .eq("id", session.companyId)
+        .maybeSingle();
+
+      const message = accountCreatedEmail(
+        {
+          recipientName: nameOrEmail(body.fullName, body.email),
+          companyName: company?.name ?? "your company",
+          dashboardUrl: app.dashboardUrl,
+        },
+        { temporaryPassword: password, createdByName: session.email },
+      );
+
+      sendInBackground(app.mailer, { ...message, to: body.email }, app.log);
+    }
+
     return reply.code(201).send({
       profile: result.profile,
       // Shown once, then gone. Null when the admin chose the password themselves,
       // because echoing back something they already know only widens its exposure.
       temporaryPassword: body.temporaryPassword ? null : password,
+      /**
+       * Whether the employee has been sent their password, so the dialog can stop
+       * telling an admin to relay something that is already in an inbox — and can keep
+       * telling them to when it is not.
+       */
+      credentialsEmailed: app.mailer.configured,
     });
   });
 

@@ -34,7 +34,12 @@ const admin: SessionProfile = { profileId: ADMIN, companyId: COMPANY, email: "a@
 const manager: SessionProfile = { profileId: BOB, companyId: COMPANY, email: "m@x", role: "manager" };
 const alice: SessionProfile = { profileId: ALICE, companyId: COMPANY, email: "e@x", role: "employee" };
 
-const device: DeviceContext = { deviceId: DEVICE, companyId: COMPANY, profileId: ALICE };
+const device: DeviceContext = {
+  deviceId: DEVICE,
+  companyId: COMPANY,
+  profileId: ALICE,
+  platform: "windows",
+};
 
 // ===========================================================================
 // The matcher
