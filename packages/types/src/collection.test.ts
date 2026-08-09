@@ -84,6 +84,19 @@ describe("copy", () => {
     ).toBeUndefined();
   });
 
+  /**
+   * The absence is a property of this machine's software, not of the agreement. A managed
+   * browser extension force-installed onto a Windows laptop starts recording addresses
+   * without bumping the policy version, so nothing re-opens the consent gate — and "this
+   * computer cannot report" would have become false in words somebody had already signed.
+   */
+  it("does not promise the Windows website limit is permanent", () => {
+    const detail = describeDataType("websites", { readsBrowserAddress: false }).detail;
+
+    expect(detail).toContain("cannot currently report");
+    expect(detail).toContain("you will be told");
+  });
+
   it("hedges rather than printing a zero when no policy is published", () => {
     expect(describeDataType("screenshots").detail).toContain(
       "at regular intervals",

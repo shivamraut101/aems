@@ -183,8 +183,15 @@ export function describeDataType(
         : {
             id,
             title: "Not the websites you visit",
+            // "Cannot currently", and the sentence about the extension, because the
+            // absence is a property of this machine's software and not of the agreement.
+            // A Windows laptop that is later force-installed with the managed extension
+            // starts recording addresses without the policy version changing, so nothing
+            // re-opens this screen — and the words somebody accepted would have become
+            // false with no notice. Stated in advance instead; the API also emails when
+            // it happens.
             detail:
-              "This computer cannot report the addresses of pages you open, so no website activity is recorded from it. Your browser is recorded only as an application, by name and by how long it is in focus.",
+              "This computer cannot currently report the addresses of pages you open, so no website activity is recorded from it — your browser is recorded only as an application, by name and by how long it is in focus. If your organisation installs the managed AEMS browser extension here, addresses start being recorded and you will be told.",
             absent: true,
           };
     case "screenshots":

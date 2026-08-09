@@ -419,7 +419,11 @@ describe("what the gate promises is what this platform can do", () => {
     await settle();
 
     expect(text()).not.toContain("Website domains you visit");
-    expect(text()).toContain("cannot report the addresses of pages you open");
+    expect(text()).toContain("cannot currently report the addresses of pages you open");
+    // "Cannot", full stop, was a promise the agreement could not keep: a managed browser
+    // extension force-installed later starts recording addresses without bumping the
+    // policy version, so nothing re-opens this screen and the signed words become false.
+    expect(text()).toContain("you will be told");
   });
 
   it("still promises them where the address really is read", async () => {
@@ -428,7 +432,7 @@ describe("what the gate promises is what this platform can do", () => {
     await settle();
 
     expect(text()).toContain("Website domains you visit");
-    expect(text()).not.toContain("cannot report the addresses of pages you open");
+    expect(text()).not.toContain("cannot currently report the addresses of pages you open");
   });
 });
 

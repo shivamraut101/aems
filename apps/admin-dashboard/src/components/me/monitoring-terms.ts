@@ -10,11 +10,13 @@
  *     ConsentScreen.tsx` → `collectedItems`). Someone who accepted terms on their
  *     laptop and then reads this page must find the same list, or one of the two is
  *     lying and neither is trustworthy.
- *  2. **A capability the platform does not have is stated as absent**, not omitted.
+ *  2. **A capability the device does not have is stated as absent**, not omitted.
  *     `get-windows` reads a browser tab's address only on macOS, over AppleScript;
- *     Windows exposes no supported way to do it (CLAUDE.md open item 6). Quietly
- *     dropping the line on Windows would leave a reader to assume the worst, and
- *     printing it would promise collection the binary cannot perform.
+ *     Windows exposes no supported way to do it (CLAUDE.md open item 6) unless the
+ *     managed browser extension is connected to the agent, which is why the website
+ *     line turns on that as well as on the platform. Quietly dropping the line would
+ *     leave a reader to assume the worst, and printing it unconditionally would promise
+ *     collection the binary cannot perform.
  *
  * `docs/design.md` forbids surveillance framing. That constrains tone, not accuracy:
  * the honest way to avoid sounding like surveillance is to say exactly what is taken
@@ -77,15 +79,42 @@ export function platformLabel(platform: DevicePlatform): string {
 }
 
 /**
- * Can this platform report the address of the page in the browser?
+ * Can this device report the address of the page in the browser?
  *
- * macOS only, and the agent's own `createBrowserUrlReader` decides it the same way.
- * Kept as a named predicate so the reason appears once instead of a `=== "macos"`
- * scattered through copy that would silently mean something else if a third desktop
- * platform were ever added.
+ * Two ways to get one, and the agent's own consent screen decides it the same way: the
+ * macOS agent reads it over AppleScript, and a Windows machine gets there only when the
+ * managed browser extension is connected. Kept as a named predicate so the reason
+ * appears once instead of a `=== "macos"` scattered through copy that would silently
+ * mean something else if a third desktop platform were ever added.
+ *
+ * The default is the honest one for a caller that does not know — a device that has
+ * never said whether an extension is connected has not earned the positive claim.
  */
-export function readsBrowserAddress(platform: DevicePlatform): boolean {
-  return platform === "macos";
+export function readsBrowserAddress(platform: DevicePlatform, extensionLinked = false): boolean {
+  return platform === "macos" || extensionLinked;
+}
+
+/**
+ * Which of the three things the websites line can say is true of this device.
+ *
+ * A capability and a permission are different questions and the copy needs both, because
+ * the honest sentence differs: a machine that *cannot* read an address and one that has
+ * been *told not to* are not the same fact, and only the second has somebody's decision
+ * behind it. Reading the extension link alone told an employee whose manager had switched
+ * websites off that the addresses they visit are recorded, on the one page that exists so
+ * they can check exactly that.
+ *
+ * Null recording permits, matching the agent: an absent scope is not a denial.
+ */
+export type WebsiteStance = "recorded" | "incapable" | "switched-off";
+
+export function websiteStance(
+  platform: DevicePlatform,
+  extensionLinked = false,
+  recording: boolean | null = null,
+): WebsiteStance {
+  if (recording === false) return "switched-off";
+  return readsBrowserAddress(platform, extensionLinked) ? "recorded" : "incapable";
 }
 
 /** "about every 10 min", or a hedge when no policy has been published yet. */
@@ -124,6 +153,8 @@ export function capturesPerWorkingDay(policy: PolicyTerms | null): number {
 export function collectedItems(
   platform: DevicePlatform,
   policy: PolicyTerms | null,
+  extensionLinked = false,
+  recording: boolean | null = null,
 ): CollectedItem[] {
   if (platform === "android") {
     return [
@@ -159,18 +190,7 @@ export function collectedItems(
       title: "Applications you use",
       detail: "The name of the application in focus and how long it stays in focus.",
     },
-    readsBrowserAddress(platform)
-      ? {
-          title: "Website domains you visit",
-          detail:
-            "The domain of the page open in your browser — github.com, for example — and the time spent there. Page contents are not read.",
-        }
-      : {
-          title: "Not the websites you visit",
-          detail:
-            "This computer cannot report the addresses of pages you open, so no website activity is recorded from it. Your browser is recorded only as an application, by name and by how long it is in focus.",
-          absent: true,
-        },
+    websiteItem(websiteStance(platform, extensionLinked, recording)),
     {
       title: "Idle periods",
       detail: `When there has been no keyboard or mouse activity ${idleCadence(policy)}. What you type is never recorded — only whether input happened.`,
@@ -191,6 +211,33 @@ export function collectedItems(
       absent: true,
     },
   ];
+}
+
+/** The websites line, in the terms that are actually true of this machine right now. */
+function websiteItem(stance: WebsiteStance): CollectedItem {
+  if (stance === "recorded") {
+    return {
+      title: "Website domains you visit",
+      detail:
+        "The domain of the page open in your browser — github.com, for example — and the time spent there. Page contents are not read.",
+    };
+  }
+
+  if (stance === "switched-off") {
+    return {
+      title: "Not the websites you visit",
+      detail:
+        "Website activity is switched off for this device, so nothing about your browsing is recorded from it. Your browser is recorded only as an application, by name and by how long it is in focus.",
+      absent: true,
+    };
+  }
+
+  return {
+    title: "Not the websites you visit",
+    detail:
+      "This computer cannot report the addresses of pages you open, so no website activity is recorded from it. Your browser is recorded only as an application, by name and by how long it is in focus.",
+    absent: true,
+  };
 }
 
 /**

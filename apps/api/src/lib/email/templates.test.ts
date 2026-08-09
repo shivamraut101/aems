@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { recordingMailer, resendMailer } from "./mailer.js";
 import {
   accountCreatedEmail,
+  browserExtensionLinkedEmail,
   collectionChangedEmail,
   deviceEnrolledEmail,
   nameOrEmail,
@@ -107,6 +108,36 @@ describe("deviceEnrolledEmail", () => {
     // Non-negotiable #1: consent is to a specific scope. "And nothing else" is the
     // half of that sentence a monitoring product is tempted to leave off.
     expect(message.text).toContain("Nothing else");
+  });
+});
+
+describe("browserExtensionLinkedEmail", () => {
+  const message = browserExtensionLinkedEmail(context, { deviceLabel: "SAM-LAPTOP" });
+
+  /**
+   * The change nobody signs off. Windows consent states that no website activity is
+   * recorded from that machine, because the agent cannot read a browser address bar
+   * there; the extension arriving makes that false without bumping the policy version,
+   * so nothing re-opens the consent gate. This mail is the disclosure.
+   */
+  it("says what started being recorded, and what did not", () => {
+    expect(message.subject).toContain("SAM-LAPTOP");
+    expect(message.text).toContain("could not report the addresses");
+    expect(message.text).toContain("the domain of the page in your active tab");
+    expect(message.text).toContain("does not record what is on");
+  });
+
+  it("points at somebody to ask, even though no person pressed a button", () => {
+    // Force-installed by browser policy, so there is no actor to name — and inventing
+    // one would be worse than naming the two people who can answer for it.
+    expect(message.text).toContain("IT administrator or your manager");
+    expect(message.html).toContain("/my-devices");
+  });
+
+  it("writes both parts, because a message with no text part reads as spam", () => {
+    expect(message.html.length).toBeGreaterThan(0);
+    expect(message.text.length).toBeGreaterThan(0);
+    expect(message.text).not.toContain("<");
   });
 });
 

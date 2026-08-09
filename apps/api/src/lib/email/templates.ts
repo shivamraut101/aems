@@ -162,6 +162,65 @@ export function collectionChangedEmail(
 }
 
 /**
+ * A Windows computer started being able to report the addresses of pages opened in a
+ * browser.
+ *
+ * The one change to collection that nobody signs off. Windows exposes no supported way
+ * to read a browser's address bar, so the consent an employee accepted on a Windows
+ * laptop says in as many words that no website activity is recorded from it — and a
+ * managed browser extension arriving makes that sentence false without changing the
+ * policy version, so nothing re-opens the consent gate. They can find it on their own
+ * devices page afterwards, but discovery is not disclosure.
+ *
+ * No actor is named, unlike every other template here, and that is not an oversight: an
+ * extension is force-installed by browser policy rather than by somebody pressing a
+ * button, so there is no name to put in and inventing one would be worse than pointing
+ * at the two people who can answer for it.
+ */
+export function browserExtensionLinkedEmail(
+  context: EmailContext,
+  input: { deviceLabel: string },
+): EmailMessage {
+  const html = layout(
+    `${input.deviceLabel} now records the websites you visit`,
+    `<p ${P}>Hello ${escapeHtml(context.recipientName)},</p>
+     <p ${P}>Until now, <strong style="color:#0f172a;">${escapeHtml(input.deviceLabel)}</strong> could not report the addresses of pages you opened in a browser — Windows gives the AEMS agent no way to read them. The managed AEMS browser extension is now installed there, and it can.</p>
+     <p ${P}>From now on, that computer records the domain of the page in your active tab — github.com, for example — and how long you spend there. It does not record what is on the page, what you type, or anything you open in a private window that the extension is not installed in.</p>
+     <p ${P}>Nothing else about what is recorded has changed, and you can withdraw your consent for this device at any time.</p>
+     ${button(`${context.dashboardUrl}/my-devices`, "See what is recorded")}
+     <p style="margin:16px 0 0;font-size:13px;color:#64748b;line-height:1.6;">If this is unexpected, your IT administrator or your manager installed it and is the person to ask.</p>`,
+    context,
+  );
+
+  const text = [
+    `Hello ${context.recipientName},`,
+    ``,
+    `Until now, ${input.deviceLabel} could not report the addresses of pages you opened in a`,
+    `browser - Windows gives the AEMS agent no way to read them. The managed AEMS browser`,
+    `extension is now installed there, and it can.`,
+    ``,
+    `From now on, that computer records the domain of the page in your active tab -`,
+    `github.com, for example - and how long you spend there. It does not record what is on`,
+    `the page, what you type, or anything you open in a browser the extension is not`,
+    `installed in.`,
+    ``,
+    `Nothing else about what is recorded has changed, and you can withdraw your consent for`,
+    `this device at any time:`,
+    `${context.dashboardUrl}/my-devices`,
+    ``,
+    `If this is unexpected, your IT administrator or your manager installed it and is the`,
+    `person to ask.`,
+  ].join("\n");
+
+  return {
+    to: "",
+    subject: `${input.deviceLabel} now records the websites you visit`,
+    html,
+    text,
+  };
+}
+
+/**
  * A new account, with the password that opens it.
  *
  * This exists to close a gap the role walkthrough found: `POST /api/employees` mints a
