@@ -397,6 +397,35 @@ The reason it is one piece of work rather than two: on Windows there is no suppo
 to read a browser's address bar, so website *tracking* already needed a managed
 extension. The mechanism that reports a URL is the mechanism that can refuse it.
 
+**Restriction stays a blocklist. Allowlist mode was designed on 2026-08-10 and deliberately
+not built** — along with the per-user scoping and the request-and-approve queue that would
+have come with it. Do not re-propose them without reading this paragraph first.
+
+A browser extension cannot deliver deny-by-default. The employee can disable it, open a
+guest profile, or install a second browser. `ExtensionInstallForcelist` closes the first
+door; controlling *which browsers exist on the machine* is MDM, and MDM is out of scope by
+name in `docs/scope.md` §8. That gap is the whole argument, because the two modes fail in
+different directions:
+
+- A **blocklist** that can be bypassed still works. It is a deterrent, every refusal lands
+  in `website_block_events` as a record, and it degrades gracefully.
+- An **allowlist** that can be bypassed is a false promise. An admin told "only these sites
+  are reachable" learns otherwise from an incident, not from the product.
+
+Two supporting findings. Of the six reference products in `docs/inspiration.md`, exactly one
+does website blocking at all — ActivTrak, as a per-computer blocklist by domain. None does
+an allowlist; that belongs to web filtering and DLP (Zscaler, Umbrella, BrowseControl).
+And an allowlist breaks a working machine faster than it restricts one: a "site" is many
+domains, so allowing `gmail.com` still blocks `mail.google.com`, `accounts.google.com` and
+`gstatic.com`, and sign-in stops working everywhere.
+
+If it is ever revived, the design that makes it survivable is on record: block `main_frame`
+navigations only so page sub-resources are never on the list; match the registrable domain
+and its subdomains; ship starter templates per SaaS suite; allow the identity providers by
+default; run a record-only preview mode before enforcing; and fail **open** when the agent
+is unreachable, because a monitoring product must never leave a laptop unable to open any
+website. It belongs with force-install, in Phase 2, where it can be honest.
+
 **`docs/scope.md` §8 still says otherwise.** Confirm the document edit before the demo.
 
 ## Open items
