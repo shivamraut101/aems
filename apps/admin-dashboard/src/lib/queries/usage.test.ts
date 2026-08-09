@@ -18,6 +18,7 @@ import {
   tableColumns,
   websiteCoverage,
   type PersonReportRow,
+  type WebsiteSource,
 } from "./usage";
 
 /* ------------------------------------------------------------------------- */
@@ -252,30 +253,112 @@ describe("sharePercent", () => {
 /* ------------------------------------------------------------------------- */
 
 describe("websiteCoverage", () => {
+  const NOW = Date.parse("2026-08-10T09:00:00.000Z");
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+  const mac: WebsiteSource = {
+    platform: "macos",
+    extension: null,
+    extensionSeenAt: null,
+    recording: true,
+  };
+  const winWith: WebsiteSource = {
+    platform: "windows",
+    extension: true,
+    extensionSeenAt: ago(60_000),
+    recording: true,
+  };
+  const winWithout: WebsiteSource = {
+    platform: "windows",
+    extension: false,
+    extensionSeenAt: null,
+    recording: true,
+  };
+
+  const cover = (sources: readonly WebsiteSource[]) => websiteCoverage(sources, NOW);
+
   it("reports full fidelity when every device reads the address from the browser", () => {
-    const coverage = websiteCoverage(["macos"]);
+    const coverage = cover([mac]);
 
     expect(coverage.level).toBe("browser-url");
     expect(coverage.note).toMatch(/macOS/);
   });
 
   it("says plainly that a Windows agent can only read a domain out of a window title", () => {
-    const coverage = websiteCoverage(["windows"]);
+    const coverage = cover([winWithout]);
 
     expect(coverage.level).toBe("window-title");
     expect(coverage.note).toMatch(/Windows/);
     expect(coverage.note).toMatch(/title/i);
+    // The whole point of the sentence: an empty list is not evidence of no browsing.
+    expect(coverage.note).toMatch(/incomplete/);
+  });
+
+  it("counts a Windows machine with the extension as reading the address", () => {
+    const coverage = cover([winWith]);
+
+    expect(coverage.level).toBe("browser-url");
+    expect(coverage.note).toMatch(/extension/);
+  });
+
+  /**
+   * Null is "this device has never said", and a device that has never said has not
+   * earned "this list is complete" — the whole reason the column is nullable.
+   */
+  it("does not read an unanswered Windows device as a covered one", () => {
+    expect(
+      cover([{ platform: "windows", extension: null, extensionSeenAt: null, recording: null }])
+        .level,
+    ).toBe("window-title");
   });
 
   it("flags a mixed fleet, because half the days will look thinner than the other half", () => {
-    expect(websiteCoverage(["macos", "windows"]).level).toBe("mixed");
-    expect(websiteCoverage(["windows", "macos"]).level).toBe("mixed");
+    expect(cover([mac, winWithout]).level).toBe("mixed");
+    expect(cover([winWithout, mac]).level).toBe("mixed");
+    // Two Windows machines, one with the extension and one without, is the same split.
+    expect(cover([winWith, winWithout]).level).toBe("mixed");
+  });
+
+  /**
+   * Nothing ages `browser_extension_linked` out. The agent's own window is a week, and a
+   * laptop that stops heartbeating leaves the last `true` on the row for good — so
+   * without this the tab goes on saying "this list is complete" for a machine that was
+   * retired months ago, which is the collision this feature exists to remove, inverted.
+   */
+  it("stops believing a link nothing has confirmed lately", () => {
+    const stale = { ...winWith, extensionSeenAt: ago(3 * 24 * 60 * 60 * 1000) };
+
+    expect(cover([stale]).level).toBe("window-title");
+    // A `true` with no stamp behind it cannot be aged at all, so it is not taken at
+    // face value either.
+    expect(cover([{ ...winWith, extensionSeenAt: null }]).level).toBe("window-title");
+  });
+
+  /**
+   * A connected extension on a device whose `websites` scope an administrator switched
+   * off produces exactly as few rows as no extension at all — and the note that says
+   * "so this list is complete" is the claim that has to be true.
+   */
+  it("does not call a list complete when the agent is not recording addresses", () => {
+    expect(cover([{ ...winWith, recording: false }]).level).toBe("window-title");
+    expect(cover([{ ...mac, recording: false }]).level).toBe("unknown");
+    // Null is "never said", which permits — an absent scope is not a denial.
+    expect(cover([{ ...winWith, recording: null }]).level).toBe("browser-url");
+  });
+
+  /** The note names no cause, because three different facts produce this reading. */
+  it("sends the reader to the Devices tab rather than guessing why", () => {
+    expect(cover([winWithout]).note).toMatch(/Devices tab/);
+    expect(cover([mac, winWithout]).note).toMatch(/Devices tab/);
   });
 
   it("treats a person with no desktop device as unknown rather than as full coverage", () => {
-    expect(websiteCoverage([]).level).toBe("unknown");
+    expect(cover([]).level).toBe("unknown");
     // The Android agent tracks app usage, not browser addresses.
-    expect(websiteCoverage(["android"]).level).toBe("unknown");
+    expect(
+      cover([{ platform: "android", extension: null, extensionSeenAt: null, recording: null }])
+        .level,
+    ).toBe("unknown");
   });
 });
 

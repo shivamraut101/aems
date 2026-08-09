@@ -281,6 +281,10 @@ export function stateMessageOf(facts: BridgeConfigFacts): BridgeStateMessage {
     policy: facts.policy === null ? null : { version: facts.policy.version, name: facts.policy.name },
     rules,
     contact,
+    // Told rather than inferred. The extension cannot see `device_collection_settings`,
+    // and until it was told it kept transmitting addresses this process was throwing
+    // away — while its popup, the only surface it has, said they were recorded.
+    websites: mayRecordWebsites(facts),
   };
 }
 
@@ -292,6 +296,8 @@ export interface BridgeObservation {
   at: string;
   extensionVersion?: string | null;
   linked?: boolean;
+  /** Which browser sent this, when it has said. Set on hello and remembered per port. */
+  browser?: string | null;
 }
 
 export interface BridgePorts {
@@ -373,6 +379,7 @@ export class NativeBridge {
           at: this.ports.now().toISOString(),
           extensionVersion: message.extensionVersion,
           linked: true,
+          browser: message.browser ?? null,
         });
         break;
 

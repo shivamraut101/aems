@@ -206,7 +206,20 @@ describe("stateMessageOf", () => {
       policy: { version: "2026.08.01", name: "Standard monitoring policy" },
       rules: [],
       contact: null,
+      websites: true,
     });
+  });
+
+  /**
+   * The field exists so the extension can stop sending, and so its popup can stop saying
+   * addresses are recorded when the host is dropping every one of them. Both are decided
+   * from this one boolean, so it has to follow the scope rather than the consent gate.
+   */
+  it("tells the extension when the device's website scope is off, without changing monitoring", () => {
+    const message = stateMessageOf(facts({ collection: ["applications", "idle"] }));
+
+    expect(message.monitoring).toBe("collecting");
+    expect(message.websites).toBe(false);
   });
 });
 
@@ -264,8 +277,22 @@ describe("NativeBridge", () => {
         at: "2026-08-05T09:00:00.000Z",
         extensionVersion: "0.1.0",
         linked: true,
+        browser: null,
       },
     ]);
+  });
+
+  it("passes on the browser that named itself, so two of them can be told apart", () => {
+    const h = harness();
+
+    send(h.bridge, {
+      v: BRIDGE_PROTOCOL_VERSION,
+      type: "hello",
+      extensionVersion: "0.1.0",
+      browser: "Edge",
+    });
+
+    expect(h.observed[0]).toMatchObject({ browser: "Edge", linked: true });
   });
 
   it("reports a page only while the consent gate is open", () => {

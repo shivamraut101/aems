@@ -21,6 +21,11 @@ function device(overrides: Partial<MyDeviceRow> & Pick<MyDeviceRow, "id" | "prof
     status: "active",
     last_seen_at: null,
     enrolled_at: "2026-08-01T00:00:00.000Z",
+    browser_extension_linked: null,
+    browser_extension_version: null,
+    browser_extension_seen_at: null,
+    browser_extension_count: null,
+    website_addresses_recorded: null,
     ...overrides,
   };
 }

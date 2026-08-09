@@ -23,6 +23,7 @@ import {
   secondaryButtonClass,
 } from "@/components/dialog";
 import { RelativeTime } from "@/components/relative-time";
+import { BrowserLinkStrip } from "@/components/employee/browser-link";
 import { devicesQuery } from "@/components/employee/employee-queries";
 import {
   EmptyState,
@@ -33,6 +34,7 @@ import {
 } from "@/components/employee/states";
 import { queryViewState } from "@/components/states";
 import { describeError, useApiQuery, useSession, type DeviceRow } from "@/lib/api";
+import { calendarDate } from "@/lib/format";
 import {
   DATA_TYPE_LABEL,
   oneType,
@@ -323,6 +325,8 @@ function DevicePanel({ device }: { device: DeviceRow }) {
           is app usage, screen-on time and the device readings above.
         </p>
       ) : null}
+
+      <BrowserLinkStrip device={device} className="border-t px-4 py-3 sm:px-5" />
 
       {installed.length > 0 ? <InstalledApplications rows={installed} /> : null}
 
@@ -644,11 +648,4 @@ function Spec({ label, value, mono }: { label: string; value: string | null; mon
       </dd>
     </div>
   );
-}
-
-function calendarDate(iso: string | null): string | null {
-  if (!iso) return null;
-  const parsed = Date.parse(iso);
-  if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 }

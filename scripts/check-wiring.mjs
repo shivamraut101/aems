@@ -37,6 +37,15 @@ if (process.argv.includes('--print-schema')) {
 // 20260807000014 had never been applied — is resolved: it is applied, along with
 // 20260808000015 and 20260808000016, and the three tables touched by ...0017 were
 // re-read from information_schema rather than assumed.
+//
+// One exception, deliberately ahead of the database: the five `browser_extension_*` /
+// `website_addresses_recorded` columns on `devices` are committed in 20260810000021 and
+// NOT YET APPLIED. They are listed anyway so this check accepts the code that names
+// them — which means this check cannot be the thing that catches the deploy going out in
+// the wrong order, because it reads this table and `check-migrations.mjs` probes tables
+// rather than columns. The heartbeat writes them in an `update` of their own, separate
+// from `last_seen_at`, so an agent reporting them against a database without them costs
+// the extension readout and nothing else. Delete this paragraph once it is applied.
 const SCHEMA = {
   activity_events: 'id,company_id,profile_id,device_id,work_session_id,app_name,window_title,url,category,started_at,ended_at,client_event_id,created_at,domain',
   ai_summaries: 'id,company_id,profile_id,kind,period_start,period_end,provider,model,content,created_at',
@@ -49,7 +58,7 @@ const SCHEMA = {
   device_collection_settings: 'company_id,device_id,data_type,enabled,changed_by,changed_at',
   device_enrollment_codes: 'id,company_id,profile_id,code_hash,expires_at,consumed_at,consumed_device_id,created_by,created_at,platform,denied_types',
   device_telemetry: 'id,company_id,device_id,recorded_at,battery_level,battery_charging,network_type,storage_free_mb,screen_active_seconds',
-  devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb,is_primary',
+  devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb,is_primary,browser_extension_linked,browser_extension_version,browser_extension_seen_at,browser_extension_count,website_addresses_recorded',
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',
   location_points: 'id,company_id,profile_id,device_id,work_session_id,recorded_at,latitude,longitude,accuracy_m,client_event_id,created_at',
   policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at,max_open_break_seconds',

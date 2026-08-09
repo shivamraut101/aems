@@ -280,6 +280,41 @@ export interface HeartbeatInput {
   deviceId: string;
   /** Present when the agent currently has a session open. */
   workSessionId?: number | null;
+  /**
+   * What the managed browser extension has told this agent.
+   *
+   * On the heartbeat rather than a route of its own for the reason everything else
+   * rides it: this already runs every 60 seconds and already writes the devices row.
+   * Optional, and an agent that omits it leaves every column untouched — the Android
+   * agent never sends it and must not have its device row reinterpreted as "no
+   * extension" for saying nothing.
+   */
+  browserLink?: {
+    /** Whether any browser has opened the channel inside the agent's link window. */
+    linked: boolean;
+    extensionVersion?: string | null;
+    /** When a browser last opened the channel. The agent's clock. */
+    lastSeenAt?: string | null;
+    /**
+     * How many browsers on this machine are connected, all recorded identically.
+     *
+     * Reported because it is the only thing that makes a duplicate install visible;
+     * nothing behaves differently at two than at one.
+     */
+    browsers?: number;
+    /**
+     * Whether this agent is in fact writing website addresses down right now.
+     *
+     * A separate answer from `linked`, and the dashboard needs both. `linked` is about
+     * the channel; this is about consent, revocation and the device's collection scope,
+     * none of which the browser knows and all of which stop recording without closing
+     * anything. Reported by the agent rather than recomputed from `consent_records` and
+     * `device_collection_settings` because the agent is the process that decides, and a
+     * screen that tells an employee what is being recorded should quote the decision
+     * rather than a second reconstruction of it.
+     */
+    websitesRecorded?: boolean;
+  };
 }
 
 /**

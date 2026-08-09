@@ -387,6 +387,28 @@ export interface DeviceRow {
    * devices — which is what every day before this was computed with.
    */
   is_primary: boolean;
+
+  /**
+   * What the managed browser extension has told this machine's agent (migration …0021).
+   *
+   * `null` is a third answer and not a synonym for `false`: a phone never reports any of
+   * this, and neither does an agent built before the column existed. Reading null as "no
+   * extension" would accuse both of a gap they cannot have.
+   */
+  browser_extension_linked: boolean | null;
+  browser_extension_version: string | null;
+  browser_extension_seen_at: string | null;
+  /** How many browsers have connected in the last day. All are recorded the same way. */
+  browser_extension_count: number | null;
+  /**
+   * The agent's own answer to whether it is writing website addresses down.
+   *
+   * A different question from `browser_extension_linked`, and both are needed: the
+   * channel can be open while withdrawn consent or a switched-off collection scope means
+   * nothing reaches the record. Every positive claim about website data on this
+   * dashboard is conditioned on this rather than on the channel.
+   */
+  website_addresses_recorded: boolean | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -165,6 +165,7 @@ describe("startBridge", () => {
         policy: { version: "2026.08.01", name: "Standard" },
         rules: [],
         contact: null,
+        websites: true,
       },
     ]);
   });
@@ -206,6 +207,82 @@ describe("startBridge", () => {
       extensionVersion: "0.1.0",
       linkedAt: "2026-08-05T09:00:00.000Z",
     });
+  });
+
+  it("keys the entry by the browser that named itself, and keeps the pinned origin on it", () => {
+    const h = harness();
+
+    startBridge({ origin: ORIGIN, extensionId: EXTENSION }, h.deps);
+    h.stdin.emit(
+      "data",
+      frame({ v: BRIDGE_PROTOCOL_VERSION, type: "hello", extensionVersion: "0.1.0", browser: "Edge" }),
+    );
+    h.stdin.emit("data", frame({ v: BRIDGE_PROTOCOL_VERSION, type: "page", url: "https://a.test/", at: "t" }));
+
+    // The name is remembered for the life of the port, so the page report that follows
+    // lands on the same entry rather than opening a second one under the origin.
+    expect(Object.keys(h.link.read().browsers)).toEqual(["Edge"]);
+    expect(h.link.read().browsers["Edge"]).toMatchObject({
+      origin: ORIGIN,
+      url: "https://a.test/",
+      extensionVersion: "0.1.0",
+    });
+  });
+
+  it("falls back to the origin for an extension that does not name its browser", () => {
+    const h = harness();
+
+    startBridge({ origin: ORIGIN, extensionId: EXTENSION }, h.deps);
+    h.stdin.emit("data", frame({ v: BRIDGE_PROTOCOL_VERSION, type: "hello", extensionVersion: "0.1.0" }));
+
+    expect(Object.keys(h.link.read().browsers)).toEqual([ORIGIN]);
+  });
+
+  /**
+   * Two profiles of the same browser share a key on purpose — attribution is
+   * profile-agnostic everywhere else in the product — but they are two host processes,
+   * and the one in the background emits `cleared` the moment its own windows lose focus.
+   * Unguarded, that wipes the focused profile's address, and the focused profile will not
+   * resend: as far as its service worker knows nothing has changed.
+   */
+  it("will not let one port clear an address a different one reported", () => {
+    const h = harness();
+
+    const focusedProfile = startBridge({ origin: ORIGIN, extensionId: EXTENSION }, h.deps);
+    focusedProfile?.receive(
+      frame({ v: BRIDGE_PROTOCOL_VERSION, type: "hello", extensionVersion: "0.1.0", browser: "Chrome" }),
+    );
+    focusedProfile?.receive(
+      frame({ v: BRIDGE_PROTOCOL_VERSION, type: "page", url: "https://a.test/", at: "t" }),
+    );
+
+    const otherProfile = startBridge({ origin: ORIGIN, extensionId: EXTENSION }, h.deps);
+    otherProfile?.receive(
+      frame({ v: BRIDGE_PROTOCOL_VERSION, type: "hello", extensionVersion: "0.1.0", browser: "Chrome" }),
+    );
+    otherProfile?.receive(frame({ v: BRIDGE_PROTOCOL_VERSION, type: "cleared", at: "t" }));
+
+    // `hello` legitimately clears — it is this port saying it has nothing yet — so the
+    // focused profile re-reports before the second profile's stray clear arrives.
+    focusedProfile?.receive(
+      frame({ v: BRIDGE_PROTOCOL_VERSION, type: "page", url: "https://a.test/", at: "t" }),
+    );
+    otherProfile?.receive(frame({ v: BRIDGE_PROTOCOL_VERSION, type: "cleared", at: "t" }));
+
+    expect(h.link.read().browsers["Chrome"]?.url).toBe("https://a.test/");
+  });
+
+  it("still clears an address the same port put there", () => {
+    const h = harness();
+
+    const bridge = startBridge({ origin: ORIGIN, extensionId: EXTENSION }, h.deps);
+    bridge?.receive(
+      frame({ v: BRIDGE_PROTOCOL_VERSION, type: "hello", extensionVersion: "0.1.0", browser: "Chrome" }),
+    );
+    bridge?.receive(frame({ v: BRIDGE_PROTOCOL_VERSION, type: "page", url: "https://a.test/", at: "t" }));
+    bridge?.receive(frame({ v: BRIDGE_PROTOCOL_VERSION, type: "cleared", at: "t" }));
+
+    expect(h.link.read().browsers["Chrome"]?.url).toBeNull();
   });
 
   it("records nothing at all in self-test mode", () => {

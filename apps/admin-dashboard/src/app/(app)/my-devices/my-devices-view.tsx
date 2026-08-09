@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { RelativeTime } from "@/components/relative-time";
+import { BrowserLinkStrip } from "@/components/employee/browser-link";
 import { Fact, FactList, MePanel, MeShell } from "@/components/me/me-shell";
 import {
   collectionStatus,
@@ -36,6 +37,7 @@ import {
   type PolicyTerms,
 } from "@/components/me/monitoring-terms";
 import { WithdrawConsentDialog } from "@/components/me/withdraw-consent";
+import { extensionLive } from "@/lib/queries/usage";
 import {
   EmptyState,
   ErrorState,
@@ -495,7 +497,17 @@ function DeviceCard({
   const title = deviceTitle(device);
   const reporting = reportingCopy(deviceReporting(device, Date.now()));
   const Icon = device.platform === "android" ? Smartphone : Laptop;
-  const items = collectedItems(device.platform, terms);
+  // Two facts, not one. The extension is what makes a Windows machine *able* to report
+  // an address, and `website_addresses_recorded` is whether the agent is in fact writing
+  // one down — a switched-off scope or withdrawn consent stops that without closing the
+  // channel, and this is the page whose whole job is telling its reader the truth about
+  // which. A stale link is not a live one, so freshness is part of the capability.
+  const items = collectedItems(
+    device.platform,
+    terms,
+    extensionLive(device.browser_extension_linked, device.browser_extension_seen_at),
+    device.website_addresses_recorded,
+  );
 
   return (
     <MePanel>
@@ -579,6 +591,8 @@ function DeviceCard({
           </li>
         ))}
       </ul>
+
+      <BrowserLinkStrip device={device} className="mt-4 rounded-md border p-3" />
 
       <ConsentBlock
         consent={consent}

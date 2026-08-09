@@ -12,7 +12,11 @@ import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
 import { sendInBackground } from "../lib/email/mailer.js";
-import { collectionChangedEmail, nameOrEmail } from "../lib/email/templates.js";
+import {
+  browserExtensionLinkedEmail,
+  collectionChangedEmail,
+  nameOrEmail,
+} from "../lib/email/templates.js";
 import { validationFailure } from "../lib/validation.js";
 import { issueDeviceToken } from "../lib/device-token.js";
 import {
@@ -91,9 +95,30 @@ const enrollSchema = z.object({
   storageMb: z.number().int().positive().optional(),
 });
 
+/**
+ * Never allowed to fail the heartbeat.
+ *
+ * `.catch(undefined)` rather than strict rejection because this body is also how a
+ * revocation, a policy change and a collection-scope change reach a running agent. A
+ * malformed browser-link field 400ing the request would take all three down for that
+ * device until somebody reinstalled the agent — for a field that only decides what a
+ * status line says.
+ */
+const browserLinkSchema = z
+  .object({
+    linked: z.boolean(),
+    extensionVersion: z.string().max(20).nullish(),
+    lastSeenAt: z.string().datetime().nullish(),
+    browsers: z.number().int().min(0).max(50).nullish(),
+    websitesRecorded: z.boolean().optional(),
+  })
+  .optional()
+  .catch(undefined);
+
 const heartbeatSchema = z.object({
   deviceId: z.string().uuid(),
   workSessionId: z.number().int().nullish(),
+  browserLink: browserLinkSchema,
 });
 
 const telemetrySchema = z.object({
@@ -656,11 +681,28 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "forbidden", message: "Token does not match device", statusCode: 403 });
     }
 
-    const [, policyResult, restrictions, consentResult, denied] = await Promise.all([
+    const now = new Date().toISOString();
+    const link = parsed.data.browserLink;
+
+    const [beat, before, policyResult, restrictions, consentResult, denied] = await Promise.all([
       app.supabase
         .from("devices")
-        .update({ last_seen_at: new Date().toISOString(), status: "active" })
+        .update({ last_seen_at: now, status: "active" })
         .eq("id", device.deviceId),
+      // Read before the link columns are written, so the transition below is the real
+      // one. Only for a Windows machine reporting a live extension, which is the single
+      // case that can transition and the only platform on which it changes what is
+      // collected — on macOS the agent reads addresses with or without one.
+      //
+      // ponytail: one small indexed read per beat on those machines. Fold it into the
+      // write with a filtered `.select()` if a large tenant makes it show up.
+      link?.linked === true && device.platform === "windows"
+        ? app.supabase
+            .from("devices")
+            .select("browser_extension_linked, label")
+            .eq("id", device.deviceId)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
       // Full policy, not just the version.
       //
       // The agent fetched its policy once at enrolment and never again: `onHeartbeat`
@@ -694,6 +736,15 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         .maybeSingle(),
       deniedTypesFor(app.supabase, device.deviceId),
     ]);
+
+    // Logged rather than discarded. This update is what drives online/offline for the
+    // whole fleet, supabase-js reports a failure in the result instead of throwing, and
+    // the result used to be dropped on the floor — so a column this route names that the
+    // database does not have would read as every device going quiet, with a 200 on the
+    // wire and nothing in any log.
+    if (beat.error) request.log.error({ err: beat.error }, "heartbeat could not update the device row");
+
+    if (link) await recordBrowserLink(app, request, device, link, before.data);
 
     const policyVersion = policyResult.data?.version;
 
@@ -1377,3 +1428,78 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true as const };
   });
 };
+
+/**
+ * Records what the browser extension told this agent, and tells the employee when that
+ * changes what is collected from them.
+ *
+ * **Separate from the beat's own `update`, and that separation is the whole point.**
+ * These columns arrive in migration ...0021; the heartbeat is what drives online /
+ * offline for the entire fleet. Written together, a deploy that reaches the API before
+ * the migration reaches the database fails the whole statement on an unknown column, so
+ * `last_seen_at` never lands, every desktop device drifts to offline, and the route
+ * still answers 200 with nothing but a log line to say why. Written apart, the same
+ * mistake costs the extension readout and nothing else. Every new agent sends this on
+ * every beat, so it is not a rare path.
+ *
+ * The email exists because the alternative is a silent expansion of collection. On
+ * Windows the agent cannot read a browser's address bar at all, so the consent an
+ * employee signed there says in as many words that no website activity is recorded from
+ * that machine. Force-installing the extension makes that sentence false without
+ * changing the policy version, so nothing re-opens the consent gate — the 2026-08-08
+ * scope decision requires an email when a manager changes what one device may collect,
+ * and this changes what one device *does* collect by a wider margin.
+ */
+async function recordBrowserLink(
+  app: Parameters<FastifyPluginAsync>[0],
+  request: { log: { error: (obj: unknown, msg: string) => void } },
+  device: { deviceId: string; profileId: string },
+  link: NonNullable<z.infer<typeof heartbeatSchema>["browserLink"]>,
+  before: { browser_extension_linked: boolean | null; label: string } | null,
+): Promise<void> {
+  const { error } = await app.supabase
+    .from("devices")
+    .update({
+      browser_extension_linked: link.linked,
+      browser_extension_version: link.extensionVersion ?? null,
+      browser_extension_seen_at: link.lastSeenAt ?? null,
+      browser_extension_count: link.browsers ?? null,
+      // Undefined leaves the column alone: an agent that reports a link but not this is
+      // one built before the field existed, and inventing `false` for it would tell an
+      // employee their browsing had stopped being recorded when it had not.
+      ...(link.websitesRecorded === undefined
+        ? {}
+        : { website_addresses_recorded: link.websitesRecorded }),
+    })
+    .eq("id", device.deviceId);
+
+  if (error) {
+    request.log.error({ err: error }, "heartbeat could not record the browser extension link");
+    return;
+  }
+
+  // `before` is null on every beat but the ones that can transition — see the read in
+  // the route. Null there also covers a failed read, which sends nothing: a duplicate
+  // notification about monitoring is worse than a late one.
+  if (before === null || before.browser_extension_linked === true) return;
+
+  const { data: owner } = await app.supabase
+    .from("profiles")
+    .select("email, full_name, companies(name)")
+    .eq("id", device.profileId)
+    .maybeSingle();
+
+  if (!owner?.email) return;
+
+  const company = Array.isArray(owner.companies) ? owner.companies[0] : owner.companies;
+  const message = browserExtensionLinkedEmail(
+    {
+      recipientName: nameOrEmail(owner.full_name, owner.email),
+      companyName: company?.name ?? "your company",
+      dashboardUrl: app.dashboardUrl,
+    },
+    { deviceLabel: before.label },
+  );
+
+  sendInBackground(app.mailer, { ...message, to: owner.email }, app.log);
+}

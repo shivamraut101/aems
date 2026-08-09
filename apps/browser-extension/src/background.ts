@@ -24,7 +24,14 @@
  * first.
  */
 
-import { connectionView, mayEnforce, mayReport, reportableUrl, toDynamicRules } from "./core.js";
+import {
+  browserLabel,
+  connectionView,
+  mayEnforce,
+  mayReport,
+  reportableUrl,
+  toDynamicRules,
+} from "./core.js";
 import type { ConnectionView } from "./core.js";
 import { BLOCKED_PAGE } from "./manifest.js";
 import type { BridgeStateMessage, ExtensionMessage, WebsiteRule } from "./protocol.js";
@@ -36,6 +43,16 @@ let state: BridgeStateMessage | null = null;
 let lastError: string | null = null;
 /** The last address handed to the agent, so an unchanged tab is not re-reported every event. */
 let lastReported: string | null = null;
+/**
+ * Whether any window of *this* browser profile currently has focus.
+ *
+ * `chrome.tabs.query({ lastFocusedWindow: true })` answers per profile, so a Chrome
+ * window sitting behind the one the employee is typing in would happily report its own
+ * tab on every repeat — and the agent takes the freshest report, so the background
+ * profile would win. Optimistic at worker start because a worker almost always wakes on
+ * activity in its own profile, and the first focus event corrects it either way.
+ */
+let focused = true;
 
 /**
  * Opens the port if it is not already open.
@@ -71,6 +88,9 @@ function ensureConnected(): void {
     v: BRIDGE_PROTOCOL_VERSION,
     type: "hello",
     extensionVersion: chrome.runtime.getManifest().version,
+    // A property read, so this function stays synchronous and none of its five call
+    // sites has to race the popup's answer deadline.
+    browser: browserLabel(navigator.userAgent),
   });
 }
 
@@ -138,7 +158,7 @@ async function applyRules(message: BridgeStateMessage): Promise<void> {
 // -- reporting ------------------------------------------------------------
 
 /** Reports whatever the focused window's active tab is showing, or that it is showing nothing. */
-async function reportActiveTab(): Promise<void> {
+async function reportActiveTab(again = false): Promise<void> {
   ensureConnected();
   if (port === null) return;
 
@@ -153,7 +173,7 @@ async function reportActiveTab(): Promise<void> {
     url = null;
   }
 
-  publish(url);
+  publish(url, again);
 }
 
 /**
@@ -164,8 +184,14 @@ async function reportActiveTab(): Promise<void> {
  * reporting is off, because it withdraws a claim rather than making one — an extension
  * that goes quiet on a withdrawal would leave the agent attributing time to the last
  * site it heard about.
+ *
+ * `again` re-sends an address the agent has already been told about. It is what makes a
+ * page held in view for an hour count for an hour: the agent believes an observation for
+ * a bounded window and then stops attributing it, because a URL that outlived its
+ * browser would go on collecting somebody's time. Without the repeat, only navigations
+ * were ever recorded and a ten-minute read counted as seconds.
  */
-function publish(url: string | null): void {
+function publish(url: string | null, again = false): void {
   const at = new Date().toISOString();
 
   if (url === null) {
@@ -175,8 +201,8 @@ function publish(url: string | null): void {
     return;
   }
 
-  if (!mayReport(state?.monitoring ?? "not-enrolled")) return;
-  if (url === lastReported) return;
+  if (!mayReport(state)) return;
+  if (url === lastReported && !again) return;
 
   lastReported = url;
   send({ v: BRIDGE_PROTOCOL_VERSION, type: "page", url, at });
@@ -208,13 +234,32 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   // — or a browser and an editor — from both claiming the same minute: the agent takes
   // the freshest report, and a browser that is not in front reports nothing in view.
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    focused = false;
     ensureConnected();
     publish(null);
     return;
   }
 
+  focused = true;
   void reportActiveTab();
 });
+
+/**
+ * How often the address in view is re-sent.
+ *
+ * Comfortably inside the agent's observation window, so one dropped repeat costs no
+ * attribution, and inside Chrome's own service-worker idle timer — each repeat is a
+ * message on the native port and the agent answers every one, which is what keeps the
+ * worker alive to send the next. A browser doing nothing therefore holds the channel
+ * open; that is the point, because the alternative is a worker that sleeps through the
+ * hour somebody spends reading one page.
+ */
+const REPEAT_MS = 20_000;
+
+setInterval(() => {
+  if (!focused) return;
+  void reportActiveTab(true);
+}, REPEAT_MS);
 
 // -- the pages ------------------------------------------------------------
 
@@ -231,6 +276,8 @@ export interface PageAnswer {
   contact: string | null;
   restrictedCount: number;
   rule: WebsiteRule | null;
+  /** Null is "the agent did not say", which the pages read as permitting, as the host does. */
+  websites: boolean | null;
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -283,6 +330,7 @@ export function answerFor(ruleId: number | undefined): PageAnswer {
     restrictedCount: state === null || !mayEnforce(state.monitoring) ? 0 : state.rules.length,
     rule:
       ruleId === undefined ? null : (state?.rules.find((rule) => rule.id === ruleId) ?? null),
+    websites: state?.websites ?? null,
   };
 }
 
@@ -301,6 +349,9 @@ function describe(error: unknown): string {
 }
 
 // The worker may be started by an event that is not one of the listeners above — a
-// popup opening, for instance. Connecting on load costs one local pipe and means the
-// state is already in hand when something asks for it.
-ensureConnected();
+// popup opening, for instance. Reporting on load costs one local pipe and means the
+// state is already in hand when something asks for it. It reports rather than merely
+// connecting because `hello` tells the agent this browser has nothing in view: a worker
+// Chrome recycled mid-page would otherwise clear the address and never resend it, since
+// nothing else fires until the employee changes tab.
+void reportActiveTab();

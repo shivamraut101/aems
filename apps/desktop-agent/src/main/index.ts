@@ -36,7 +36,12 @@ import type {
 } from "../shared/types/index.js";
 import type { BridgeInvocation } from "./bridge.js";
 import { readBridgeInvocation } from "./bridge.js";
-import { BROWSER_LINK_FILE, BrowserLinkStore, createBrowserLinkView } from "./bridge-link.js";
+import {
+  BROWSER_LINK_FILE,
+  BrowserLinkStore,
+  browserLinkReport,
+  createBrowserLinkView,
+} from "./bridge-link.js";
 import { AEMS_EXTENSION_IDS } from "./bridge-protocol.js";
 import { startBridge } from "./bridge-runtime.js";
 import type { BrowserUrlReader } from "./browser-url.js";
@@ -108,6 +113,13 @@ interface Runtime {
    * window titles on Windows.
    */
   urlReader: BrowserUrlReader;
+  /**
+   * Where the bridge leaves what the browser extension said.
+   *
+   * On the runtime because `attachDevice` builds the sync queue and has only `rt` — the
+   * store itself is constructed further down, beside the URL reader that shares it.
+   */
+  link: BrowserLinkStore;
   /** The journal, today's spans and the dead-letter file, as one unit. */
   durable: DurableStore;
   /** Battery, network and free storage. Built once: it caches the readings that cost a spawn. */
@@ -398,6 +410,18 @@ function attachDevice(deviceId: string, deviceToken: string): void {
     onDurabilityFault: (error) => {
       log("Could not write the durable store", error);
     },
+    // Read at the beat rather than held, because the bridge is a separate process and
+    // this file is the only thing the two share. It is also what makes an uninstall
+    // visible: no browser connects, the entry ages out, and the beat says so.
+    //
+    // `websitesRecorded` rides along because a connected extension is not the same fact
+    // as a recorded address: withdrawn consent and a switched-off collection scope both
+    // stop the recording without closing the channel, and every surface that says
+    // "website addresses from this computer are reported" was reading the channel.
+    browserLink: () => ({
+      ...browserLinkReport(rt.link.read(), new Date()),
+      websitesRecorded: mayCollectType(rt.store.current, "websites"),
+    }),
     // The heartbeat is how a change to this device's collection scope arrives. Written
     // straight through `ConfigStore` — the same path `applyOutcome` uses for a stop
     // signal — so the plaintext config the bridge process reads stays in step with the
@@ -858,6 +882,7 @@ function bootstrap(): void {
         mayCollectType(store.current, "websites"),
       ),
       urlReader,
+      link,
       idle: new IdleWatcher(),
       // The gate sits on the capturer rather than in the scheduler because this is the
       // last point before the display is actually read: nothing can route around it to

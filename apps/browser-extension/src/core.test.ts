@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  browserLabel,
   connectionView,
   findRule,
   mayEnforce,
@@ -19,6 +20,7 @@ function state(patch: Partial<BridgeStateMessage> = {}): BridgeStateMessage {
     policy: { version: "2026.08.01", name: "Standard" },
     rules: [],
     contact: null,
+    websites: true,
     ...patch,
   };
 }
@@ -53,7 +55,23 @@ describe("the two gates", () => {
   const states: MonitoringState[] = ["collecting", "consent-required", "not-enrolled", "revoked"];
 
   it("reports only while consent is on file for the policy in force", () => {
-    expect(states.filter(mayReport)).toEqual(["collecting"]);
+    expect(states.filter((monitoring) => mayReport(state({ monitoring })))).toEqual(["collecting"]);
+    // Nothing to report to.
+    expect(mayReport(null)).toBe(false);
+  });
+
+  /**
+   * The device's `websites` scope is one process further out than consent but the
+   * argument is identical: the host discards every address, so continuing to transmit
+   * them reads every URL for no permitted purpose — and the popup, which is the only
+   * surface this extension has, would be telling the employee they are recorded.
+   */
+  it("stops reporting when the device's website scope is switched off", () => {
+    expect(mayReport(state({ websites: false }))).toBe(false);
+    expect(mayReport(state({ websites: true }))).toBe(true);
+    // An agent too old to say permits, the same direction an absent scope takes on the
+    // host side — over-reporting to a server that refuses it beats a silent blank day.
+    expect(mayReport(state({ websites: undefined }))).toBe(true);
   });
 
   it("enforces wherever a policy exists to point at, and nowhere else", () => {
@@ -160,11 +178,28 @@ describe("connectionView", () => {
     );
   });
 
+  /**
+   * The state the popup used to describe wrongly: collecting everything else, recording
+   * no addresses. `monitoring` cannot carry it — borrowing `consent-required` would send
+   * the employee off to accept a policy they already accepted — so the host says it in a
+   * field of its own, and this is the assertion that the popup reads it.
+   */
+  it("says nothing is recorded when the device's website scope is off", () => {
+    const view = connectionView(state({ websites: false }), null);
+
+    expect(view.connected).toBe(true);
+    expect(view.tone).toBe("off");
+    expect(view.headline).toBe("Website addresses are not recorded");
+    expect(view.detail).toContain("not sent anywhere");
+    expect(view.detail).not.toContain("recorded against your work device");
+  });
+
   it("uses no surveillance language in any state", () => {
     const wording = ["collecting", "consent-required", "not-enrolled", "revoked"]
       .map((monitoring) =>
         connectionView(state({ monitoring: monitoring as MonitoringState }), null),
       )
+      .concat(connectionView(state({ websites: false }), null))
       .concat(connectionView(null, "x"))
       .flatMap((view) => [view.headline, view.detail])
       .join(" ")
@@ -180,6 +215,36 @@ describe("connectionView", () => {
 
     expect(view.connected).toBe(true);
     expect(view.tone).toBe("ok");
+  });
+
+  it("says out loud, while collecting, what is reported and where it lands", () => {
+    // Non-negotiable #2 in a test rather than in a diff: this popup is the only surface
+    // the extension has, and copy is exactly the thing a review reads past.
+    const detail = connectionView(state(), null).detail;
+
+    expect(detail).toContain("reported");
+    expect(detail).toContain("work device");
+    // And the limit, so the promise is not wider than the collection.
+    expect(detail).toContain("never what is on the page");
+  });
+});
+
+describe("browserLabel", () => {
+  it("tells the two browsers this is force-installed into apart", () => {
+    expect(
+      browserLabel(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
+      ),
+    ).toBe("Edge");
+    expect(
+      browserLabel(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      ),
+    ).toBe("Chrome");
+  });
+
+  it("puts an unrecognised Chromium in Chrome's slot rather than inventing one", () => {
+    expect(browserLabel("Mozilla/5.0 Chrome/126.0.0.0 Brave/126")).toBe("Chrome");
   });
 });
 

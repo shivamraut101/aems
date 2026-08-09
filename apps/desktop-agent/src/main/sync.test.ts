@@ -346,7 +346,47 @@ describe("SyncQueue", () => {
     await expect(queue.heartbeat(7)).resolves.toBe("sent");
 
     expect(api.heartbeats).toEqual([{ deviceId: DEVICE, workSessionId: 7 }]);
+    // Omitted, not sent as undefined. The API reads an absent key as "this agent did not
+    // say" and leaves the browser columns alone; a present one is an answer about a
+    // machine that has no bridge at all.
+    expect(Object.keys(api.heartbeats[0] ?? {})).not.toContain("browserLink");
   });
+  it("carries what the browser bridge left, read at the beat rather than at construction", async () => {
+    const api = new FakeApi();
+    let browsers = 1;
+    const queue = new SyncQueue(api, DEVICE, {
+      browserLink: () => ({ linked: true, extensionVersion: "0.1.0", lastSeenAt: null, browsers }),
+    });
+
+    await queue.heartbeat(null);
+    browsers = 2;
+    await queue.heartbeat(null);
+
+    // A separate process writes that file, so a value captured once would report the
+    // machine as it was at agent launch for the rest of the day.
+    expect(api.heartbeats.map((beat) => beat.browserLink?.browsers)).toEqual([1, 2]);
+  });
+
+  /**
+   * The link file is published by rename from a *different* process, so EPERM during the
+   * replace window is ordinary on Windows and a quarantined file is permanent. Thrown out
+   * of `heartbeat`, it would land in the collector's catch with the beat already marked
+   * as sent — and revocation, withdrawn consent, a new policy and a changed collection
+   * scope all arrive on the heartbeat *response*, so a file permission would switch all
+   * four off while collection carried on.
+   */
+  it("classifies a failure reading the link file instead of throwing out of the beat", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE, {
+      browserLink: () => {
+        throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+      },
+    });
+
+    await expect(queue.heartbeat(null)).resolves.toBe("retry");
+    expect(api.heartbeats).toEqual([]);
+  });
+
   it("reports a revocation learned from the heartbeat, which also passes the device guard", async () => {
     const api = new FakeApi();
     const queue = new SyncQueue(api, DEVICE);

@@ -32,6 +32,15 @@
           <button class="button" id="back" type="button">Go back</button>
           <button class="button secondary" id="recheck" type="button">Check the policy again</button>
         </div>
+
+        <!-- Rewritten from the agent's answer, because restriction is deliberately wider
+             than observation: this page is reachable by design before anyone has accepted
+             the monitoring policy. The markup carries the safest of the three sentences,
+             so an unreachable agent leaves a true statement rather than a blank. -->
+        <p class="muted foot" id="foot">
+          Nothing you open in this browser is being recorded at the moment. This restriction
+          comes from the device policy named above, and the person named above can change it.
+        </p>
       </div>
     </main>
 

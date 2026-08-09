@@ -9,7 +9,13 @@
  */
 
 import type { PageAnswer } from "./background.js";
-import { blockedHeadline, blockedReason, blockedRows, ruleIdFrom } from "./pages.js";
+import {
+  blockedFooter,
+  blockedHeadline,
+  blockedReason,
+  blockedRows,
+  ruleIdFrom,
+} from "./pages.js";
 import { renderRows, setText } from "./render.js";
 
 async function paint(): Promise<void> {
@@ -38,19 +44,19 @@ async function paint(): Promise<void> {
     reasonBlock?.removeAttribute("hidden");
   }
 
+  const state = {
+    monitoring: answer?.monitoring ?? null,
+    policy: answer?.policy ?? null,
+    contact: answer?.contact ?? null,
+    restrictedCount: answer?.restrictedCount ?? 0,
+    rule,
+    websites: answer?.websites ?? null,
+  };
+
   const rows = document.getElementById("rows");
-  if (rows !== null) {
-    renderRows(
-      rows,
-      blockedRows({
-        monitoring: answer?.monitoring ?? null,
-        policy: answer?.policy ?? null,
-        contact: answer?.contact ?? null,
-        restrictedCount: answer?.restrictedCount ?? 0,
-        rule,
-      }),
-    );
-  }
+  if (rows !== null) renderRows(rows, blockedRows(state));
+
+  setText("foot", blockedFooter(state));
 }
 
 document.getElementById("back")?.addEventListener("click", () => {

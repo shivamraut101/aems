@@ -58,3 +58,17 @@ export function greeting(date = new Date()): string {
 export function longDate(date = new Date()): string {
   return date.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
 }
+
+/**
+ * "5 Aug 2026" from an ISO stamp, or null when there is no usable one.
+ *
+ * Null rather than a fallback string so a caller can drop the clause entirely: "linked
+ * on Invalid Date" is worse than not naming a date at all. Unlike {@link relativeTime}
+ * this reads no clock, so it is safe to server-render.
+ */
+export function calendarDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const parsed = Date.parse(iso);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+}

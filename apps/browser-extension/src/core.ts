@@ -34,15 +34,35 @@ export function reportableUrl(url: string | undefined | null): string | null {
 }
 
 /**
+ * Which browser this is, from its own user agent.
+ *
+ * Only two are ever force-installed into, so only two are distinguished. A Chromium
+ * browser that is neither reports as Chrome and shares Chrome's slot in the agent's link
+ * file, which understates the count rather than inventing one.
+ *
+ * ponytail: two-branch UA sniff. If Brave or Vivaldi enter the rollout, read
+ * `navigator.userAgentData.brands` instead — same one field on the wire.
+ */
+export function browserLabel(userAgent: string): string {
+  return /\bEdg\//.test(userAgent) ? "Edge" : "Chrome";
+}
+
+/**
  * Whether a domain may be reported at all.
  *
  * The same consent gate the agent applies to itself (non-negotiable #1), one process
  * further out. The agent would refuse the observation anyway — the API would refuse it
  * after that — but an extension that keeps sending after consent is withdrawn is still
  * an extension that reads every URL for no permitted purpose.
+ *
+ * The device's `websites` scope is read the same way and for the same reason. A host
+ * that has that switched off discards every address it is handed, so continuing to
+ * transmit them buys nothing and costs exactly what withdrawn consent costs. An absent
+ * `websites` is a host too old to say, and permits.
  */
-export function mayReport(monitoring: MonitoringState): boolean {
-  return monitoring === "collecting";
+export function mayReport(state: BridgeStateMessage | null): boolean {
+  if (state === null || state.monitoring !== "collecting") return false;
+  return state.websites !== false;
 }
 
 /**
@@ -192,10 +212,28 @@ export function connectionView(
     };
   }
 
+  // Collecting, but not websites: an administrator has switched this device's website
+  // scope off. Saying "reporting website activity" here would be the one thing this
+  // popup exists to prevent — a disclosure that describes collection which is not
+  // happening is as corrosive to trust as one that hides collection which is.
+  if (state.websites === false) {
+    return {
+      connected: true,
+      headline: "Website addresses are not recorded",
+      detail:
+        "Your organisation has switched off website recording for this work device, so the addresses of pages you open in this browser are not sent anywhere. Website rules still apply, and everything else the AEMS agent records on this computer is unchanged.",
+      tone: "off",
+    };
+  }
+
+  // Non-negotiable #2: monitoring is never silent, and this popup is the only surface
+  // this extension has. "Shared with the agent" was too soft to carry that — it does not
+  // say what is reported, where it lands, or that it lands under the employee's name.
   return {
     connected: true,
     headline: "Reporting website activity",
-    detail: "The site in the active tab is shared with your organisation's AEMS agent.",
+    detail:
+      "The websites you visit in this browser are reported to the AEMS agent on this computer and recorded against your work device. Only the address of the page in the active tab is sent — never what is on the page.",
     tone: "ok",
   };
 }

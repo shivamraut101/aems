@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { describe, expect, it } from "vitest";
 
 import type { Env } from "../env.js";
+import type { EmailMessage, Mailer } from "../lib/email/mailer.js";
 import type { DeviceContext } from "../plugins/context.js";
 
 import { activityRoutes } from "./activity.js";
@@ -124,11 +125,22 @@ async function buildTestApp(opts: {
   supabase: AemsSupabaseClient;
   session?: SessionProfile;
   device?: DeviceContext;
+  /** Collects what would have been sent, so a disclosure can be asserted rather than hoped for. */
+  sent?: EmailMessage[];
 }): Promise<FastifyInstance> {
   const app = Fastify();
 
   app.decorate("supabase", opts.supabase);
   app.decorate("env", { DEVICE_TOKEN_SECRET: "test-secret" } as Env);
+  app.decorate("dashboardUrl", "https://aems.test");
+  const mailer: Mailer = {
+    configured: false,
+    send: (message) => {
+      opts.sent?.push(message);
+      return Promise.resolve({ ok: true, id: null });
+    },
+  };
+  app.decorate("mailer", mailer);
   app.decorateRequest("session", undefined);
   app.decorateRequest("device", undefined);
 
@@ -775,6 +787,185 @@ describe("POST /api/devices/heartbeat", () => {
     expect(failed.collection).toBeUndefined();
     expect(failed.pendingTypes).toBeUndefined();
     expect(failed.policyVersion).toBe("1.2.0");
+  });
+
+  // -------------------------------------------------------------------------
+  // Migration ...0021. What matters here is the payload that was BUILT: a column
+  // written when the agent said nothing would turn silence into a claim.
+  // -------------------------------------------------------------------------
+
+  /** Enough queued results for one beat that reads policy, consent and settings. */
+  function beatable() {
+    return fakeSupabase({
+      devices: [{}],
+      policies: [{ data: null }],
+      consent_records: [CONSENT_ANY],
+      device_collection_settings: [NO_SETTINGS],
+    });
+  }
+
+  const LINK = {
+    linked: true,
+    extensionVersion: "0.1.0",
+    lastSeenAt: "2026-08-10T09:00:00.000Z",
+    browsers: 2,
+  };
+
+  const beat = (calls: Call[]) => payloadOf(forTable(calls, "devices")[0]!, "update")!;
+
+  const isLinkColumn = (key: string) =>
+    key.startsWith("browser_") || key === "website_addresses_recorded";
+
+  /** The link columns are written by an `update` of their own — see below for why. */
+  const linkWrite = (calls: Call[]) =>
+    forTable(calls, "devices")
+      .map((call) => payloadOf(call, "update"))
+      .find((payload) => payload !== undefined && Object.keys(payload).some(isLinkColumn));
+
+  const browserKeys = (calls: Call[]) => Object.keys(linkWrite(calls) ?? {});
+
+  it("records what the browser extension reported", async () => {
+    const { client, calls } = beatable();
+    const app = await buildTestApp({ supabase: client, device: laptop });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/devices/heartbeat",
+      payload: { ...BODY, browserLink: { ...LINK, websitesRecorded: true } },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(linkWrite(calls)).toEqual({
+      browser_extension_linked: true,
+      browser_extension_version: "0.1.0",
+      browser_extension_seen_at: "2026-08-10T09:00:00.000Z",
+      // Two browsers are two entries, not an error. Both are recorded the same way; the
+      // count exists so a duplicate install is visible instead of silent.
+      browser_extension_count: 2,
+      // A different question from the channel being open, and the only one the
+      // dashboard is allowed to rest a positive claim on.
+      website_addresses_recorded: true,
+    });
+  });
+
+  /**
+   * The columns arrive in migration ...0021 and the heartbeat is what drives online /
+   * offline for the whole fleet. Written in one statement, a deploy that reaches the API
+   * before the migration reaches the database fails on an unknown column, `last_seen_at`
+   * never lands, and every desktop device drifts to offline behind a 200. Every new
+   * agent sends this on every beat, so it is not a rare path.
+   */
+  it("never writes a link column in the same statement as last_seen_at", async () => {
+    const { client, calls } = beatable();
+    const app = await buildTestApp({ supabase: client, device: laptop });
+    await app.inject({
+      method: "POST",
+      url: "/api/devices/heartbeat",
+      payload: { ...BODY, browserLink: LINK },
+    });
+
+    expect(beat(calls)).toEqual({ last_seen_at: expect.any(String), status: "active" });
+    expect(browserKeys(calls).length).toBeGreaterThan(0);
+  });
+
+  it("leaves the recording column alone for an agent too old to answer that question", async () => {
+    const { client, calls } = beatable();
+    const app = await buildTestApp({ supabase: client, device: laptop });
+    await app.inject({
+      method: "POST",
+      url: "/api/devices/heartbeat",
+      payload: { ...BODY, browserLink: LINK },
+    });
+
+    expect(browserKeys(calls)).not.toContain("website_addresses_recorded");
+  });
+
+  /**
+   * Windows consent says in as many words that no website activity is recorded from that
+   * machine, because the agent cannot read a browser address bar there. A managed
+   * extension arriving makes that sentence false without bumping the policy version, so
+   * nothing re-opens the consent gate — and the 2026-08-08 scope decision requires an
+   * email for a smaller change than this one.
+   */
+  it("tells the employee when a Windows machine starts reporting addresses", async () => {
+    const sent: EmailMessage[] = [];
+    const { client } = fakeSupabase({
+      // The pre-write read settles first: its `maybeSingle` resolves during the
+      // Promise.all array literal, before the beat update is ever subscribed to.
+      devices: [{ data: { browser_extension_linked: null, label: "Work laptop" } }, {}, {}],
+      profiles: [{ data: { email: "alice@x.test", full_name: "Alice", companies: { name: "Acme" } } }],
+      policies: [{ data: null }],
+      consent_records: [CONSENT_ANY],
+      device_collection_settings: [NO_SETTINGS],
+    });
+    const app = await buildTestApp({ supabase: client, device: laptop, sent });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/devices/heartbeat",
+      payload: { ...BODY, browserLink: LINK },
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.to).toBe("alice@x.test");
+    expect(sent[0]?.subject).toContain("Work laptop");
+    expect(sent[0]?.text).toContain("could not report the addresses");
+  });
+
+  it("does not send it again on the next beat, or for a phone", async () => {
+    const sent: EmailMessage[] = [];
+    const already = () =>
+      fakeSupabase({
+        devices: [{ data: { browser_extension_linked: true, label: "Work laptop" } }, {}, {}],
+        profiles: [{ data: { email: "alice@x.test", full_name: "Alice", companies: null } }],
+        policies: [{ data: null }],
+        consent_records: [CONSENT_ANY],
+        device_collection_settings: [NO_SETTINGS],
+      });
+
+    const app = await buildTestApp({ supabase: already().client, device: laptop, sent });
+    await app.inject({
+      method: "POST",
+      url: "/api/devices/heartbeat",
+      payload: { ...BODY, browserLink: LINK },
+    });
+
+    // An Android phone has no browser extension and no address bar to read, so a
+    // transition it cannot make must not cost a read either.
+    const phoneApp = await buildTestApp({ supabase: already().client, device: phone, sent });
+    await phoneApp.inject({
+      method: "POST",
+      url: "/api/devices/heartbeat",
+      payload: { ...BODY, browserLink: LINK },
+    });
+
+    expect(sent).toEqual([]);
+  });
+
+  it("writes no browser column at all when the agent did not mention one", async () => {
+    // Android never sends this field, and neither does an agent built before ...0021.
+    // Writing false for either would report a missing extension on a machine that has
+    // no concept of one.
+    const { client, calls } = beatable();
+    const app = await buildTestApp({ supabase: client, device: laptop });
+    await app.inject({ method: "POST", url: "/api/devices/heartbeat", payload: BODY });
+
+    expect(browserKeys(calls)).toEqual([]);
+  });
+
+  it("survives a malformed browser link rather than taking the beat down with it", async () => {
+    // This body is also how a revocation, a policy change and a scope change reach a
+    // running agent. A 400 here would strand all three on that device.
+    const { client, calls } = beatable();
+    const app = await buildTestApp({ supabase: client, device: laptop });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/devices/heartbeat",
+      payload: { ...BODY, browserLink: { linked: "sort of" } },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, collection: expect.any(Array), pendingTypes: [] });
+    expect(browserKeys(calls)).toEqual([]);
   });
 
   it("still answers ok for a company with no published policy", async () => {

@@ -23,6 +23,8 @@
  * and the Windows website report finally has something in it.
  */
 
+import type { HeartbeatInput } from "@aems/types";
+
 import type { BrowserLinkView } from "./browser-url.js";
 import type { JsonFile } from "./persistence.js";
 
@@ -31,12 +33,13 @@ export const BROWSER_LINK_FILE = "browser-link.json";
 /**
  * How long a page report is believed.
  *
- * Long enough to cover a service worker that Chrome put to sleep between navigations,
- * short enough that a browser closed twenty seconds ago cannot keep attributing the
- * employee's time to the last site they had open. The agent samples every five
- * seconds, so this is six missed reports.
+ * Paired with the extension's repeat: it re-sends the address in view every 20 seconds,
+ * so this is three missed repeats. Both halves are needed. A window this short with no
+ * repeat recorded only navigations — a page read for ten minutes counted for thirty
+ * seconds and the rest of the interval had no domain at all. A repeat with no window
+ * would let a browser killed mid-page go on collecting the employee's time forever.
  */
-export const OBSERVATION_TTL_MS = 30_000;
+export const OBSERVATION_TTL_MS = 60_000;
 
 /**
  * How long a connection counts as proof the extension is installed.
@@ -48,9 +51,32 @@ export const OBSERVATION_TTL_MS = 30_000;
  */
 export const LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** One browser's report. Keyed by extension origin so Chrome and Edge cannot overwrite each other. */
+/**
+ * How recently a browser must have connected to be counted.
+ *
+ * Shorter than {@link LINK_TTL_MS} because the count answers a different question. The
+ * capability claim survives a weekend deliberately; the count exists so a *duplicate*
+ * install is visible, and on the week-long window an extension moved out of Chrome and
+ * into Edge reads as two connected browsers for the next seven days — inventing exactly
+ * the problem the number was added to reveal.
+ *
+ * A day, because a browser in use reconnects far more often than that: Chrome recycles
+ * the service worker constantly and every restart opens the channel again. A browser
+ * nobody opened yesterday drops out of the count, which understates rather than
+ * invents — the same direction `browserLabel` takes for an unrecognised browser.
+ */
+export const ACTIVE_LINK_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** One browser's report. See {@link BrowserLinkStore.update} for what the key is. */
 export interface BrowserObservation {
-  /** `chrome-extension://<id>/` — the origin Chrome handed the host on the command line. */
+  /**
+   * `chrome-extension://<id>/` — the origin Chrome handed the host on the command line.
+   *
+   * Deliberately *not* the map key. The manifest pins the extension id, so every
+   * Chromium browser that loads this extension is spawned with the same origin, and
+   * keying by it would have Chrome and Edge take turns overwriting one entry. Kept
+   * because it is still the only thing that says which extension spoke.
+   */
   origin: string;
   /** The address of the page in view, or null when this browser has no focused page. */
   url: string | null;
@@ -83,15 +109,19 @@ export function parseBrowserLink(value: unknown): BrowserLinkDocument {
 
   const parsed: Record<string, BrowserObservation> = {};
 
-  for (const [origin, raw] of Object.entries(browsers as Record<string, unknown>)) {
-    const observation = parseObservation(origin, raw);
-    if (observation !== null) parsed[origin] = observation;
+  for (const [key, raw] of Object.entries(browsers as Record<string, unknown>)) {
+    const observation = parseObservation(key, raw);
+    if (observation !== null) parsed[key] = observation;
   }
 
   return { browsers: parsed };
 }
 
-function parseObservation(origin: string, raw: unknown): BrowserObservation | null {
+/**
+ * @param key The map key, which is only the origin for an entry a browser that does not
+ * name itself wrote — so it is the fallback, not the answer.
+ */
+function parseObservation(key: string, raw: unknown): BrowserObservation | null {
   if (typeof raw !== "object" || raw === null) return null;
 
   const record = raw as Record<string, unknown>;
@@ -103,7 +133,7 @@ function parseObservation(origin: string, raw: unknown): BrowserObservation | nu
   if (url !== null && typeof url !== "string") return null;
 
   return {
-    origin,
+    origin: typeof record["origin"] === "string" ? record["origin"] : key,
     url,
     observedAt,
     linkedAt,
@@ -148,16 +178,79 @@ export function currentBrowserUrl(
   return best?.url ?? null;
 }
 
+/**
+ * When this browser last opened the channel, or null if that is too long ago to mean
+ * anything.
+ *
+ * One definition of "recently", shared by the count, the boolean and the heartbeat
+ * report. Three answers to the same question that could disagree is how a dashboard ends
+ * up reporting no extension beside a count of two.
+ */
+function freshLinkAt(observation: BrowserObservation, now: Date, ttlMs: number): number | null {
+  const at = parseStamp(observation.linkedAt);
+  if (at === null || at > now.getTime() || now.getTime() - at > ttlMs) return null;
+  return at;
+}
+
+/** How many browsers on this machine have connected inside the capability window. */
+export function linkedBrowsers(
+  document: BrowserLinkDocument,
+  now: Date,
+  ttlMs: number = LINK_TTL_MS,
+): number {
+  return Object.values(document.browsers).filter(
+    (observation) => freshLinkAt(observation, now, ttlMs) !== null,
+  ).length;
+}
+
 /** Whether any browser on this machine has an extension that has connected recently. */
 export function isBrowserLinked(
   document: BrowserLinkDocument,
   now: Date,
   ttlMs: number = LINK_TTL_MS,
 ): boolean {
-  return Object.values(document.browsers).some((observation) => {
-    const at = parseStamp(observation.linkedAt);
-    return at !== null && at <= now.getTime() && now.getTime() - at <= ttlMs;
-  });
+  return linkedBrowsers(document, now, ttlMs) > 0;
+}
+
+/**
+ * What the heartbeat tells the API about the browser extension.
+ *
+ * Built here rather than in `sync.ts` so the window it applies lives beside the two
+ * other TTLs it has to stay consistent with. Ageing an entry out is also the whole
+ * uninstall story: an extension removed from a profile simply stops connecting, its
+ * entry goes stale, and the device reports `linked: false` on the next beat past the
+ * window — nothing has to observe the removal for the dashboard to stop claiming a
+ * browser that is gone.
+ */
+export function browserLinkReport(
+  document: BrowserLinkDocument,
+  now: Date,
+  ttlMs: number = LINK_TTL_MS,
+  activeTtlMs: number = ACTIVE_LINK_TTL_MS,
+): NonNullable<HeartbeatInput["browserLink"]> {
+  let linked = false;
+  let browsers = 0;
+  let newest: { at: number; observation: BrowserObservation } | null = null;
+
+  for (const observation of Object.values(document.browsers)) {
+    const at = freshLinkAt(observation, now, ttlMs);
+    if (at === null) continue;
+
+    linked = true;
+    // Two windows, because `linked` and `browsers` answer different questions — see
+    // ACTIVE_LINK_TTL_MS. A machine that connected last week therefore reports
+    // `linked: true, browsers: 0`, which is the honest pair: it has the extension, and
+    // nothing has connected from it lately.
+    if (now.getTime() - at <= activeTtlMs) browsers += 1;
+    if (newest === null || at > newest.at) newest = { at, observation };
+  }
+
+  return {
+    linked,
+    extensionVersion: newest?.observation.extensionVersion ?? null,
+    lastSeenAt: newest?.observation.linkedAt ?? null,
+    browsers,
+  };
 }
 
 /**
@@ -178,20 +271,32 @@ export class BrowserLinkStore {
   /**
    * Records what one browser reported, leaving every other browser's entry alone.
    *
+   * `key` is whatever actually tells two browsers apart — the name the extension gave on
+   * hello where it gave one, the origin otherwise. It is not the origin, because the
+   * pinned extension id makes that identical across every Chromium browser; the true
+   * origin therefore has to arrive in the patch instead of being read off the key.
+   *
    * Read-modify-write from two host processes can lose an entry when Chrome and Edge
    * report in the same instant. It self-heals on the next report from the losing
    * browser, and the alternative — a lock file held by a process a browser can kill at
    * any moment — fails worse.
    */
-  update(origin: string, patch: Partial<Omit<BrowserObservation, "origin">>): BrowserLinkDocument {
+  update(key: string, patch: Partial<BrowserObservation>): BrowserLinkDocument {
     const document = this.read();
-    const previous = document.browsers[origin];
+    const previous = document.browsers[key];
+
+    // The stamp being written, not the wall clock: it is the host's own clock, which is
+    // the only one anything in this file is measured against, and it keeps pruning
+    // deterministic for a caller that supplies its own.
+    const now = new Date(
+      Date.parse(patch.observedAt ?? patch.linkedAt ?? "") || Date.now(),
+    );
 
     const next: BrowserLinkDocument = {
       browsers: {
-        ...document.browsers,
-        [origin]: {
-          origin,
+        ...kept(document.browsers, key, now),
+        [key]: {
+          origin: patch.origin ?? previous?.origin ?? key,
           url: patch.url !== undefined ? patch.url : (previous?.url ?? null),
           observedAt: patch.observedAt ?? previous?.observedAt ?? new Date(0).toISOString(),
           linkedAt: patch.linkedAt ?? previous?.linkedAt ?? new Date(0).toISOString(),
@@ -206,6 +311,54 @@ export class BrowserLinkStore {
     this.file.write(next);
     return next;
   }
+}
+
+/** `chrome-extension://<id>/` — how this file was keyed before browsers named themselves. */
+const ORIGIN_KEY = /^chrome-extension:\/\//;
+
+/**
+ * The other browsers' entries, minus the ones that are no longer anybody.
+ *
+ * Two removals, both of which the count would otherwise report as a connected browser:
+ *
+ * - **Past the capability window.** Nothing reads an entry that old, so keeping it only
+ *   grows a file two processes rewrite on every navigation.
+ * - **Keyed by the origin.** The extension id is pinned by the manifest, so the origin is
+ *   identical in every Chromium browser and this file used to collapse them all into one
+ *   entry. Every build since names the browser on hello, which means an origin key can
+ *   only be a leftover from before — and left in place it doubles the count on the first
+ *   machine to take an update, for a browser that no longer has a separate existence.
+ */
+function kept(
+  browsers: Record<string, BrowserObservation>,
+  writing: string,
+  now: Date,
+): Record<string, BrowserObservation> {
+  const legacy = !ORIGIN_KEY.test(writing);
+  const out: Record<string, BrowserObservation> = {};
+
+  for (const [key, observation] of Object.entries(browsers)) {
+    if (key === writing) continue;
+    if (legacy && ORIGIN_KEY.test(key)) continue;
+    if (stale(observation, now)) continue;
+    out[key] = observation;
+  }
+
+  return out;
+}
+
+/**
+ * Whether an entry is past every window that reads it.
+ *
+ * Both stamps, because they age independently: a browser open on one page since Monday
+ * has a week-old `linkedAt` and a fresh `observedAt`, and dropping it would take the
+ * address in view away from the tracker.
+ */
+function stale(observation: BrowserObservation, now: Date): boolean {
+  const linked = parseStamp(observation.linkedAt) ?? 0;
+  const observed = parseStamp(observation.observedAt) ?? 0;
+
+  return now.getTime() - Math.max(linked, observed) > LINK_TTL_MS;
 }
 
 /**

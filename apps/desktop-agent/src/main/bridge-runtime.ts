@@ -138,6 +138,22 @@ export function startBridge(
   const selfTest = invocation.origin === null;
   const origin = invocation.origin;
 
+  // The extension id is pinned, so every Chromium browser hands this host the same
+  // origin — keying the link file by it collapses Chrome and Edge into one entry that
+  // they take turns overwriting. The browser names itself on hello, once per port, and
+  // every later frame on this port belongs to it.
+  let key = origin ?? "";
+
+  // The last address this port put in the file, so a "nothing in view" from this browser
+  // cannot wipe an address a different one put there.
+  //
+  // Two profiles of the same browser share a key — deliberately, since attribution is
+  // profile-agnostic everywhere else in the product — but they are two host processes,
+  // and the background profile emits `cleared` the moment its own windows lose focus.
+  // Without this it clears the focused profile's URL, and the focused profile will not
+  // resend, because as far as its service worker knows nothing has changed.
+  let reported: string | null = null;
+
   const ports: BridgePorts = {
     write: (frame) => {
       deps.stdout.write(frame);
@@ -151,11 +167,27 @@ export function startBridge(
 
     observe: (observation) => {
       if (selfTest || origin === null) return;
+      if (observation.browser != null && observation.browser.length > 0) key = observation.browser;
+
+      if (observation.linked === true) {
+        reported = null;
+      } else if (observation.url === null) {
+        const held = deps.link.read().browsers[key]?.url ?? null;
+        // Somebody else's address is in the slot. Only its own author knows when it stops
+        // being in view, and taking it away here would leave that browser unattributed
+        // until the employee happened to navigate. A page report is *not* guarded this
+        // way — the freshest navigation is the best evidence of what is in front.
+        if (held !== null && held !== reported) return;
+        reported = null;
+      } else {
+        reported = observation.url;
+      }
 
       deps.link.update(
-        origin,
+        key,
         observation.linked === true
           ? {
+              origin,
               linkedAt: observation.at,
               observedAt: observation.at,
               // A reconnect means no page has been reported yet on this port. Leaving
@@ -164,7 +196,7 @@ export function startBridge(
               url: null,
               extensionVersion: observation.extensionVersion ?? null,
             }
-          : { url: observation.url, observedAt: observation.at },
+          : { origin, url: observation.url, observedAt: observation.at },
       );
     },
 

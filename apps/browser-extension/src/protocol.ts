@@ -98,6 +98,20 @@ export interface BridgeStateMessage {
    * out a dead-end "blocked" screen, so the page always says who can change this.
    */
   contact: string | null;
+  /**
+   * Whether an address this extension reports would in fact be recorded.
+   *
+   * Deliberately not folded into `monitoring`, because the two answer different
+   * questions and only one of them is about consent. When an administrator switches a
+   * device's `websites` scope off, everything else on that machine keeps being
+   * collected — so `monitoring` stays `collecting` — and the host silently drops every
+   * address it is handed. Without this field the extension goes on transmitting URLs
+   * for no permitted purpose, under a popup that tells the employee they are recorded.
+   *
+   * Optional: a host that does not send it is read as permitting, the same fail-open
+   * direction an absent collection scope already has on the host side.
+   */
+  websites?: boolean;
 }
 
 export interface BridgeErrorMessage {
@@ -113,6 +127,19 @@ export interface HelloMessage {
   v: number;
   type: "hello";
   extensionVersion: string;
+  /**
+   * Which browser this is — "Chrome", "Edge" — and nothing narrower.
+   *
+   * The extension id is pinned by the manifest's `key`, so every Chromium browser that
+   * loads this extension hands the host the *same* `chrome-extension://` origin on its
+   * command line. Without this the agent's link file collapses two connected browsers
+   * into one entry they take turns overwriting, and the dashboard cannot answer the one
+   * question a duplicate install raises: how many browsers on this machine are
+   * reporting. Every profile of the same browser sends the same string, nothing is
+   * recorded or refused on the strength of it, and an extension that omits it is served
+   * exactly as before.
+   */
+  browser?: string;
 }
 
 /**
@@ -170,7 +197,13 @@ export function isExtensionMessage(value: unknown): value is ExtensionMessage {
 
   switch (value["type"]) {
     case "hello":
-      return typeof value["extensionVersion"] === "string" && value["extensionVersion"].length <= 20;
+      return (
+        typeof value["extensionVersion"] === "string" &&
+        value["extensionVersion"].length <= 20 &&
+        // `isStamp`'s 40 characters is a browser name with room to spare, and refuses
+        // anything trying to be a payload rather than a label.
+        (value["browser"] === undefined || isStamp(value["browser"]))
+      );
     case "page":
       // 2048 is the address-bar length every browser agrees on; nothing longer is a
       // page anybody navigated to on purpose.
@@ -209,7 +242,12 @@ export function isHostMessage(value: unknown): value is HostMessage {
     monitoring === "consent-required" ||
     monitoring === "revoked";
 
-  return known && Array.isArray(value["rules"]) && value["rules"].every(isWebsiteRule);
+  return (
+    known &&
+    (value["websites"] === undefined || typeof value["websites"] === "boolean") &&
+    Array.isArray(value["rules"]) &&
+    value["rules"].every(isWebsiteRule)
+  );
 }
 
 export function isWebsiteRule(value: unknown): value is WebsiteRule {

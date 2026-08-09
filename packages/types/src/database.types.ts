@@ -185,6 +185,12 @@ export interface Database {
           storage_mb: number | null;
           /** Migration ...0016. At most one per profile; see the column comment. */
           is_primary: boolean;
+          /** Migration ...0021. See the column comments. */
+          browser_extension_linked: boolean | null;
+          browser_extension_version: string | null;
+          browser_extension_seen_at: string | null;
+          browser_extension_count: number | null;
+          website_addresses_recorded: boolean | null;
           created_at: string;
           updated_at: string;
         };
@@ -195,6 +201,12 @@ export interface Database {
           platform: DevicePlatform;
           label: string;
           is_primary?: boolean;
+          /** Migration ...0021. See the column comments. */
+          browser_extension_linked?: boolean | null;
+          browser_extension_version?: string | null;
+          browser_extension_seen_at?: string | null;
+          browser_extension_count?: number | null;
+          website_addresses_recorded?: boolean | null;
           os_version?: string;
           agent_version?: string;
           enrolled_at?: string;
