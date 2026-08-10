@@ -1,3 +1,4 @@
+import { describeDataTypes } from "@aems/types";
 import type { ReactElement } from "react";
 
 import type { AgentStatus } from "../../shared/types/index.js";
@@ -8,6 +9,7 @@ import { useNow } from "../hooks/useNow.js";
 import { agentBridge } from "../lib/bridge.js";
 import { formatDuration, formatRelative } from "../lib/format.js";
 import {
+  collectedTypes,
   connectionLabel,
   permissionGaps,
   trackedSecondsToday,
@@ -34,6 +36,12 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
   const connection = connectionLabel(status, gaps);
   const tracked = trackedSecondsToday(status);
   const lastSync = status.lastSyncAt === null ? null : formatRelative(status.lastSyncAt, now);
+
+  // What this machine is actually recording, and what an administrator has changed
+  // since the employee last agreed. Both are read off the same heartbeat, so the
+  // sentence below and the gate the employee passed cannot describe different sets.
+  const recording = describeDataTypes(collectedTypes(status)).filter((item) => item.absent !== true);
+  const pending = describeDataTypes(status.pendingTypes);
 
   // Ending a break must stay available even though collection is paused during one —
   // otherwise a break started by mistake could never be closed. Not offered once the
@@ -102,6 +110,18 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
         <Notice tone="warn" title="Monitoring has been stopped">
           An administrator revoked this device, so nothing is being recorded or sent. Contact them
           if you think this is a mistake.
+        </Notice>
+      )}
+
+      {/* An administrator widening what is collected is the one change to this agreement
+          the employee did not make, so it is stated here rather than left to be noticed
+          from the dashboard. Nothing on this list is being recorded — the server enforces
+          what was granted, so an added type stays off until it is agreed to. */}
+      {pending.length > 0 && !status.revoked && (
+        <Notice tone="warn" title="Your administrator has changed what is collected">
+          {pending.map((item) => item.title).join(", ")} {pending.length === 1 ? "has" : "have"}{" "}
+          been switched on for this computer. None of it is being recorded until you agree — the
+          agent will ask the next time it needs to.
         </Notice>
       )}
 
@@ -175,6 +195,17 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
       {websiteNote !== null && (
         <Notice tone="plain" title="Websites are not recorded on this computer">
           {websiteNote}
+        </Notice>
+      )}
+
+      {/* The standing answer to "what is it actually recording", which until now the
+          employee could only get by re-reading a consent screen they cannot reach. It
+          is a plain statement of fact, not a warning: a scope an administrator narrowed
+          is a correctly recorded decision, not a fault. */}
+      {status.enrolled && !status.revoked && recording.length > 0 && (
+        <Notice tone="plain" title="What this computer records">
+          {recording.map((item) => item.title).join(" · ")}. Nothing else is collected from this
+          machine.
         </Notice>
       )}
     </Shell>

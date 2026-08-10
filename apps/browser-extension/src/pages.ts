@@ -20,6 +20,8 @@ export interface PageState {
   contact: string | null;
   restrictedCount: number;
   rule: WebsiteRule | null;
+  /** Null is "the agent did not say"; both pages read that as permitting, as the host does. */
+  websites: boolean | null;
 }
 
 /**
@@ -71,6 +73,33 @@ export function blockedRows(state: PageState): DetailRow[] {
       value: state.contact ?? "Your IT administrator or your manager",
     },
   ];
+}
+
+/**
+ * The standing sentence at the foot of the blocked page.
+ *
+ * It has to be state-dependent, because restriction is deliberately wider than
+ * observation: `mayEnforce` covers a machine whose employee has not accepted the
+ * monitoring policy yet, so this page is reachable by design in a state where nothing at
+ * all is being recorded. Telling that person their browsing is already reported is the
+ * one reading that makes the consent screen they have not signed look like theatre.
+ *
+ * The popup scopes its own disclosure with "only while the status above says it is";
+ * this page carries no status, so the scoping has to be in the sentence.
+ */
+export function blockedFooter(state: PageState): string {
+  const restriction =
+    "This restriction comes from the device policy named above, and the person named above can change it.";
+
+  if (state.monitoring !== "collecting") {
+    return `Nothing you open in this browser is being recorded at the moment. ${restriction}`;
+  }
+
+  if (state.websites === false) {
+    return `The addresses of pages you open are not recorded on this work device — your organisation has switched that off. ${restriction}`;
+  }
+
+  return `The addresses of pages you open in this browser are reported to the AEMS agent on this work device. ${restriction}`;
 }
 
 /** The headline on the blocked page. Names the domain when the rule is known. */

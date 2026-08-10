@@ -76,6 +76,18 @@ describe("isExtensionMessage", () => {
     expect(isExtensionMessage({ v: 1, type: "state" })).toBe(false);
   });
 
+  it("takes a browser name on hello, or none at all", () => {
+    expect(isExtensionMessage({ v: 1, type: "hello", extensionVersion: "0.1.0", browser: "Edge" })).toBe(
+      true,
+    );
+    // An extension built before the field still opens a channel; it is one entry in the
+    // link file rather than two, which understates a count rather than losing a browser.
+    expect(isExtensionMessage({ v: 1, type: "hello", extensionVersion: "0.1.0" })).toBe(true);
+    expect(
+      isExtensionMessage({ v: 1, type: "hello", extensionVersion: "0.1.0", browser: "x".repeat(41) }),
+    ).toBe(false);
+  });
+
   it("bounds the stamp, so a megabyte string cannot arrive as a timestamp", () => {
     expect(isExtensionMessage({ v: 1, type: "cleared", at: "x".repeat(41) })).toBe(false);
     expect(isExtensionMessage({ v: 1, type: "cleared", at: "" })).toBe(false);

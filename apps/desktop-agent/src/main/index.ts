@@ -22,7 +22,8 @@ import type { AppUpdater } from "electron-updater";
 import {
   emptyTotals,
   IPC_CHANNELS,
-  mayCollect,
+  mayCollectType,
+  offeredTypes,
   pausedBecause,
   statusOf,
 } from "../shared/types/index.js";
@@ -35,7 +36,12 @@ import type {
 } from "../shared/types/index.js";
 import type { BridgeInvocation } from "./bridge.js";
 import { readBridgeInvocation } from "./bridge.js";
-import { BROWSER_LINK_FILE, BrowserLinkStore, createBrowserLinkView } from "./bridge-link.js";
+import {
+  BROWSER_LINK_FILE,
+  BrowserLinkStore,
+  browserLinkReport,
+  createBrowserLinkView,
+} from "./bridge-link.js";
 import { AEMS_EXTENSION_IDS } from "./bridge-protocol.js";
 import { startBridge } from "./bridge-runtime.js";
 import type { BrowserUrlReader } from "./browser-url.js";
@@ -107,6 +113,13 @@ interface Runtime {
    * window titles on Windows.
    */
   urlReader: BrowserUrlReader;
+  /**
+   * Where the bridge leaves what the browser extension said.
+   *
+   * On the runtime because `attachDevice` builds the sync queue and has only `rt` — the
+   * store itself is constructed further down, beside the URL reader that shares it.
+   */
+  link: BrowserLinkStore;
   /** The journal, today's spans and the dead-letter file, as one unit. */
   durable: DurableStore;
   /** Battery, network and free storage. Built once: it caches the readings that cost a spawn. */
@@ -372,7 +385,9 @@ function attachDevice(deviceId: string, deviceToken: string): void {
     // enrolment would otherwise close and be reported under the new device's identity.
     // The capture schedule is deliberately kept — it is a consented cadence, not an
     // observation, and resetting it would fire a frame the moment the swap lands.
-    rt.tracker = new Tracker(undefined, rt.urlReader);
+    rt.tracker = new Tracker(undefined, rt.urlReader, () =>
+      mayCollectType(rt.store.current, "websites"),
+    );
     rt.idle = new IdleWatcher();
   }
   rt.deviceId = deviceId;
@@ -394,6 +409,37 @@ function attachDevice(deviceId: string, deviceToken: string): void {
     },
     onDurabilityFault: (error) => {
       log("Could not write the durable store", error);
+    },
+    // Read at the beat rather than held, because the bridge is a separate process and
+    // this file is the only thing the two share. It is also what makes an uninstall
+    // visible: no browser connects, the entry ages out, and the beat says so.
+    //
+    // `websitesRecorded` rides along because a connected extension is not the same fact
+    // as a recorded address: withdrawn consent and a switched-off collection scope both
+    // stop the recording without closing the channel, and every surface that says
+    // "website addresses from this computer are reported" was reading the channel.
+    browserLink: () => ({
+      ...browserLinkReport(rt.link.read(), new Date()),
+      websitesRecorded: mayCollectType(rt.store.current, "websites"),
+    }),
+    // The heartbeat is how a change to this device's collection scope arrives. Written
+    // straight through `ConfigStore` — the same path `applyOutcome` uses for a stop
+    // signal — so the plaintext config the bridge process reads stays in step with the
+    // collection loop by construction rather than by two callers remembering to agree.
+    onHeartbeat: (response) => {
+      rt.store.update({
+        collection: response.collection ?? null,
+        pendingTypes: response.pendingTypes ?? [],
+        // A policy published after this machine enrolled arrives here and nowhere else.
+        // The agent used to read its policy once, at enrolment, so an admin who changed
+        // the screenshot interval or the forgotten-break limit changed it for new
+        // devices only — silently, with the Settings screen reporting success.
+        //
+        // Absent means "no new information", exactly as it does for `collection`:
+        // keeping the last known policy is right when a read failed, and blanking it
+        // would drop the fleet to defaults on one bad query.
+        ...(response.policy ? { policy: response.policy } : {}),
+      });
     },
   });
 
@@ -468,7 +514,7 @@ function toggleBreak(onBreak: boolean): void {
  */
 function reportInventory(): void {
   const rt = requireRuntime();
-  if (!mayCollect(rt.store.current)) return;
+  if (!mayCollectType(rt.store.current, "installed_apps")) return;
 
   void collectInstalledApplications()
     .then((applications) => rt.client.reportApplications({ applications }))
@@ -508,6 +554,10 @@ function registerIpc(): void {
         profileId: response.profileId,
         deviceToken: response.deviceToken,
         policy: response.policy,
+        // What this machine was enrolled to collect, decided when the code was minted.
+        // Absent means the API predates per-device scope, which is the platform default.
+        collection: response.collection ?? null,
+        pendingTypes: [],
         // Enrolling is not consenting. Collection stays blocked until the employee
         // accepts the policy that is actually in force.
         consentedPolicyVersion: null,
@@ -522,6 +572,10 @@ function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.CONSENT_ACCEPT, async (): Promise<AgentStatus> => {
     const { store, client } = requireRuntime();
     const { deviceId, deviceToken, policy } = store.current;
+    // Exactly the set the screen listed, which is what makes the record a record of
+    // what was agreed rather than of when. Undefined where no scope has arrived: the
+    // server reads that as the platform default of the day, which is what it means.
+    const granted = offeredTypes(store.current.collection, store.current.pendingTypes);
 
     if (deviceId === null || deviceToken === null || policy === null) {
       throw new Error("Enrol this device before recording consent");
@@ -537,9 +591,13 @@ function registerIpc(): void {
     await client.submitConsentAsDevice({
       policyVersion: policy.version,
       method: "in_app_dialog",
+      ...(granted === null ? {} : { grantedTypes: granted }),
     });
 
-    store.update({ consentedPolicyVersion: policy.version });
+    // `collection` is left for the next heartbeat to settle rather than widened here:
+    // the server decides what it is enforcing, and an agent that assumed its own
+    // pending types were now live would collect ahead of the record saying it may.
+    store.update({ consentedPolicyVersion: policy.version, pendingTypes: [] });
 
     reportInventory();
     return publishStatus();
@@ -818,8 +876,13 @@ function bootstrap(): void {
     runtime = {
       store,
       client: new AemsClient({ baseUrl: config.apiUrl, timeoutMs: REQUEST_TIMEOUT_MS }),
-      tracker: new Tracker(undefined, urlReader),
+      // The website gate is a closure over the store rather than a value, so an
+      // administrator switching websites off lands on the next focus change.
+      tracker: new Tracker(undefined, urlReader, () =>
+        mayCollectType(store.current, "websites"),
+      ),
       urlReader,
+      link,
       idle: new IdleWatcher(),
       // The gate sits on the capturer rather than in the scheduler because this is the
       // last point before the display is actually read: nothing can route around it to

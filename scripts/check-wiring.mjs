@@ -30,26 +30,22 @@ if (process.argv.includes('--print-schema')) {
   process.exit(0)
 }
 
-// Snapshot of the live schema. Last refreshed 2026-08-05 against project
-// dayyrqcfktwwnkttlres after migrations 20260805000007 (categories),
-// 20260805000008 (ai_summaries uniqueness), 20260805000010 (report specs),
-// 20260805000011 (profiles.deactivated_at), 20260805000012 (device enrolment codes)
-// and 20260805000013 (website restrictions).
+// Snapshot of the live schema. Last refreshed 2026-08-08 against project
+// dayyrqcfktwwnkttlres, after 20260808000019 (policies.max_open_break_seconds).
 //
-// ⚠️ TWO entries below are NOT yet confirmed against the live database, both because
-// their migration is written and committed but unapplied — the CLI on the machine that
-// wrote them is authenticated to a different organisation and cannot reach project
-// dayyrqcfktwwnkttlres. Until somebody applies them, this check passes while the live
-// database would fail:
+// The earlier warning here — that `location_points` was unconfirmed because migration
+// 20260807000014 had never been applied — is resolved: it is applied, along with
+// 20260808000015 and 20260808000016, and the three tables touched by ...0017 were
+// re-read from information_schema rather than assumed.
 //
-//   * `location_points` — migration 20260807000014 (location tracking, scope §3.5).
-//     `POST /api/activity/events` answers 500 on any batch carrying locations.
-//   * `policies.max_open_break_seconds` — migration 20260810000015 (the forgotten-break
-//     limit as a policy field). `POST /api/devices/enroll` selects the column, so
-//     enrolment fails outright until the migration lands — every agent, not an edge
-//     case. Apply this one before the demo.
-//
-// Re-run the query above and refresh this whole snapshot once they are applied.
+// One exception, deliberately ahead of the database: the five `browser_extension_*` /
+// `website_addresses_recorded` columns on `devices` are committed in 20260810000021 and
+// NOT YET APPLIED. They are listed anyway so this check accepts the code that names
+// them — which means this check cannot be the thing that catches the deploy going out in
+// the wrong order, because it reads this table and `check-migrations.mjs` probes tables
+// rather than columns. The heartbeat writes them in an `update` of their own, separate
+// from `last_seen_at`, so an agent reporting them against a database without them costs
+// the extension readout and nothing else. Delete this paragraph once it is applied.
 const SCHEMA = {
   activity_events: 'id,company_id,profile_id,device_id,work_session_id,app_name,window_title,url,category,started_at,ended_at,client_event_id,created_at,domain',
   ai_summaries: 'id,company_id,profile_id,kind,period_start,period_end,provider,model,content,created_at',
@@ -57,11 +53,12 @@ const SCHEMA = {
   break_events: 'id,company_id,profile_id,device_id,work_session_id,break_start_at,break_end_at,duration_seconds,client_event_id,created_at',
   category_rules: 'id,company_id,priority,category_path,productivity,match_app,match_title,match_domain,ignore_case,created_at,updated_at',
   companies: 'id,name,created_at,updated_at',
-  consent_records: 'id,company_id,profile_id,device_id,policy_version,method,ip_address,consented_at,revoked_at',
+  consent_records: 'id,company_id,profile_id,device_id,policy_version,method,ip_address,consented_at,revoked_at,granted_types',
   device_applications: 'id,company_id,device_id,name,version,identifier,first_seen_at,last_seen_at',
-  device_enrollment_codes: 'id,company_id,profile_id,code_hash,expires_at,consumed_at,consumed_device_id,created_by,created_at',
+  device_collection_settings: 'company_id,device_id,data_type,enabled,changed_by,changed_at',
+  device_enrollment_codes: 'id,company_id,profile_id,code_hash,expires_at,consumed_at,consumed_device_id,created_by,created_at,platform,denied_types',
   device_telemetry: 'id,company_id,device_id,recorded_at,battery_level,battery_charging,network_type,storage_free_mb,screen_active_seconds',
-  devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb',
+  devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb,is_primary,browser_extension_linked,browser_extension_version,browser_extension_seen_at,browser_extension_count,website_addresses_recorded',
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',
   location_points: 'id,company_id,profile_id,device_id,work_session_id,recorded_at,latitude,longitude,accuracy_m,client_event_id,created_at',
   policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at,max_open_break_seconds',

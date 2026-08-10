@@ -482,11 +482,16 @@ function overlapSeconds(
 }
 
 function rankUsage(
-  byApp: Map<string, { category: string | null; ms: number }>,
+  byApp: Map<string, { category: string | null; ms: number; opens?: number }>,
   limit: number,
 ): AppUsage[] {
   return [...byApp.entries()]
-    .map(([appName, { category, ms }]) => ({ appName, category, seconds: Math.round(ms / 1000) }))
+    .map(([appName, { category, ms, opens }]) => ({
+      appName,
+      category,
+      seconds: Math.round(ms / 1000),
+      ...(opens === undefined ? {} : { opens }),
+    }))
     .filter((usage) => usage.seconds > 0)
     .sort((a, b) => b.seconds - a.seconds || a.appName.localeCompare(b.appName))
     .slice(0, limit);
@@ -593,7 +598,7 @@ export function buildDayTimeline(input: DayTimelineInput): DayTimeline {
       activityRatio:
         trackedSeconds === 0 ? null : Number((activeSeconds / trackedSeconds).toFixed(4)),
     },
-    topApps: rankWindowApps(apps),
+    topApps: rankWindowApps(apps, keyed),
     truncated: input.truncated ?? false,
   };
 }
@@ -770,13 +775,37 @@ function elapsedLabel(from: string | null, to: string | null): string | null {
  * ever placing in a single slot — and the app list would silently disagree with the
  * ribbon beside it.
  */
-function rankWindowApps(apps: readonly AppInterval[]): AppUsage[] {
-  const byApp = new Map<string, { category: string | null; ms: number }>();
+/**
+ * Time from the reduced intervals, opens from the raw ones — and they must be
+ * different sources.
+ *
+ * `apps` has already been merged and had idle and breaks subtracted, which is exactly
+ * right for duration: a person on a laptop and a phone at once must not be credited
+ * twice. It is wrong for a count. Two adjacent reports of the same app merge into one
+ * interval, so counting merged intervals answers "how many separate stretches" when
+ * the question is "how many times did they open it".
+ *
+ * `raw` is one entry per reported event, which is one `activity_events` row — the same
+ * thing the Android app counts in `totalsFrom` for the employee's own Activity screen.
+ * A manager and the person being measured have to see the same number, and this is the
+ * only way they do.
+ */
+function rankWindowApps(apps: readonly AppInterval[], raw: readonly KeyedSpan[]): AppUsage[] {
+  const opensByApp = new Map<string, number>();
+  for (const span of raw) opensByApp.set(span.appName, (opensByApp.get(span.appName) ?? 0) + 1);
+
+  const byApp = new Map<string, { category: string | null; ms: number; opens: number }>();
 
   for (const app of apps) {
     const existing = byApp.get(app.appName);
     if (existing) existing.ms += app.end - app.start;
-    else byApp.set(app.appName, { category: app.category, ms: app.end - app.start });
+    else {
+      byApp.set(app.appName, {
+        category: app.category,
+        ms: app.end - app.start,
+        opens: opensByApp.get(app.appName) ?? 0,
+      });
+    }
   }
 
   return rankUsage(byApp, 10);

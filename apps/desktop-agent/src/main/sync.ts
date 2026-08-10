@@ -4,6 +4,7 @@ import type {
   ActivityEventInput,
   BreakEventInput,
   HeartbeatInput,
+  HeartbeatResponse,
   IdleEventInput,
   ScreenshotUploadResult,
 } from "@aems/types";
@@ -26,7 +27,7 @@ export const MAX_EVENTS_PER_BATCH = 1000;
 export interface SyncApiClient {
   ingestActivity(batch: ActivityBatch): Promise<ActivityBatchResult>;
   uploadScreenshot(form: FormData): Promise<ScreenshotUploadResult>;
-  heartbeat(body: HeartbeatInput): Promise<{ ok: true }>;
+  heartbeat(body: HeartbeatInput): Promise<HeartbeatResponse>;
 }
 
 /**
@@ -163,6 +164,25 @@ export interface SyncQueueOptions {
   lastSyncAt?: string | null;
   /** Fires only when the API actually took a batch, which is what makes it worth storing. */
   onSynced?: (at: string) => void;
+  /**
+   * What the server answered the last heartbeat with.
+   *
+   * The heartbeat is where a change to this device's collection scope arrives. It was
+   * chosen over a route of its own because it already runs every 60 s, is already the
+   * consent-exempt channel revocation travels on, and a second poll for two string
+   * arrays buys nothing. Every field on the response is optional, so an API that does
+   * not send them leaves the agent collecting exactly what it collected before.
+   */
+  onHeartbeat?: (response: HeartbeatResponse) => void;
+  /**
+   * What the browser bridge has left in the link file, read at the moment of the beat.
+   *
+   * A callback rather than a value because a *different process* writes that file:
+   * anything captured at construction would report the state of the machine at agent
+   * launch forever. Absent on a queue that has no bridge, and the key is then omitted
+   * from the body entirely — an agent saying nothing must not be read as "no extension".
+   */
+  browserLink?: () => HeartbeatInput["browserLink"];
 }
 
 /**
@@ -367,12 +387,34 @@ export class SyncQueue {
    * rather than appearing to have vanished.
    */
   async heartbeat(workSessionId: number | null): Promise<SyncOutcome> {
+    let response: HeartbeatResponse;
+
     try {
-      await this.client.heartbeat({ deviceId: this.deviceId, workSessionId });
+      // Inside the try because it reads a file a *different process* publishes by
+      // rename, so EPERM during the replace window is an ordinary Windows outcome and a
+      // quarantined or re-permissioned file is a lasting one. Thrown from here it would
+      // escape `heartbeat`, whose contract is that every failure comes back classified —
+      // and the tick would be abandoned with the beat already marked as sent. Revocation,
+      // withdrawn consent, a new policy and a changed collection scope all arrive on the
+      // heartbeat *response*, so a file permission would quietly switch all four off
+      // while collection carried on.
+      const browserLink = this.options.browserLink?.();
+
+      // Spread rather than an explicit `undefined`, so a queue with no bridge sends the
+      // body it always sent. The API reads an absent key as "this agent did not say",
+      // which is a different answer from "no extension" and must stay one.
+      response = await this.client.heartbeat({
+        deviceId: this.deviceId,
+        workSessionId,
+        ...(browserLink ? { browserLink } : {}),
+      });
     } catch (error) {
       return classifyError(error);
     }
 
+    // Outside the catch on purpose: this writes the config to disk, and a full disk
+    // there must not be classified as the API having refused the heartbeat.
+    this.options.onHeartbeat?.(response);
     return "sent";
   }
 

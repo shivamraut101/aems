@@ -54,7 +54,18 @@ employee-monitoring/
 
 ## 3. Web Admin Dashboard
 
-**Framework: Next.js 15 (App Router)**
+**Framework: Next.js 16 (App Router)**
+
+> **Amended 2026-08-08, at the client's instruction: 15 → 16.** The original document
+> locked 15. Three things changed with it and they are load-bearing:
+>
+> - **`middleware.ts` is now `proxy.ts`**, exporting `proxy` rather than `middleware`.
+>   Same request, same position in the pipeline. Next still resolves the old name, but
+>   running on a deprecated convention is how a build starts warning and then breaks.
+> - **Turbopack is the default builder**, and it is strict about module format where
+>   webpack was forgiving. `packages/ui/tailwind-preset.js` used `module.exports`
+>   inside a `"type": "module"` package — always a mismatch, tolerated until now.
+> - **Node ≥ 20.9 and React ^19**, both of which this repo already exceeded.
 
 Purpose: admin dashboard, employee management, monitoring analytics, reports, settings.
 
@@ -269,7 +280,7 @@ Activity Events → Analytics Processing → AI Model → Summary Storage
 | Category        | Technology               |
 | --------------- | ------------------------ |
 | Monorepo        | pnpm + Turborepo         |
-| Frontend        | Next.js 15               |
+| Frontend        | Next.js 16               |
 | UI              | Tailwind CSS + shadcn/ui |
 | State           | Zustand                  |
 | Data Fetching   | TanStack Query           |

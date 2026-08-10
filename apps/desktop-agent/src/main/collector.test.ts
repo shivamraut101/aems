@@ -19,7 +19,7 @@ import {
   TICK_INTERVAL_MS,
 } from "./collector.js";
 import type { CollectorAdapters } from "./collector.js";
-import { DEFAULT_MAX_OPEN_BREAK_MS } from "./collector.js";
+import { DEFAULT_MAX_OPEN_BREAK_SECONDS } from "./collector.js";
 import { IdleWatcher } from "./idle.js";
 import type { DayState } from "./persistence.js";
 import { emptyDayState } from "./persistence.js";
@@ -184,9 +184,16 @@ interface Harness {
   capturer: FakeCapturer;
   telemetry: FakeTelemetry;
   logs: string[];
-  /** What the next focus read returns. Reassign between ticks to move the focus. */
-  focus: { sample: FocusSample | null; error: unknown };
-  idleSeconds: { value: number };
+  /**
+   * What the next focus read returns. Reassign between ticks to move the focus.
+   *
+   * `reads` counts the OS calls rather than the events they produce, because a
+   * switched-off data type must not be *observed* — the tray and the indicator claim
+   * what is being collected, and sampling something the employee was told is off makes
+   * those claims false whether or not the sample is ever sent.
+   */
+  focus: { sample: FocusSample | null; error: unknown; reads: number };
+  idleSeconds: { value: number; reads: number };
   lockState: { locked: boolean };
 }
 
@@ -201,15 +208,21 @@ function harness(config: AgentConfig = consented(), dayState?: FakeDayStore): Ha
   const focus: Harness["focus"] = {
     sample: { appName: "Code", windowTitle: "collector.ts", url: null },
     error: null,
+    reads: 0,
   };
-  const idleSeconds = { value: 0 };
+  const idleSeconds = { value: 0, reads: 0 };
   const lockState = { locked: false };
   const logs: string[] = [];
 
   const adapters: Partial<CollectorAdapters> = {
-    sampleFocus: () =>
-      focus.error === null ? Promise.resolve(focus.sample) : Promise.reject(focus.error),
-    readIdleSeconds: () => idleSeconds.value,
+    sampleFocus: () => {
+      focus.reads += 1;
+      return focus.error === null ? Promise.resolve(focus.sample) : Promise.reject(focus.error);
+    },
+    readIdleSeconds: () => {
+      idleSeconds.reads += 1;
+      return idleSeconds.value;
+    },
     readIdleState: () => (lockState.locked ? "locked" : "active"),
     now: () => at(0),
     log: (message) => logs.push(message),
@@ -1171,11 +1184,11 @@ describe("an abandoned break", () => {
     h.collector.startBreak(at(60));
 
     // Still a plausible break: nothing happens.
-    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 - 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS - 60));
     expect(h.collector.dayEnded).toBe(false);
 
     // Past the ceiling: the person went home.
-    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 + 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS + 60));
     expect(h.collector.dayEnded).toBe(true);
     expect(h.sessions.current).toBeNull();
   });
@@ -1184,11 +1197,50 @@ describe("an abandoned break", () => {
     const h = harness();
     await h.collector.tick(at(0));
     h.collector.startBreak(at(60));
-    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 + 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS + 60));
 
     // The whole point. Ending at `now` would count every hour of the break as tracked;
     // ending at the break start says what happened — work stopped there.
-    expect(h.collector.dayTotals.breakSeconds).toBeLessThan(DEFAULT_MAX_OPEN_BREAK_MS / 1000);
+    expect(h.collector.dayTotals.breakSeconds).toBeLessThan(DEFAULT_MAX_OPEN_BREAK_SECONDS);
+  });
+
+  /*
+   * The limit is an admin's, not the agent's. A workforce that takes a two-hour site
+   * visit and one that never breaks past lunch want different numbers, and the agent is
+   * a binary on someone's laptop — the wrong place to decide it.
+   */
+  it("obeys the policy's limit over its own default", async () => {
+    const policy = consented().policy!;
+    const h = harness(consented({ policy: { ...policy, maxOpenBreakSeconds: 3600 } }));
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+
+    // Past the policy's hour but nowhere near the five-hour default. A collector still
+    // reading its own constant would leave the day open here.
+    await h.collector.tick(at(60 + 3600 + 60));
+    expect(h.collector.dayEnded).toBe(true);
+  });
+
+  /*
+   * A policy stored before the field existed carries no value for it. Reading that
+   * absence as "no limit" would restore the overnight-billing bug the guard was added
+   * for, which is the expensive direction to be wrong in.
+   */
+  it("falls back to its default when the policy does not say", async () => {
+    const h = harness();
+    // What the case rests on, asserted rather than assumed: the harness policy predates
+    // the field, so the two tests above are exercising the fallback too. Setting it in
+    // `consented()` would quietly turn all three into tests of the policy path.
+    expect(consented().policy?.maxOpenBreakSeconds).toBeUndefined();
+
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS - 60));
+    expect(h.collector.dayEnded).toBe(false);
+
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_SECONDS + 60));
+    expect(h.collector.dayEnded).toBe(true);
   });
 
   it("leaves a short break alone", async () => {
@@ -1201,56 +1253,149 @@ describe("an abandoned break", () => {
     expect(h.collector.dayEnded).toBe(false);
     expect(h.sessions.current).not.toBeNull();
   });
+});
 
-  /*
-   * The limit is the admin's, not the binary's.
-   *
-   * Without this the policy field can be added, plumbed through four surfaces and read
-   * by nothing — the suite would stay green on the hardcoded default and the setting
-   * would be decorative. So the assertion is specifically that a policy value SHORTER
-   * than the default takes effect at its own boundary, which the default cannot fake.
-   */
-  it("ends the day at the limit the policy sets, not the built-in default", async () => {
-    const oneHour = 60 * 60;
-    const h = harness(
-      consented({
-        policy: {
-          version: "2026-01",
-          name: "Standard",
-          screenshotIntervalSeconds: 300,
-          idleThresholdSeconds: 120,
-          maxOpenBreakSeconds: oneHour,
-          trackedCategories: [],
-        },
-      }),
-    );
+/**
+ * The per-device collection scope, at the loop that acts on it.
+ *
+ * The rule these defend is stricter than "do not send it": a switched-off type must
+ * never be *observed*. The tray tooltip and the always-on-top indicator both claim what
+ * is being collected, so an agent that samples the focused window while the employee
+ * has been told applications are off is making those two signals false — and they are
+ * what non-negotiable #2 is made of.
+ *
+ * Each was verified by mutation: every `mayCollectType` call below was replaced with
+ * `mayCollect`, the corresponding case was confirmed to fail, and the call restored.
+ */
+describe("Collector per-device collection scope", () => {
+  const EVERYTHING = [
+    "applications",
+    "websites",
+    "screenshots",
+    "idle",
+    "telemetry",
+    "installed_apps",
+  ] as const;
+
+  it("behaves exactly as before on a device with no scope of its own", async () => {
+    // The deploy case. Zero settings rows exist, so every enrolled device holds a null
+    // scope and must go on collecting precisely what it collected yesterday.
+    const h = harness(consented({ collection: null }));
 
     await h.collector.tick(at(0));
-    h.collector.startBreak(at(60));
 
-    // Past the built-in three hours this would already be over; under the policy's
-    // hour it is not yet.
-    await h.collector.tick(at(60 + oneHour - 60));
-    expect(h.collector.dayEnded).toBe(false);
-
-    await h.collector.tick(at(60 + oneHour + 60));
-    expect(h.collector.dayEnded).toBe(true);
-    expect(h.sessions.current).toBeNull();
+    expect(h.focus.reads).toBe(1);
+    expect(h.idleSeconds.reads).toBe(1);
+    expect(h.capturer.calls).toBe(1);
+    expect(h.telemetry.samples).toHaveLength(1);
   });
 
-  /*
-   * Non-negotiable, and the reason `maxOpenBreakSeconds` is optional rather than
-   * required: a policy stored before the column existed carries no value for it. Reading
-   * that absence as "no limit" restores the overnight-billing defect the guard exists
-   * for — the failure mode being guarded is silent, so it needs its own test.
-   */
-  it("falls back to the default when the stored policy predates the field", async () => {
-    // `consented()` builds exactly that policy — no `maxOpenBreakSeconds` at all.
-    const h = harness();
-    await h.collector.tick(at(0));
-    h.collector.startBreak(at(60));
+  it("collects the same four things when the scope names everything", async () => {
+    const h = harness(consented({ collection: [...EVERYTHING] }));
 
-    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 + 60));
-    expect(h.collector.dayEnded).toBe(true);
+    await h.collector.tick(at(0));
+
+    expect(h.focus.reads).toBe(1);
+    expect(h.idleSeconds.reads).toBe(1);
+    expect(h.capturer.calls).toBe(1);
+    expect(h.telemetry.samples).toHaveLength(1);
+  });
+
+  it("never reads the focused window when applications are switched off", async () => {
+    const h = harness(consented({ collection: ["idle", "screenshots", "telemetry"] }));
+
+    await h.collector.tick(at(0));
+    h.focus.sample = { appName: "Chrome", windowTitle: "github.com", url: null };
+    await h.collector.tick(at(30));
+    await h.collector.shutdown(at(60));
+
+    expect(h.focus.reads).toBe(0);
+    expect(sentActivity(h)).toHaveLength(0);
+  });
+
+  it("never reads the OS idle counter when idle is switched off", async () => {
+    const h = harness(consented({ collection: ["applications", "screenshots", "telemetry"] }));
+
+    h.idleSeconds.value = 600;
+    await h.collector.tick(at(0));
+    await h.collector.tick(at(300));
+    await h.collector.shutdown(at(600));
+
+    expect(h.idleSeconds.reads).toBe(0);
+    expect(sentIdle(h)).toHaveLength(0);
+  });
+
+  it("takes no frame when screenshots are switched off", async () => {
+    const h = harness(consented({ collection: ["applications", "idle", "telemetry"] }));
+
+    await h.collector.tick(at(0));
+    await h.collector.tick(at(600));
+
+    expect(h.capturer.calls).toBe(0);
+  });
+
+  it("sends no battery or network sample when telemetry is switched off", async () => {
+    const h = harness(consented({ collection: ["applications", "idle", "screenshots"] }));
+
+    await h.collector.tick(at(0));
+    await h.collector.tick(new Date(EPOCH + TELEMETRY_INTERVAL_MS));
+
+    expect(h.telemetry.samples).toHaveLength(0);
+  });
+
+  it("keeps heartbeating with everything switched off, so the device is not read as gone", async () => {
+    // A scope of nothing is still an enrolled, consented device. `last_seen_at` drives
+    // online/offline in the dashboard and carries no observation, which is why the
+    // heartbeat is not a switchable type.
+    const h = harness(consented({ collection: [] }));
+
+    await h.collector.tick(at(0));
+
+    expect(h.api.heartbeats).toEqual([{ deviceId: DEVICE, workSessionId: 7 }]);
+    expect(h.focus.reads).toBe(0);
+    expect(h.capturer.calls).toBe(0);
+  });
+
+  it("closes the interval that was open when applications were switched off, once", async () => {
+    // Left open it would be flushed hours later as one unbroken stretch of focused
+    // work — an event produced by a type the employee had been told was off.
+    const h = harness();
+
+    await h.collector.tick(at(0));
+    h.store.update({ collection: ["idle"] });
+    await h.collector.tick(at(30));
+    await h.collector.tick(at(60));
+    await h.collector.shutdown(at(90));
+
+    const activity = sentActivity(h);
+    expect(activity).toHaveLength(1);
+    expect(activity[0]?.endedAt).toBe(at(30).toISOString());
+  });
+
+  it("closes the idle stretch that was open when idle was switched off, once", async () => {
+    const h = harness();
+
+    h.idleSeconds.value = 600;
+    await h.collector.tick(at(0));
+    h.store.update({ collection: ["applications"] });
+    await h.collector.tick(at(30));
+    await h.collector.tick(at(60));
+    await h.collector.shutdown(at(90));
+
+    const idle = sentIdle(h);
+    expect(idle).toHaveLength(1);
+    expect(idle[0]?.idleEndAt).toBe(at(30).toISOString());
+  });
+
+  it("resumes collecting a type an administrator switches back on, without a restart", async () => {
+    const h = harness(consented({ collection: ["idle"] }));
+
+    await h.collector.tick(at(0));
+    expect(h.capturer.calls).toBe(0);
+
+    h.store.update({ collection: ["idle", "screenshots"] });
+    await h.collector.tick(at(5));
+
+    expect(h.capturer.calls).toBe(1);
   });
 });

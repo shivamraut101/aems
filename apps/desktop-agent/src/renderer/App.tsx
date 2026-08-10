@@ -38,6 +38,6 @@ export function App(): ReactElement {
 
   const screen = screenFor(state.status);
   if (screen === "login") return <LoginScreen onEnrolled={adopt} />;
-  if (screen === "consent") return <ConsentScreen onAccepted={adopt} />;
+  if (screen === "consent") return <ConsentScreen status={state.status} onAccepted={adopt} />;
   return <StatusScreen status={state.status} />;
 }

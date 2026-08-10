@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
 import { validationFailure } from "../lib/validation.js";
-import { assertConsent } from "../plugins/context.js";
+import { resolveCollection } from "../plugins/context.js";
 
 /**
  * Website restriction.
@@ -1265,7 +1265,9 @@ export const restrictionRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "forbidden", message: "Token does not match device", statusCode: 403 });
     }
 
-    const consent = await assertConsent(app.supabase, device.deviceId);
+    // Not gated by data type: a block event is an enforcement record — proof the agent
+    // refused a page — rather than an observation the admin can switch off.
+    const consent = await resolveCollection(app.supabase, device);
     if (!consent.ok) {
       return reply
         .code(403)

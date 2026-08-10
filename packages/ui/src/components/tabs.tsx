@@ -41,7 +41,12 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "flex w-full items-center gap-1 overflow-x-auto border-b",
+      // `overflow-y-hidden` is not decoration. CSS says an axis set to `visible`
+      // computes to `auto` when the other axis is `auto`, so `overflow-x-auto` alone
+      // makes this scrollable vertically too — and a strip one sub-pixel taller than
+      // its box paints a full vertical scrollbar, arrows and all, in the top-right
+      // corner of the tab bar. It looked like a control nobody could explain.
+      "flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden border-b",
       // Underline tabs, not the pill group: docs/design.md rules out huge rounded
       // shapes, and an underline reads as navigation rather than as a segmented button.
       className,
@@ -98,7 +103,9 @@ export interface NavTabsProps extends React.HTMLAttributes<HTMLElement> {
 const NavTabs = React.forwardRef<HTMLElement, NavTabsProps>(
   ({ className, label, children, ...props }, ref) => (
     <nav ref={ref} aria-label={label} className={cn("border-b", className)} {...props}>
-      <ul className="flex items-center gap-1 overflow-x-auto">{children}</ul>
+      {/* Same pairing as TabsList above, and for the same reason — this is the strip
+          the employee tabs actually render into. */}
+      <ul className="flex items-center gap-1 overflow-x-auto overflow-y-hidden">{children}</ul>
     </nav>
   ),
 );

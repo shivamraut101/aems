@@ -10,7 +10,7 @@ import {
 } from "@aems/analytics";
 import { canViewOthers, type SessionProfile } from "@aems/auth";
 import { AEMS_BUCKET } from "@aems/supabase";
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 // One definition of how long a screenshot link lives, shared with the route that
@@ -18,11 +18,29 @@ import { z } from "zod";
 import { productivityLookupFor } from "./activity.js";
 import { SIGNED_URL_TTL_SECONDS } from "./screenshots.js";
 import { validationFailure } from "../lib/validation.js";
+import { excludeHidden, hiddenProfileIds, profileVisibilityDenial } from "../lib/visibility.js";
+import { visibleRoleFilter } from "@aems/auth";
 
 const rangeSchema = z.object({
   profileId: z.string().uuid(),
   from: z.string().datetime({ offset: true }),
   to: z.string().datetime({ offset: true }),
+  /**
+   * Narrow the answer to one machine. Absent means every device this person has.
+   *
+   * Everything here used to aggregate a person's devices together, which is the right
+   * default — "how was their day" is a question about the person, and a laptop and a
+   * phone reporting at the same moment must be unioned rather than added, which is
+   * what `buildDayTimeline` does. But it left no way to ask the other question. An
+   * employee with a laptop and two phones produced one merged stream, so "what did
+   * they do on the field phone yesterday" had no answer, and neither did "this device
+   * stopped reporting on Tuesday — what was it doing before that".
+   *
+   * Optional rather than a second route: the arithmetic is identical either way. This
+   * only decides which rows enter it, so a filtered day and a whole day cannot drift
+   * apart the way two endpoints computing the same totals eventually would.
+   */
+  deviceId: z.string().uuid().optional(),
 });
 
 /**
@@ -129,6 +147,59 @@ const MAX_AGGREGATE_ROWS = 5000;
  */
 const STALE_IDLE_AFTER_MS = 4 * 60 * 60 * 1000;
 
+/**
+ * Company, person, and optionally one machine — as one object, applied with `.match`.
+ *
+ * `.match` rather than a conditional `.eq` chained onto each builder, because the
+ * failure mode of the latter is applying the device filter to four queries and
+ * forgetting the fifth. That does not throw and does not look wrong: it answers with
+ * one device's activity beside every device's idle, and the day silently stops adding
+ * up. One object cannot be applied partially.
+ *
+ * `company_id` stays in here rather than being inferred from `profile_id`. The API
+ * runs on the service-role key and bypasses RLS, so this is the tenant boundary on
+ * every route that uses it.
+ */
+function deviceScope(
+  companyId: string,
+  profileId: string,
+  deviceId: string | undefined,
+): { company_id: string; profile_id: string; device_id?: string } {
+  return deviceId === undefined
+    ? { company_id: companyId, profile_id: profileId }
+    : { company_id: companyId, profile_id: profileId, device_id: deviceId };
+}
+
+/**
+ * Which machine defines this person's hours, when the caller has not said.
+ *
+ * An explicit `?deviceId=` always wins — that is a manager asking about one machine
+ * on purpose, and second-guessing it would answer a question nobody asked.
+ *
+ * Otherwise the primary device (migration …0016), because idle is not device-scoped:
+ * activity, idle and breaks are unioned across every machine and then idle is
+ * subtracted from activity, so a laptop left untouched cancelled work being done on a
+ * phone at the same moment. Naming one machine the system of record is the fix the
+ * client chose over rewriting the reduction to run per device and union the results.
+ *
+ * `null` when nobody has chosen, and that is deliberate: the union across all devices
+ * is what every existing day was computed with, so a company that never opens this
+ * setting sees no number move.
+ */
+async function primaryDeviceFor(
+  app: FastifyInstance,
+  companyId: string,
+  profileId: string,
+): Promise<string | null> {
+  const { data } = await app.supabase
+    .from("devices")
+    .select("id")
+    .match({ company_id: companyId, profile_id: profileId, is_primary: true })
+    .maybeSingle();
+
+  return data?.id ?? null;
+}
+
 export const analyticsRoutes: FastifyPluginAsync = async (app) => {
   /** Headline numbers for one person over one window. */
   app.get("/productivity", { preHandler: app.requireUser }, async (request, reply) => {
@@ -142,9 +213,19 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to } = parsed.data;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
+
+    // Same scope object as the timeline, for the same reason — see the comment there.
+    // These two endpoints answer the same day and must narrow it identically, or the
+    // KPI row and the ribbon below it describe different sets of devices.
+    const scope = deviceScope(
+      session.companyId,
+      profileId,
+      parsed.data.deviceId ??
+        (await primaryDeviceFor(app, session.companyId, profileId)) ??
+        undefined,
+    );
 
     // Four columns and two, not `*`. `summarisePeriod` reads the two timestamps and
     // `rankApps` adds the app and its category — nothing here looks at `window_title`,
@@ -155,8 +236,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("activity_events")
         .select("app_name, category, started_at, ended_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("started_at", to)
         .or(`ended_at.gte.${from},ended_at.is.null`)
         .order("started_at", { ascending: false })
@@ -164,8 +244,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("idle_events")
         .select("idle_start_at, idle_end_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("idle_start_at", to)
         .or(`idle_end_at.gte.${from},idle_end_at.is.null`)
         .order("idle_start_at", { ascending: false })
@@ -197,11 +276,17 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const session = request.session!;
-    const { profileId, from, to, bucketSeconds } = parsed.data;
+    const { profileId, from, to, bucketSeconds, deviceId } = parsed.data;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
+
+    // An explicit deviceId wins; otherwise the primary device governs the day. Both
+    // resolve to the same one-object scope, so the five queries below cannot end up
+    // narrowed differently from each other.
+    const governing =
+      deviceId ?? (await primaryDeviceFor(app, session.companyId, profileId)) ?? undefined;
+    const scope = deviceScope(session.companyId, profileId, governing);
 
     // Five sources, not two. Scope §2.7's worked example opens with "09:00 Login" and
     // §2.2 makes break time a first-class number — neither is expressible from
@@ -218,8 +303,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("activity_events")
         .select("app_name, window_title, category, started_at, ended_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("started_at", to)
         .or(`ended_at.gte.${from},ended_at.is.null`)
         .order("started_at", { ascending: false })
@@ -227,8 +311,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("idle_events")
         .select("idle_start_at, idle_end_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("idle_start_at", to)
         .or(`idle_end_at.gte.${from},idle_end_at.is.null`)
         .order("idle_start_at", { ascending: false })
@@ -236,8 +319,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("break_events")
         .select("break_start_at, break_end_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("break_start_at", to)
         .or(`break_end_at.gte.${from},break_end_at.is.null`)
         .order("break_start_at", { ascending: false })
@@ -245,8 +327,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("work_sessions")
         .select("clock_in_at, clock_out_at")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .lte("clock_in_at", to)
         .or(`clock_out_at.gte.${from},clock_out_at.is.null`)
         .order("clock_in_at", { ascending: false })
@@ -254,8 +335,7 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       app.supabase
         .from("screenshots")
         .select("id, captured_at, storage_path, thumbnail_path, blurred, work_session_id")
-        .eq("company_id", session.companyId)
-        .eq("profile_id", profileId)
+        .match(scope)
         .gte("captured_at", from)
         .lte("captured_at", to)
         .order("captured_at", { ascending: false })
@@ -307,9 +387,8 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to } = parsed.data;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     // Bounded and ordered like every other aggregate here. This was the one read of
     // `activity_events` with neither: PostgREST stops at its own `max-rows` without
@@ -355,6 +434,12 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const now = Date.now();
     const dayStart = new Date(new Date(now).setHours(0, 0, 0, 0)).toISOString();
 
+    // Resolved first, not in parallel: every count below is filtered by it, and a KPI
+    // row that counted people the roster refuses to list is the disagreement this
+    // endpoint has already been bug-fixed for once.
+    const hidden = await hiddenProfileIds(app, session);
+    const excluded = hidden.length ? `(${hidden.join(",")})` : null;
+
     const [{ count: employeeCount }, { data: devices }, { data: sessions }] = await Promise.all([
       // `head: true` asks Postgres for the count and no rows. The previous version
       // requested `{ count: "exact" }` and then returned `employees?.length`, which
@@ -362,27 +447,39 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
       // to return — capped at its max-rows setting. It also counted off-boarded
       // people, so the moment an admin deactivated someone the home KPI said 4
       // while the People page said 3, on the same screen at the same moment.
-      app.supabase
-        .from("profiles")
-        .select("id", { count: "exact", head: true })
-        .eq("company_id", session.companyId)
-        .is("deactivated_at", null),
+      excludeHidden(
+        app.supabase
+          .from("profiles")
+          .select("id", { count: "exact", head: true })
+          .eq("company_id", session.companyId)
+          .is("deactivated_at", null),
+        "id",
+        excluded,
+      ),
       // "Heard from in the last two minutes" is a filter Postgres can apply, and only
       // `profile_id` is read from the result. Pulling the whole estate back to count
       // the online part costs rows in proportion to devices OWNED rather than devices
       // online — a 500-machine company shipped 500 rows to answer "how many are up".
       // `.gt` drops a null `last_seen_at` exactly as the JS guard it replaces did.
-      app.supabase
-        .from("devices")
-        .select("profile_id")
-        .eq("company_id", session.companyId)
-        .neq("status", "revoked")
-        .gt("last_seen_at", new Date(now - OFFLINE_AFTER_MS).toISOString()),
-      app.supabase
-        .from("work_sessions")
-        .select("profile_id, clock_in_at, clock_out_at")
-        .eq("company_id", session.companyId)
-        .gte("clock_in_at", dayStart),
+      excludeHidden(
+        app.supabase
+          .from("devices")
+          .select("profile_id")
+          .eq("company_id", session.companyId)
+          .neq("status", "revoked")
+          .gt("last_seen_at", new Date(now - OFFLINE_AFTER_MS).toISOString()),
+        "profile_id",
+        excluded,
+      ),
+      excludeHidden(
+        app.supabase
+          .from("work_sessions")
+          .select("profile_id, clock_in_at, clock_out_at")
+          .eq("company_id", session.companyId)
+          .gte("clock_in_at", dayStart),
+        "profile_id",
+        excluded,
+      ),
     ]);
 
     const activeProfiles = new Set((devices ?? []).map((d) => d.profile_id));
@@ -418,13 +515,23 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const now = Date.now();
 
-    const [{ data: people }, { data: openIdle }] = await Promise.all([
-      app.supabase
-        .from("profiles")
-        .select("id, full_name, email, devices(id, platform, label, last_seen_at, status)")
-        .eq("company_id", session.companyId)
-        .is("deactivated_at", null)
-        .order("full_name", { ascending: true }),
+    // Built ahead of the Promise.all because the rank filter is conditional and a
+    // super admin's query must carry no `or` at all.
+    let peopleQuery = app.supabase
+      .from("profiles")
+      .select("id, full_name, email, devices(id, platform, label, last_seen_at, status)")
+      .eq("company_id", session.companyId)
+      .is("deactivated_at", null);
+
+    const liveRoles = visibleRoleFilter(session.role);
+    if (liveRoles) {
+      peopleQuery = peopleQuery.or(
+        `role.in.(${liveRoles.join(",")}),id.eq.${session.profileId}`,
+      );
+    }
+
+    const [{ data: people }, { data: openIdle }, { data: todaySessions }] = await Promise.all([
+      peopleQuery.order("full_name", { ascending: true }),
       // An idle stretch with no end is one still running. This is the only source
       // for the amber row scope 4.3 shows literally — without it `StatusDot` can
       // render three states but `/live` can only ever produce two, so "Sarah, Idle"
@@ -435,11 +542,39 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
         .eq("company_id", session.companyId)
         .is("idle_end_at", null)
         .gte("idle_start_at", new Date(now - STALE_IDLE_AFTER_MS).toISOString()),
+      /*
+       * Today's clock-ins, so "went home" can be told from "went dark".
+       *
+       * The agent stops heartbeating the moment an employee ends their day — the
+       * gate sits above `maybeHeartbeat` — so they fell to Offline two minutes
+       * later, indistinguishable from a crashed agent or a closed laptop lid. A
+       * manager reading Offline could not tell "finished properly" from "the
+       * monitoring stopped working", which are opposite facts about the same row.
+       *
+       * There is no live signal for it and there does not need to be: ending the
+       * day closes the work session, so a session clocked out today with none left
+       * open is the record of somebody having finished.
+       */
+      app.supabase
+        .from("work_sessions")
+        .select("profile_id, clock_out_at")
+        .eq("company_id", session.companyId)
+        .gte("clock_in_at", new Date(new Date(now).setHours(0, 0, 0, 0)).toISOString()),
     ]);
 
     const idleSince = new Map(
       (openIdle ?? []).map((row) => [row.device_id, row.idle_start_at] as const),
     );
+
+    // Somebody who clocked out today and has nothing open again. An open session
+    // disqualifies them however many closed ones sit beside it — a person who ended
+    // their day and then started working again is working, and that is the later fact.
+    const finishedToday = new Set<string>();
+    const stillOpen = new Set<string>();
+    for (const row of todaySessions ?? []) {
+      (row.clock_out_at === null ? stillOpen : finishedToday).add(row.profile_id);
+    }
+    for (const profileId of stillOpen) finishedToday.delete(profileId);
 
     const seenAt = (value: string | null): number => {
       const parsed = value ? Date.parse(value) : NaN;
@@ -468,7 +603,19 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
 
       // Offline wins over idle: a laptop that stopped reporting mid-idle-stretch is
       // not "idle", it is gone, and leaving it amber would imply we still know.
-      const status = !online ? ("offline" as const) : idleAt ? ("idle" as const) : ("active" as const);
+      //
+      // "Finished" is a kind of offline, ranked between the two: it only applies to
+      // someone already quiet, and it says *why* they are quiet. Checked after
+      // `online` so a person who clocked out and then opened their laptop again reads
+      // as active — the agent reopens a session and the record catches up, but the
+      // heartbeat is the faster and more current of the two signals.
+      const status = online
+        ? idleAt
+          ? ("idle" as const)
+          : ("active" as const)
+        : finishedToday.has(person.id)
+          ? ("finished" as const)
+          : ("offline" as const);
 
       return {
         // Null for someone who has enrolled nothing. The dashboard keys the strip

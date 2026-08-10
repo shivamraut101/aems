@@ -234,11 +234,88 @@ async function collectActivity(deviceId: string): Promise<void> {
  * exact case §3 describes, a field employee out of coverage — still has its trail when
  * it reconnects, instead of a gap for precisely the period the feature exists to cover.
  */
+/**
+ * How location sampling is paced, and why it is not every cycle.
+ *
+ * The sync loop runs every 60 seconds in the foreground, and recording a point on each
+ * pass produced 1,440 rows per phone per day — a minute-by-minute movement record of a
+ * person, most of it the same coordinate repeated while they sat still. That is a
+ * storage problem and, far more importantly, a proportionality one: §3.5 asks for
+ * "current location and location history", not a continuous track.
+ *
+ * So: at most one point every five minutes, and only when it says something new. A
+ * point is kept if the phone has moved beyond `MOVED_METRES` — comfortably outside the
+ * ±100m network fixes these devices report, so jitter from a stationary phone does not
+ * read as movement — or if `KEEPALIVE_MS` has passed with no point at all.
+ *
+ * The keepalive is what stops "did not move" being indistinguishable from "stopped
+ * reporting". Without it a phone on a desk all afternoon produces nothing, and a
+ * manager cannot tell that from a dead agent. With it, a stationary phone reports four
+ * times an hour and a moving one up to twelve.
+ */
+const LOCATION_MIN_INTERVAL_MS = 5 * 60 * 1000;
+const LOCATION_KEEPALIVE_MS = 15 * 60 * 1000;
+const LOCATION_MOVED_METRES = 150;
+
+const LAST_LOCATION_KEY = "aems.lastLocation";
+
+interface LastLocation {
+  atMs: number;
+  latitude: number;
+  longitude: number;
+}
+
+async function loadLastLocation(): Promise<LastLocation | null> {
+  try {
+    const raw = await SecureStore.getItemAsync(LAST_LOCATION_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as LastLocation;
+    return Number.isFinite(parsed.atMs) ? parsed : null;
+  } catch {
+    // A corrupt marker costs one extra point, never the trail.
+    return null;
+  }
+}
+
+/** Metres between two coordinates — haversine, same as the dashboard's grouping. */
+function metresBetween(aLat: number, aLon: number, bLat: number, bLon: number): number {
+  const R = 6_371_000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLon = toRad(bLon - aLon);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
 async function collectLocation(deviceId: string): Promise<void> {
+  const last = await loadLastLocation();
+  const now = Date.now();
+
+  // Checked before the fix is taken, not after: a GPS read costs battery, and there is
+  // no point spending it four times out of five to discard the answer.
+  if (last !== null && now - last.atMs < LOCATION_MIN_INTERVAL_MS) return;
+
   const point = await samplePoint(deviceId);
   if (point === null) return;
 
+  if (last !== null) {
+    const moved = metresBetween(last.latitude, last.longitude, point.latitude, point.longitude);
+    const stale = now - last.atMs >= LOCATION_KEEPALIVE_MS;
+    if (moved < LOCATION_MOVED_METRES && !stale) return;
+  }
+
   await enqueue({ locations: [point] });
+
+  try {
+    await SecureStore.setItemAsync(
+      LAST_LOCATION_KEY,
+      JSON.stringify({ atMs: now, latitude: point.latitude, longitude: point.longitude }),
+    );
+  } catch {
+    // Losing the marker costs pacing on the next cycle, not the point just queued.
+  }
 }
 
 async function loadLastActivitySyncMs(): Promise<number> {

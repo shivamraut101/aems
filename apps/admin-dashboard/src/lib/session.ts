@@ -1,10 +1,10 @@
 /**
  * Session shape, route access policy and navigation.
  *
- * Deliberately framework-free and dependency-light: `middleware.ts` runs this on the
+ * Deliberately framework-free and dependency-light: `proxy.ts` runs this on the
  * edge, server components run it in Node, and the shell runs it in the browser. Keep
  * `next/*`, React and the Supabase clients out of this file — importing any of them
- * here would drag them into the middleware bundle.
+ * here would drag them into the proxy bundle.
  *
  * None of this is a security boundary. RLS is. This decides what to *render*, so the
  * UI stops offering actions the database will refuse.
@@ -318,9 +318,23 @@ function hasControlCharacter(value: string): boolean {
   return false;
 }
 
-/** Routes reachable without a session. Everything else goes through middleware. */
+/** Routes reachable without a session. Everything else goes through the proxy (src/proxy.ts). */
+/**
+ * Where somebody carrying a temporary password is sent, and the one route the
+ * must-change gate lets through — otherwise it would redirect the page it redirects to.
+ */
+export const SET_PASSWORD_PATH = "/set-password";
+
+/** Reachable with no session at all. */
 export function isPublicPath(pathname: string): boolean {
-  return pathname === "/login" || pathname.startsWith("/login/");
+  return (
+    pathname === "/login" ||
+    pathname.startsWith("/login/") ||
+    pathname === "/forgot-password" ||
+    // Supabase lands the recovery link here with a session in the URL fragment, which
+    // the middleware cannot see — so it has to be public or the link bounces to /login.
+    pathname === "/reset-password"
+  );
 }
 
 /**

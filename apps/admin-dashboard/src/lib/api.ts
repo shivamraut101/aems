@@ -299,7 +299,11 @@ export interface LiveWorkforceRow {
   lastSeenAt: string | null;
   /** Set only while `status` is "idle" — when the current idle stretch began. */
   idleSince: string | null;
-  status: "active" | "idle" | "offline";
+  /**
+   * `finished` means they clocked out today and nothing is open again — see the
+   * derivation in `analytics.ts`. It is a kind of offline that says why.
+   */
+  status: "active" | "idle" | "finished" | "offline";
 }
 
 export interface OverviewMetrics {
@@ -376,6 +380,35 @@ export interface DeviceRow {
   status: "active" | "offline" | "revoked";
   last_seen_at: string | null;
   enrolled_at: string;
+  /**
+   * The machine this person's working hours are computed from (migration …0016).
+   *
+   * At most one per person. When none is set, the day is the union across all their
+   * devices — which is what every day before this was computed with.
+   */
+  is_primary: boolean;
+
+  /**
+   * What the managed browser extension has told this machine's agent (migration …0021).
+   *
+   * `null` is a third answer and not a synonym for `false`: a phone never reports any of
+   * this, and neither does an agent built before the column existed. Reading null as "no
+   * extension" would accuse both of a gap they cannot have.
+   */
+  browser_extension_linked: boolean | null;
+  browser_extension_version: string | null;
+  browser_extension_seen_at: string | null;
+  /** How many browsers have connected in the last day. All are recorded the same way. */
+  browser_extension_count: number | null;
+  /**
+   * The agent's own answer to whether it is writing website addresses down.
+   *
+   * A different question from `browser_extension_linked`, and both are needed: the
+   * channel can be open while withdrawn consent or a switched-off collection scope means
+   * nothing reaches the record. Every positive claim about website data on this
+   * dashboard is conditioned on this rather than on the channel.
+   */
+  website_addresses_recorded: boolean | null;
 }
 
 // ---------------------------------------------------------------------------

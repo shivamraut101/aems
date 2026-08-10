@@ -38,6 +38,29 @@ export type RestrictionMode = "blocklist" | "allowlist";
 export type RestrictionAction = "block" | "allow";
 /** `domain` is a suffix-matched hostname; `url_pattern` is a `*`-globbed URL. */
 export type RestrictionMatchKind = "domain" | "url_pattern";
+/**
+ * The switchable collection vocabulary — the check constraint on
+ * `device_collection_settings.data_type`, and the element type of
+ * `device_enrollment_codes.denied_types` and `consent_records.granted_types`.
+ *
+ * Declared here with the other check-constraint unions so the database and the
+ * vocabulary cannot drift; `./collection.js` re-exports it with the platform sets and
+ * the copy, and is what application code should import.
+ *
+ * Work sessions, breaks and heartbeats are deliberately absent: a declared break is the
+ * employee's own statement rather than an observation, a work session is the container
+ * the rest hangs on (`profiles.monitoring_enabled` already switches that off per
+ * person), and heartbeat is consent-exempt so a revoked agent can still learn it was
+ * revoked.
+ */
+export type DataTypeId =
+  | "applications"
+  | "websites"
+  | "screenshots"
+  | "idle"
+  | "telemetry"
+  | "installed_apps"
+  | "location";
 
 export interface Database {
   public: {
@@ -160,6 +183,14 @@ export interface Database {
           cpu: string | null;
           ram_mb: number | null;
           storage_mb: number | null;
+          /** Migration ...0016. At most one per profile; see the column comment. */
+          is_primary: boolean;
+          /** Migration ...0021. See the column comments. */
+          browser_extension_linked: boolean | null;
+          browser_extension_version: string | null;
+          browser_extension_seen_at: string | null;
+          browser_extension_count: number | null;
+          website_addresses_recorded: boolean | null;
           created_at: string;
           updated_at: string;
         };
@@ -169,6 +200,13 @@ export interface Database {
           profile_id: string;
           platform: DevicePlatform;
           label: string;
+          is_primary?: boolean;
+          /** Migration ...0021. See the column comments. */
+          browser_extension_linked?: boolean | null;
+          browser_extension_version?: string | null;
+          browser_extension_seen_at?: string | null;
+          browser_extension_count?: number | null;
+          website_addresses_recorded?: boolean | null;
           os_version?: string;
           agent_version?: string;
           enrolled_at?: string;
@@ -211,6 +249,9 @@ export interface Database {
           ip_address: string | null;
           consented_at: string;
           revoked_at: string | null;
+          /** NULL on rows written before per-type consent existed — "the platform
+           *  default of the day", not "agreed to nothing". */
+          granted_types: DataTypeId[] | null;
         };
         Insert: {
           id?: string;
@@ -222,6 +263,7 @@ export interface Database {
           ip_address?: string | null;
           consented_at?: string;
           revoked_at?: string | null;
+          granted_types?: DataTypeId[] | null;
         };
         Update: Partial<Database["public"]["Tables"]["consent_records"]["Insert"]>;
         Relationships: [
@@ -707,6 +749,16 @@ export interface Database {
           consumed_device_id: string | null;
           created_by: string;
           created_at: string;
+          /** Data types this code's device may NOT collect, chosen at mint time. Read
+           *  off this row at redemption — the redeeming agent is unauthenticated, so
+           *  nothing it claims about its own scope can be trusted. */
+          denied_types: DataTypeId[];
+          /**
+           * The kind of machine this code was minted for (migration …0018), which is
+           * what decided the types the dialog offered. Null on codes minted before it —
+           * those accept any platform, exactly as they always did.
+           */
+          platform: DevicePlatform | null;
         };
         Insert: {
           id?: string;
@@ -718,6 +770,8 @@ export interface Database {
           consumed_device_id?: string | null;
           created_by: string;
           created_at?: string;
+          denied_types?: DataTypeId[];
+          platform?: DevicePlatform | null;
         };
         Update: Partial<Database["public"]["Tables"]["device_enrollment_codes"]["Insert"]>;
         Relationships: [
@@ -745,6 +799,61 @@ export interface Database {
           {
             foreignKeyName: "device_enrollment_codes_created_by_fkey";
             columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      /**
+       * Per-device exceptions to the platform's default collection scope.
+       *
+       * A DENY list: a missing row means the type is permitted. That is what makes the
+       * table safe to deploy empty — every device already in the field keeps collecting
+       * exactly what it collects today — and what makes a type added to the vocabulary
+       * later permitted on machines nobody has revisited.
+       *
+       * `changed_by` / `changed_at` are the attribution the compliance surfaces render,
+       * per (device, type) pair. They are not read from `audit_log_entries` because
+       * only super admins may select that table, so a manager could not read them.
+       */
+      device_collection_settings: {
+        Row: {
+          company_id: string;
+          device_id: string;
+          data_type: DataTypeId;
+          enabled: boolean;
+          /** Null once the person who made the decision leaves the company. */
+          changed_by: string | null;
+          changed_at: string;
+        };
+        Insert: {
+          company_id: string;
+          device_id: string;
+          data_type: DataTypeId;
+          enabled: boolean;
+          changed_by?: string | null;
+          changed_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["device_collection_settings"]["Insert"]>;
+        Relationships: [
+          {
+            foreignKeyName: "device_collection_settings_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "device_collection_settings_device_id_fkey";
+            columns: ["device_id"];
+            isOneToOne: false;
+            referencedRelation: "devices";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "device_collection_settings_changed_by_fkey";
+            columns: ["changed_by"];
             isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];

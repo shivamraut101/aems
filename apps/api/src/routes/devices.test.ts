@@ -51,6 +51,9 @@ const CHAINABLE = [
   "lte",
   "order",
   "limit",
+  // Rank visibility filters the roster with these two.
+  "not",
+  "or",
 ];
 
 function fakeSupabase(results: Record<string, Result[]>) {
@@ -171,6 +174,7 @@ describe("deviceReadDenial", () => {
 describe("GET /api/devices", () => {
   it("scopes to the caller's company and flattens the newest telemetry sample", async () => {
     const { client, calls } = fakeSupabase({
+      profiles: [{ data: [] }],
       devices: [
         {
           data: [
@@ -199,6 +203,7 @@ describe("GET /api/devices", () => {
 
   it("returns telemetry null when a device has never reported any", async () => {
     const { client } = fakeSupabase({
+      profiles: [{ data: [] }],
       devices: [{ data: [{ id: DEVICE, profile_id: ALICE, device_telemetry: [] }] }],
     });
 
@@ -519,12 +524,112 @@ describe("GET /api/devices/:deviceId/applications", () => {
   it("returns an empty list rather than null when nothing is inventoried", async () => {
     const { client } = fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_applications: [{ data: null }],
     });
     const app = await buildTestApp({ supabase: client, session: manager });
     const res = await app.inject({ method: "GET", url: `/api/devices/${DEVICE}/applications` });
 
     expect(res.json()).toEqual([]);
+  });
+});
+
+/**
+ * Rank visibility, at the route rather than in `@aems/auth`.
+ *
+ * The pure rule is tested in `packages/auth/src/roles.test.ts`; these prove the routes
+ * actually consult it. That gap is the whole reason the defect existed — `canViewRole`
+ * would have refused this all along, but no route ever asked it anything about the
+ * person being read.
+ */
+describe("rank visibility", () => {
+  const SUPER = "33333333-3333-4333-8333-333333333333";
+
+  it("refuses a manager the super admin's device, and reads nothing first", async () => {
+    const { client, calls } = fakeSupabase({
+      devices: [{ data: { id: DEVICE, profile_id: SUPER } }],
+      profiles: [{ data: { id: SUPER, role: "super_admin" } }],
+    });
+    const app = await buildTestApp({ supabase: client, session: manager });
+    const res = await app.inject({ method: "GET", url: `/api/devices/${DEVICE}/telemetry` });
+
+    // 404 rather than 403: telling a manager "forbidden" confirms the id is real, which
+    // is the first half of an attack on it. Same answer a stranger's uuid produces.
+    expect(res.statusCode).toBe(404);
+    expect(forTable(calls, "device_telemetry")).toHaveLength(0);
+  });
+
+  it("still lets a manager read an employee's device", async () => {
+    const { client } = fakeSupabase({
+      devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
+      device_telemetry: [{ data: [] }],
+    });
+    const app = await buildTestApp({ supabase: client, session: manager });
+    const res = await app.inject({ method: "GET", url: `/api/devices/${DEVICE}/telemetry` });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("keeps the super admin's roster unfiltered", async () => {
+    const superAdmin: SessionProfile = {
+      profileId: SUPER,
+      companyId: COMPANY,
+      email: "s@x",
+      role: "super_admin",
+    };
+    const { client, calls } = fakeSupabase({ devices: [{ data: [] }] });
+    const app = await buildTestApp({ supabase: client, session: superAdmin });
+
+    expect((await app.inject({ method: "GET", url: "/api/devices" })).statusCode).toBe(200);
+    // `visibleRoleFilter` returns null for a super admin, so no rank lookup happens at
+    // all — the roster query must not pay for a filter that excludes nobody.
+    expect(forTable(calls, "profiles")).toHaveLength(0);
+    expect(forTable(calls, "devices")[0]!.ops.some((op) => op.fn === "not")).toBe(false);
+  });
+
+  /**
+   * Reads were the reported bug; these two are writes, and they are worse. Reading the
+   * owner's screenshots is a privacy failure — deciding what their machine records, or
+   * which machine defines their hours, is a control one.
+   */
+  it("refuses a manager changing the super admin's collection scope", async () => {
+    const { client, calls } = fakeSupabase({
+      devices: [{ data: { id: DEVICE, profile_id: SUPER, label: "Erin Laptop" } }],
+      profiles: [{ data: { id: SUPER, role: "super_admin" } }],
+    });
+    const app = await buildTestApp({ supabase: client, session: manager });
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/devices/${DEVICE}/collection`,
+      payload: { types: { screenshots: false } },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(forTable(calls, "device_collection_settings")).toHaveLength(0);
+  });
+
+  it("refuses a manager making the super admin's device primary", async () => {
+    const { client } = fakeSupabase({
+      devices: [{ data: { id: DEVICE, profile_id: SUPER, status: "active", label: "Erin Laptop" } }],
+      profiles: [{ data: { id: SUPER, role: "super_admin" } }],
+    });
+    const app = await buildTestApp({ supabase: client, session: manager });
+    const res = await app.inject({ method: "POST", url: `/api/devices/${DEVICE}/primary` });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("excludes higher ranks from a manager's device roster", async () => {
+    const { client, calls } = fakeSupabase({
+      profiles: [{ data: [{ id: SUPER, role: "super_admin" }] }],
+      devices: [{ data: [] }],
+    });
+    const app = await buildTestApp({ supabase: client, session: manager });
+
+    expect((await app.inject({ method: "GET", url: "/api/devices" })).statusCode).toBe(200);
+    const notOp = forTable(calls, "devices")[0]!.ops.find((op) => op.fn === "not");
+    expect(notOp?.args).toEqual(["profile_id", "in", `(${SUPER})`]);
   });
 });
 
@@ -536,6 +641,7 @@ describe("GET /api/devices/:deviceId/telemetry", () => {
     ];
     const { client, calls } = fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_telemetry: [{ data: samples }],
     });
     const app = await buildTestApp({ supabase: client, session: manager });
@@ -552,6 +658,7 @@ describe("GET /api/devices/:deviceId/telemetry", () => {
   it("reports latest null for a device that has never sent telemetry", async () => {
     const { client } = fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_telemetry: [{ data: [] }],
     });
     const app = await buildTestApp({ supabase: client, session: manager });
@@ -563,6 +670,7 @@ describe("GET /api/devices/:deviceId/telemetry", () => {
   it("honours a limit and caps it", async () => {
     const { client, calls } = fakeSupabase({
       devices: [{ data: { id: DEVICE, profile_id: ALICE } }],
+      profiles: [{ data: { id: ALICE, role: "employee" } }],
       device_telemetry: [{ data: [] }],
     });
     const app = await buildTestApp({ supabase: client, session: manager });

@@ -20,7 +20,6 @@ import { describeError, useSession } from "@/lib/api";
 import { useCompanyPolicy, usePublishPolicy } from "@/lib/queries/settings";
 import {
   IDLE_THRESHOLD_OPTIONS,
-  MAX_OPEN_BREAK_OPTIONS,
   POLICY_ROLLOUT_NOTE,
   SCREENSHOT_INTERVAL_OPTIONS,
   intervalLabel,
@@ -34,6 +33,7 @@ import {
   screenshotsPerDay,
   trackedCategoriesLabel,
   type PolicyDraft,
+  MAX_OPEN_BREAK_OPTIONS,
   type PolicyRecord,
 } from "@/lib/queries/settings-view";
 
@@ -110,9 +110,6 @@ export function PolicySection() {
             <ValueSkeleton className="w-20" />
           </DefinitionRow>
           <DefinitionRow term="Idle threshold">
-            <ValueSkeleton className="w-20" />
-          </DefinitionRow>
-          <DefinitionRow term="Forgotten-break limit">
             <ValueSkeleton className="w-20" />
           </DefinitionRow>
           <DefinitionRow term="Tracked categories">
@@ -213,11 +210,9 @@ function PolicyFacts({ policy }: { policy: PolicyRecord }) {
 
       <DefinitionRow
         term="Forgotten-break limit"
-        hint="A break running longer than this is treated as one the employee forgot to end. The agent closes their day backdated to when the break started, so an evening is not recorded as tracked time."
+        hint="A break running longer than this is treated as one the employee forgot to end. The day is closed backdated to when the break began, so an evening spent on break is not recorded as tracked time."
       >
-        <span className="tabular font-medium">
-          {intervalLabel(policy.max_open_break_seconds)}
-        </span>
+        <span className="tabular font-medium">{intervalLabel(policy.max_open_break_seconds)}</span>
       </DefinitionRow>
 
       <DefinitionRow
@@ -392,7 +387,7 @@ function PolicyForm({
 
           <Field
             label="Forgotten-break limit"
-            hint="A break running longer than this is treated as one the employee forgot to end. Their day is closed backdated to when the break started, so an evening does not accrue as tracked time."
+            hint="A break running longer than this is treated as one the employee forgot to end, and the day is closed backdated to when it began. Set it above the longest break your people genuinely take."
             error={errors.maxOpenBreakSeconds?.message}
           >
             {(field) => (

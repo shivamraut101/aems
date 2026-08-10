@@ -105,20 +105,34 @@ machine, so no host manifest could name it.
 
 ---
 
-## What the agent must still provide
+## What the agent provides
 
-The restriction rules come from `policy.websiteRestrictions`, which **the API does not
-send yet** — the client's decision that website restriction is in scope landed after
-the schema was locked. `websiteRestrictionsOf` in the agent reads the field
-defensively, so the moment the policy payload carries
+**The API sends `policy.websiteRestrictions` on every heartbeat as of `3d05940`.** This
+section previously said it did not, which was true for as long as the rules were stored
+and served to nobody. Verified end to end on 2026-08-09: a heartbeat delivered
 
 ```json
 "websiteRestrictions": {
-  "rules": [{ "id": 1, "domain": "example.com", "reason": "Not needed for your role" }],
-  "contact": "it-support@acme.test"
+  "rules": [{ "id": 1295131892, "domain": "facebook.com", "reason": "Not part of company work." }],
+  "contact": "This site is not part of company work. Ask your manager if you need access."
 }
 ```
 
-rules start applying with no further change on either side. Until then the extension
-reports domains and blocks nothing, which is the correct fail-open for a control nobody
-has configured.
+to an enrolled Windows agent, which wrote it straight to `agent-config.json`.
+
+**Only `block` + `domain` rules arrive.** The API refuses to reshape the other kinds: a
+`url_pattern` squeezed into a domain field blocks the wrong pages, and an `allow` rule
+handed to something that reads its list as "refuse these" inverts its own meaning. Those
+come back as a count — `unenforceable` — rather than being silently dropped. Of three
+enabled rules in the test company, one was delivered and two were counted.
+
+**Nothing renders that count yet**, so an admin can still write a rule that is stored,
+listed back to them, and enforced nowhere.
+
+## The one thing left
+
+The extension has never run in a browser. The agent's half is live — the native
+messaging host is registered, the manifest pins the id, the policy arrives — but nothing
+has connected to it, so `browser-link.json` has never been written. Closing that is
+`ExtensionInstallForcelist` and a CRX signed with your own keypair, per *Before a real
+rollout* above.

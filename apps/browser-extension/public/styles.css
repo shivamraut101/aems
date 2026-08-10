@@ -86,6 +86,14 @@ p {
   padding: 16px;
 }
 
+/* The standing disclosure both pages carry. Quieter than the status it sits under, but
+   never small enough to read as fine print — it is the only place either page states
+   what this extension reports. */
+.foot {
+  font-size: 12.5px;
+  margin-top: 14px;
+}
+
 /* -- status ------------------------------------------------------------- */
 
 .status {

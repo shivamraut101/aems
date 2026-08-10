@@ -8,6 +8,7 @@
 
 import type {
   ConsentMethod,
+  DataTypeId,
   DevicePlatform,
   NetworkType,
   ReportFormat,
@@ -55,6 +56,17 @@ export interface DeviceEnrollmentResponse {
   /** Agents must block all collection until this is true. */
   consentRequired: boolean;
   policy: AgentPolicy;
+  /**
+   * What this machine may collect — the platform's capability minus whatever the
+   * enrolment code denied. Optional, and absent means "everything the platform
+   * supports", the same rule as a missing `device_collection_settings` row: an agent
+   * built before this field existed must not read its absence as "collect nothing".
+   *
+   * Deliberately not a field on `AgentPolicy`: a policy is company-scoped and its
+   * `version` is compared against the consented version, so hanging a per-device value
+   * off it would make that comparison mean two different things.
+   */
+  collection?: DataTypeId[];
 }
 
 /** The subset of a policy row an agent needs in order to behave correctly. */
@@ -64,23 +76,97 @@ export interface AgentPolicy {
   screenshotIntervalSeconds: number;
   idleThresholdSeconds: number;
   /**
-   * Seconds a declared break may run before the agent ends the day, backdated to when
-   * the break began.
+   * How long a declared break may run before the agent closes the day, backdated to
+   * when the break began.
    *
-   * **Optional, and absence must not be read as "no limit".** A policy an agent stored
-   * before this field existed has no value for it, and an agent that treats that as
-   * unlimited restores exactly the overnight-billing defect the guard was added for.
-   * Fall back to the column default (10800 — see migration `...0015`), never to
-   * infinity.
+   * Optional because an agent built before this field existed still enrols against a
+   * server that sends it, and one built after it may talk to a server that does not.
+   * Both agents fall back to their own default — absence means "use your default", not
+   * "never close an abandoned break".
    */
   maxOpenBreakSeconds?: number;
   trackedCategories: string[];
+  /**
+   * Sites the managed browser extension must refuse, and who to ask about one.
+   *
+   * Optional for the same reason as `maxOpenBreakSeconds`, and read defensively by
+   * `websiteRestrictionsOf` in the desktop agent — the extension was written against
+   * this field before anything populated it. Only `block` rules with a `domain` match
+   * appear: the bridge's rule is a host and a sentence, and a URL pattern squeezed into
+   * that shape would refuse the wrong pages. See `lib/website-restrictions.ts`.
+   */
+  websiteRestrictions?: {
+    rules: { id: number; domain: string; reason: string | null }[];
+    contact: string | null;
+  };
 }
 
 export interface ConsentSubmission {
   deviceId: string;
   policyVersion: string;
   method: ConsentMethod;
+  /**
+   * The data types the screen actually listed, and therefore what was agreed to.
+   *
+   * Optional because an agent that predates per-type consent submits without it, and
+   * the row it writes keeps `granted_types` NULL — "the platform default of the day",
+   * which is precisely what those signatures meant.
+   */
+  grantedTypes?: DataTypeId[];
+}
+
+/**
+ * The heartbeat's answer, widened from `{ ok: true }`.
+ *
+ * This is how a change of scope reaches a running agent, and it is a widened heartbeat
+ * rather than a new endpoint because heartbeat already runs every 60 seconds, already
+ * re-reads the device row, and is already the consent-exempt channel revocation travels
+ * on. A second poll for two string arrays buys nothing.
+ *
+ * Every field past `ok` is optional so an agent that ignores them — the Android one
+ * does — keeps working unchanged.
+ */
+export interface HeartbeatResponse {
+  ok: true;
+  /** The company policy in force, for comparison against the consented version. */
+  policyVersion?: string;
+  /**
+   * The whole policy in force, so a published change reaches an already-enrolled agent.
+   *
+   * Before this the agent read its policy once, at enrolment, and never again — every
+   * later edit to the screenshot interval, the idle threshold, the forgotten-break
+   * limit or the tracked categories stopped at the database. Optional so an agent built
+   * against the older contract is unaffected, and so the field can be omitted rather
+   * than guessed when the policy read fails.
+   */
+  policy?: AgentPolicy;
+  /** What the server is enforcing right now: granted ∩ allowed. */
+  collection?: DataTypeId[];
+  /**
+   * Types an admin switched on that the employee has not yet agreed to. Non-empty means
+   * the agent should route back to the consent screen; it must not collect them first.
+   */
+  pendingTypes?: DataTypeId[];
+}
+
+/**
+ * One row of a device's collection scope, as the dashboard reads it.
+ *
+ * Only types with an explicit decision appear — everything else is permitted by
+ * absence. `changedByName` is null when the person who made the change has left; the
+ * decision outlives them, which is why the attribution is on the settings row rather
+ * than looked up from the audit log.
+ */
+export interface DeviceCollectionSetting {
+  dataType: DataTypeId;
+  enabled: boolean;
+  changedByName: string | null;
+  changedAt: string;
+}
+
+/** Manager-only. Absent keys are left alone rather than reset to permitted. */
+export interface DeviceCollectionUpdate {
+  types: Partial<Record<DataTypeId, boolean>>;
 }
 
 /**
@@ -178,12 +264,57 @@ export interface ActivityBatchResult {
   acceptedLocations: number;
   /** Rows skipped because their clientEventId was already stored. */
   duplicates: number;
+  /**
+   * Rows the server refused because the device may not collect that type.
+   *
+   * Reported separately rather than folded into `duplicates`, which would tell an agent
+   * its data had already been stored when in fact it was dropped. Optional so an older
+   * API's response still parses; absent means nothing was refused.
+   */
+  refusedActivity?: number;
+  refusedIdle?: number;
+  refusedLocations?: number;
 }
 
 export interface HeartbeatInput {
   deviceId: string;
   /** Present when the agent currently has a session open. */
   workSessionId?: number | null;
+  /**
+   * What the managed browser extension has told this agent.
+   *
+   * On the heartbeat rather than a route of its own for the reason everything else
+   * rides it: this already runs every 60 seconds and already writes the devices row.
+   * Optional, and an agent that omits it leaves every column untouched — the Android
+   * agent never sends it and must not have its device row reinterpreted as "no
+   * extension" for saying nothing.
+   */
+  browserLink?: {
+    /** Whether any browser has opened the channel inside the agent's link window. */
+    linked: boolean;
+    extensionVersion?: string | null;
+    /** When a browser last opened the channel. The agent's clock. */
+    lastSeenAt?: string | null;
+    /**
+     * How many browsers on this machine are connected, all recorded identically.
+     *
+     * Reported because it is the only thing that makes a duplicate install visible;
+     * nothing behaves differently at two than at one.
+     */
+    browsers?: number;
+    /**
+     * Whether this agent is in fact writing website addresses down right now.
+     *
+     * A separate answer from `linked`, and the dashboard needs both. `linked` is about
+     * the channel; this is about consent, revocation and the device's collection scope,
+     * none of which the browser knows and all of which stop recording without closing
+     * anything. Reported by the agent rather than recomputed from `consent_records` and
+     * `device_collection_settings` because the agent is the process that decides, and a
+     * screen that tells an employee what is being recorded should quote the decision
+     * rather than a second reconstruction of it.
+     */
+    websitesRecorded?: boolean;
+  };
 }
 
 /**
@@ -389,6 +520,19 @@ export interface AppUsage {
   appName: string;
   category: string | null;
   seconds: number;
+  /**
+   * How many separate times the app came to the front.
+   *
+   * One per reported interval, which is one `activity_events` row. That is
+   * deliberately the same arithmetic the Android app does for the employee's own
+   * Activity screen — its `totalsFrom` counts sessions and notes that "each session is
+   * one activity_events row, so counting rows there and counting sessions here cannot
+   * drift apart". A manager and the person being measured have to see the same number.
+   *
+   * Optional so a caller reducing from something other than raw intervals can omit it
+   * rather than report a zero, which would read as "never opened".
+   */
+  opens?: number;
 }
 
 // ---------------------------------------------------------------------------

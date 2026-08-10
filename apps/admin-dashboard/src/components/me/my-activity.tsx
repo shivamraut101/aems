@@ -5,10 +5,11 @@ import Link from "next/link";
 
 import { DayRangeControl } from "@/components/employee/day-range-control";
 import { OverviewTab } from "@/components/employee/overview-tab";
-import { ErrorState, PanelSkeleton } from "@/components/states";
+import { CollectionOff, ErrorState, PanelSkeleton } from "@/components/states";
 import { useDayWindow } from "@/components/employee/use-day-window";
 import { useApiQuery, useSession } from "@/lib/api";
 import { currentPolicyQuery } from "@/lib/queries/account";
+import { ALL_DATA_TYPES, useCollectionOff } from "@/lib/queries/collection";
 
 import { MePanel, MeShell } from "./me-shell";
 import { capturesPerWorkingDay, idleCadence, screenshotCadence, toPolicyTerms } from "./monitoring-terms";
@@ -88,6 +89,12 @@ export function MyActivity() {
           reason, and an unexplained blank screen reads as a broken agent. */}
       {subject.state === "ready" && !subject.monitoringEnabled ? <MonitoringPaused /> : null}
 
+      {/* And the narrower version of the same fact: monitoring is on, but somebody
+          switched a data type off, so part of the day below is missing by decision
+          rather than by absence. `tone="subject"` because the reader here is the person
+          it was decided about. */}
+      {subject.state === "ready" ? <MyCollectionOff profileId={subject.profileId} /> : null}
+
       {subject.state === "ready" ? (
         /* appsHref={null}: an employee cannot reach /people/:id/apps, so no link. */
         <OverviewTab profileId={subject.profileId} appsHref={null} />
@@ -100,6 +107,23 @@ export function MyActivity() {
       <MonitoringSummary />
     </MeShell>
   );
+}
+
+/**
+ * The types an administrator has switched off, on this person's own screen.
+ *
+ * Kept apart from {@link MonitoringPaused}, which says something different: that one is
+ * the whole account stopped, this one is a narrower decision inside a running account.
+ * They cannot both appear — a paused account has no per-type rows to report — so this
+ * is not a second banner beside the first.
+ *
+ * Renders nothing while the read is pending or failed, and that direction is the point:
+ * telling somebody their screen is not being captured while it is would be the worst
+ * defect this screen could carry.
+ */
+function MyCollectionOff({ profileId }: { profileId: string }) {
+  const { off } = useCollectionOff(profileId);
+  return <CollectionOff tone="subject" {...off(...ALL_DATA_TYPES)} />;
 }
 
 function MonitoringPaused() {

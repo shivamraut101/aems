@@ -181,41 +181,122 @@ export interface WebsiteCoverage {
 }
 
 /**
+ * How recently an extension must have opened the channel to be believed.
+ *
+ * `browser_extension_linked` is a *stored* boolean and nothing ages it out: the agent's
+ * own window is a week, and a laptop that stops heartbeating at all leaves the last
+ * `true` on the row for good. Without a freshness test the Websites tab goes on saying
+ * "so this list is complete" for a machine that was retired months ago, which is exactly
+ * the collision this whole feature was added to remove, pointed the other way.
+ *
+ * A day, because a browser in use reconnects far more often — Chrome recycles the
+ * service worker constantly and every restart opens the channel again. It is the same
+ * window the agent counts browsers over, for the same reason, and the two are separate
+ * constants only because a dashboard cannot import from the desktop agent.
+ */
+export const EXTENSION_FRESH_MS = 24 * 60 * 60 * 1000;
+
+/** One device, reduced to the facts that decide whether it can see an address. */
+export interface WebsiteSource {
+  platform: DevicePlatform;
+  /** `browser_extension_linked`. Null means the device has never said. */
+  extension: boolean | null;
+  /** `browser_extension_seen_at` — when a browser last opened the channel. */
+  extensionSeenAt: string | null;
+  /**
+   * `website_addresses_recorded` — the agent's own answer to whether it is writing
+   * addresses down. False for withdrawn consent or a switched-off scope; null means the
+   * device has never said, which permits.
+   */
+  recording: boolean | null;
+}
+
+/**
+ * Whether a device's extension link is recent enough to make a claim on.
+ *
+ * Two loose arguments rather than a device, so the strip on two device panels and the
+ * coverage note on the Websites tab cannot answer this question differently — three
+ * readings of one stored boolean is how a dashboard ends up promising completeness on
+ * one screen and warning about it on the next.
+ */
+export function extensionLive(
+  linked: boolean | null,
+  seenAt: string | null,
+  now: number = Date.now(),
+): boolean {
+  if (linked !== true) return false;
+
+  const at = seenAt ? Date.parse(seenAt) : NaN;
+  // A `true` with no stamp behind it is an answer nothing can age, so it is not one this
+  // takes at face value. A stamp from the future is a clock nobody can reason about.
+  if (!Number.isFinite(at) || at > now) return false;
+
+  return now - at <= EXTENSION_FRESH_MS;
+}
+
+/**
  * How much of scope §2.5 this person's fleet can answer.
  *
- * The agent reads a real address over AppleScript on macOS and has no supported
- * way to do so on Windows, where it falls back to the window title and refuses to
- * guess from it. So a Windows day legitimately shows a handful of domains and a
- * macOS day shows all of them. Saying that on the screen is the difference between
- * a thin report and a report that looks broken — and it is the honest framing,
- * because the missing rows are a platform limit, not idle time.
+ * Two ways a device produces a real address: the macOS agent reads one over AppleScript,
+ * and a Windows machine reports one only while the managed browser extension is
+ * connected. Without it Windows falls back to the window title and refuses to guess, so
+ * that day legitimately shows a handful of domains. Saying that on the screen is the
+ * difference between a thin report and a report that looks broken — and it is the honest
+ * framing, because the missing rows are a platform limit, not idle time.
+ *
+ * A Windows device that has never reported either way counts as blind rather than as
+ * covered. An unanswered question is not a yes, and reading it as one would quietly
+ * upgrade "we do not know" into "this list is complete".
+ *
+ * Three things have to be true before a machine counts as reading addresses, and only
+ * the first is about the platform: it must be able to read one, something must have
+ * confirmed that recently, and the agent must actually be recording them. A connected
+ * extension on a device whose `websites` scope an administrator switched off produces
+ * exactly as few rows as no extension at all.
  */
-export function websiteCoverage(platforms: readonly DevicePlatform[]): WebsiteCoverage {
-  const mac = platforms.includes("macos");
-  const windows = platforms.includes("windows");
+export function websiteCoverage(
+  sources: readonly WebsiteSource[],
+  now: number = Date.now(),
+): WebsiteCoverage {
+  const canRead = (source: WebsiteSource) =>
+    (source.platform === "macos" ||
+      (source.platform === "windows" &&
+        extensionLive(source.extension, source.extensionSeenAt, now))) &&
+    source.recording !== false;
 
-  if (mac && windows) {
+  const reads = sources.some(canRead);
+  const blind = sources.some((source) => source.platform === "windows" && !canRead(source));
+
+  if (reads && blind) {
     return {
       level: "mixed",
       note:
-        "This person works on both macOS and Windows. Addresses are read from the browser on macOS; " +
-        "on Windows only a domain the window title spells out is recorded, so Windows days list fewer sites.",
+        "Some of this person's devices report full addresses and some do not. A Windows computer that " +
+        "is not reporting them records only a domain its window title spelled out, so days worked on " +
+        "that machine list fewer sites. The Devices tab says which is which.",
     };
   }
 
-  if (windows) {
+  // Deliberately does not name the cause. A Windows machine reports no address when the
+  // extension is missing, when it stopped connecting, and when website collection has
+  // been switched off for it — three different facts with different owners, and this
+  // panel is not the place that can tell them apart. The Devices tab is, and it says so.
+  if (blind) {
     return {
       level: "window-title",
       note:
-        "On Windows the agent reads the domain from the browser window title and never guesses one, " +
-        "so only pages whose title spells out an address appear here. This list is incomplete by design.",
+        "This person's Windows computer is not reporting browser addresses, and Windows gives the agent " +
+        "no other way to read one. Only pages whose window title spelled out an address appear here, so " +
+        "this list is incomplete — it is not a record of a day without browsing. The Devices tab says why.",
     };
   }
 
-  if (mac) {
+  if (reads) {
     return {
       level: "browser-url",
-      note: "On macOS the agent reads the address directly from the browser, so this list is complete.",
+      note:
+        "Addresses are read directly from the browser on this person's devices — by the agent on macOS, " +
+        "by the managed AEMS browser extension on Windows — so this list is complete.",
     };
   }
 

@@ -9,7 +9,12 @@
  * state.
  */
 
-export type PresenceStatus = "active" | "idle" | "offline";
+/**
+ * Mirrors `components/status-dot`. `finished` only ever arrives from `/api/analytics/live`
+ * — the local derivation below cannot produce it, because knowing somebody clocked out
+ * needs the work-session table this module does not read.
+ */
+export type PresenceStatus = "active" | "idle" | "finished" | "offline";
 
 export type DevicePlatform = "windows" | "macos" | "android";
 

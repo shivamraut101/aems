@@ -47,16 +47,10 @@ export const policyDraftSchema = z.object({
   // The column check is `>= 30`. The upper bound is ours: an idle threshold of a day
   // is not a policy, it is idle detection switched off while still looking enabled.
   idleThresholdSeconds: z.number().int().min(30).max(3600),
-  // Bounds match the column check in migration `...0015`, and both directions are real
-  // failures rather than tidiness: below 15 minutes the guard stops catching forgotten
-  // breaks and starts cutting genuine ones short, inventing a second work session in
-  // someone's timeline; above 12 hours it can no longer catch the overnight case it
-  // exists for, so it is the feature switched off while still reading as configured.
-  //
-  // Defaulted rather than required, so a client written against the previous shape of
-  // this route still publishes a valid policy instead of a 400 — and lands on the same
-  // value the column would have given it.
-  maxOpenBreakSeconds: z.number().int().min(900).max(43200).default(10800),
+  // The column check is `>= 3600`. The 12-hour ceiling is ours: a guard that outlasts
+  // the working day it protects has stopped being a guard, and the case it exists to
+  // catch — a break declared at 6pm and never ended — would sail straight through it.
+  maxOpenBreakSeconds: z.number().int().min(3600).max(43_200).default(18_000),
   trackedCategories: z.array(z.string().min(1).max(60)).max(50).default([]),
   // Accepted so an admin can mirror an externally agreed version label. Constrained
   // because it is quoted back in consent records and audit metadata.

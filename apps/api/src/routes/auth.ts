@@ -1,3 +1,5 @@
+import { DATA_TYPE_IDS, type DataTypeId } from "@aems/types";
+import type { AemsSupabaseClient } from "@aems/supabase";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
@@ -8,7 +10,58 @@ const consentSchema = z.object({
   deviceId: z.string().uuid(),
   policyVersion: z.string().min(1),
   method: z.enum(["in_app_dialog", "onboarding_portal", "signed_document"]),
+  /**
+   * The data types the screen actually listed, and therefore what was agreed to.
+   *
+   * Optional: an agent that predates per-type consent submits without it, and the row
+   * it writes keeps `granted_types` NULL — "the platform default of the day", which is
+   * exactly what those signatures meant. A `[]` would mean "agreed to nothing".
+   */
+  grantedTypes: z
+    .array(z.enum(DATA_TYPE_IDS as unknown as [DataTypeId, ...DataTypeId[]]))
+    .optional(),
 });
+
+function sameTypes(a: DataTypeId[] | null, b: DataTypeId[] | null | undefined): boolean {
+  if (a === null || a === undefined) return b === null || b === undefined;
+  if (b === null || b === undefined) return false;
+  return a.length === b.length && [...a].sort().join() === [...b].sort().join();
+}
+
+/**
+ * Withdraws a live consent that no longer describes what is being agreed to.
+ *
+ * `consent_records` allows exactly one live row per device (a partial unique index), so
+ * without this an employee agreeing to a type their administrator switched on after
+ * they first consented would 409 forever — and the server would go on refusing that
+ * type, because it enforces `granted ∩ allowed`. The superseded row stays, revoked,
+ * because the trail of what was agreed to and when is the point of the table.
+ *
+ * An identical re-submission is left alone, so a replayed consent still 409s as it did.
+ */
+async function supersedeConsent(
+  supabase: AemsSupabaseClient,
+  companyId: string,
+  deviceId: string,
+  policyVersion: string,
+  grantedTypes: DataTypeId[] | undefined,
+): Promise<void> {
+  const { data: live } = await supabase
+    .from("consent_records")
+    .select("id, policy_version, granted_types")
+    .eq("device_id", deviceId)
+    .eq("company_id", companyId)
+    .is("revoked_at", null)
+    .maybeSingle();
+
+  if (!live) return;
+  if (live.policy_version === policyVersion && sameTypes(live.granted_types, grantedTypes)) return;
+
+  await supabase
+    .from("consent_records")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("id", live.id);
+}
 
 /**
  * The device-token variant. No `deviceId`: the token names the device, and accepting
@@ -49,7 +102,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const session = request.session!;
-    const { deviceId, policyVersion, method } = parsed.data;
+    const { deviceId, policyVersion, method, grantedTypes } = parsed.data;
 
     // Two independent reads, so one round trip rather than two. Neither is a write and
     // the ownership refusal below still comes first: what a caller who fails it sees is
@@ -80,6 +133,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    await supersedeConsent(app.supabase, session.companyId, deviceId, policyVersion, grantedTypes);
+
     const { data: consent, error } = await app.supabase
       .from("consent_records")
       .insert({
@@ -89,6 +144,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         policy_version: policyVersion,
         method,
         ip_address: request.ip,
+        granted_types: grantedTypes ?? null,
       })
       .select("id")
       .single();
@@ -107,7 +163,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         action: "consent.granted",
         targetType: "device",
         targetId: deviceId,
-        metadata: { policyVersion, method },
+        metadata: { policyVersion, method, grantedTypes: grantedTypes ?? null },
       },
       app.log,
     );
@@ -136,7 +192,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const device = request.device!;
-    const { policyVersion, method } = parsed.data;
+    const { policyVersion, method, grantedTypes } = parsed.data;
 
     const { data: policy } = await app.supabase
       .from("policies")
@@ -153,6 +209,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    await supersedeConsent(
+      app.supabase,
+      device.companyId,
+      device.deviceId,
+      policyVersion,
+      grantedTypes,
+    );
+
     const { data: consent, error } = await app.supabase
       .from("consent_records")
       .insert({
@@ -162,6 +226,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         policy_version: policyVersion,
         method,
         ip_address: request.ip,
+        granted_types: grantedTypes ?? null,
       })
       .select("id")
       .single();
@@ -180,7 +245,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         action: "consent.granted",
         targetType: "device",
         targetId: device.deviceId,
-        metadata: { policyVersion, method, via: "device_token" },
+        metadata: { policyVersion, method, via: "device_token", grantedTypes: grantedTypes ?? null },
       },
       app.log,
     );

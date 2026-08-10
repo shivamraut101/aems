@@ -3,6 +3,7 @@
 import {
   Badge,
   Button,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -11,6 +12,8 @@ import {
   TableRow,
 } from "@aems/ui";
 import { Laptop, ShieldOff, Smartphone } from "lucide-react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import {
@@ -20,6 +23,7 @@ import {
   secondaryButtonClass,
 } from "@/components/dialog";
 import { RelativeTime } from "@/components/relative-time";
+import { BrowserLinkStrip } from "@/components/employee/browser-link";
 import { devicesQuery } from "@/components/employee/employee-queries";
 import {
   EmptyState,
@@ -30,9 +34,25 @@ import {
 } from "@/components/employee/states";
 import { queryViewState } from "@/components/states";
 import { describeError, useApiQuery, useSession, type DeviceRow } from "@/lib/api";
+import { calendarDate } from "@/lib/format";
+import {
+  DATA_TYPE_LABEL,
+  oneType,
+  typesFor,
+  useDeviceCollection,
+  useUpdateDeviceCollection,
+} from "@/lib/queries/collection";
 import { devicesForProfile, gigabytes, osLabel, platformLabel } from "@/lib/queries/usage";
 
-import { sortApplications, useDeviceApplications, useRevokeDevice } from "./device-queries";
+import {
+  sortApplications,
+  useDeviceApplications,
+  useDeviceTelemetry,
+  useRevokeDevice,
+  useSetPrimaryDevice,
+  type DeviceTelemetryRow,
+} from "./device-queries";
+import { dayHref } from "@/components/employee/tabs";
 
 /**
  * Presence, once.
@@ -150,15 +170,35 @@ function Lead({ devices }: { devices: DeviceRow[] }) {
 }
 
 function DevicePanel({ device }: { device: DeviceRow }) {
-  const Icon = device.platform === "android" ? Smartphone : Laptop;
+  const isPhone = device.platform === "android";
+  const Icon = isPhone ? Smartphone : Laptop;
   const status = DEVICE_STATUS[device.status];
 
   const { data: session } = useSession();
   const [revoking, setRevoking] = useState(false);
 
+  // Only phones send these. Fetching for a laptop would be a request that can only
+  // ever answer `null`.
+  const telemetry = useDeviceTelemetry(device.id, isPhone);
+  const latest = telemetry.data?.latest ?? null;
+
+  const search = useSearchParams();
+  const primary = useSetPrimaryDevice();
+  // `requireManager` on the API. This only avoids offering an employee reading their
+  // own devices a button that ends in a 403.
+  const canSetPrimary =
+    (session?.role === "super_admin" || session?.role === "manager") &&
+    device.status !== "revoked";
+
   // Revoking is `requireSuperAdmin` on the API. This only stops a manager being
   // offered a button that ends in a 403.
   const canRevoke = session?.role === "super_admin" && device.status !== "revoked";
+
+  // `PATCH .../collection` is `requireManager`. An employee still *reads* the list —
+  // non-negotiable #3 — they are just not offered switches that would end in a 403.
+  const canEdit =
+    (session?.role === "super_admin" || session?.role === "manager") &&
+    device.status !== "revoked";
 
   const applications = useDeviceApplications(device.id);
   const installed = useMemo(
@@ -181,6 +221,37 @@ function DevicePanel({ device }: { device: DeviceRow }) {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          {/* The day view for this one machine. Everything above this row answers
+              "what is this device"; this answers "what did it do", which is the
+              question the seven person-level tabs could not be asked. */}
+          <Link
+            href={dayHref(
+              `/people/${device.profile_id}/devices/${device.id}`,
+              search.toString(),
+              search.get("date"),
+            )}
+            className="text-xs font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+          >
+            View activity
+          </Link>
+
+          {device.is_primary ? (
+            <Badge variant="secondary">Primary</Badge>
+          ) : canSetPrimary ? (
+            <button
+              type="button"
+              onClick={() => primary.mutate(device.id)}
+              disabled={primary.isPending}
+              className="rounded text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              // Said in full here rather than as a bare "Make primary", because the
+              // consequence is not obvious from the words: it moves which machine
+              // this person's reported hours are computed from.
+              title="Compute this person's working hours from this device"
+            >
+              {primary.isPending ? "Setting…" : "Make primary"}
+            </button>
+          ) : null}
+
           <span className="tabular text-xs text-muted-foreground">
             Last heartbeat <RelativeTime iso={device.last_seen_at} />
           </span>
@@ -198,9 +269,25 @@ function DevicePanel({ device }: { device: DeviceRow }) {
 
       {/* A definition list rather than a table: these are facts about one machine, not
           rows to compare against each other. */}
+      {/* Phones report live state a laptop has no equivalent for — battery, network,
+          screen-on time — and cannot report a CPU model at all. Rendering one grid for
+          both made "Android does not expose this" indistinguishable from "collection
+          failed": a permanent `CPU —` reads as a gap rather than as a category error.
+          So the phone gets the fields it actually has, and is not asked the rest. */}
+      {isPhone ? (
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3.5 px-4 py-4 text-sm sm:grid-cols-4 sm:px-5">
+          <Spec label="Battery" value={batteryLabel(latest, telemetry.isPending)} />
+          <Spec label="Network" value={networkLabel(latest, telemetry.isPending)} />
+          <Spec label="Screen on today" value={screenOnLabel(latest, telemetry.isPending)} />
+          <Spec label="Storage free" value={freeStorageLabel(latest, device, telemetry.isPending)} />
+        </dl>
+      ) : null}
+
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3.5 px-4 py-4 text-sm sm:grid-cols-3 sm:px-5 lg:grid-cols-4">
         <Spec label="Operating system" value={osLabel(device.platform, device.os_version)} />
-        <Spec label="CPU" value={device.cpu?.trim() || null} />
+        {/* Android exposes no CPU model, so the phone is not asked. A dash here is
+            permanent and says nothing a reader can act on. */}
+        {isPhone ? null : <Spec label="CPU" value={device.cpu?.trim() || null} />}
         <Spec label="Memory" value={gigabytes(device.ram_mb)} />
         <Spec label="Storage" value={gigabytes(device.storage_mb)} />
         <Spec label="Agent" value={device.agent_version?.trim() || null} />
@@ -208,22 +295,42 @@ function DevicePanel({ device }: { device: DeviceRow }) {
         <Spec label="Device label" value={device.label} />
         <Spec label="Device ID" value={device.id} mono />
         {/* Scope §7 lists installed applications as part of desktop inventory. The
-            agent has been reporting them since enrolment; nothing read them back. */}
+            agent has been reporting them since enrolment; nothing read them back.
+            On Android this is not the same list: since API 30 the full inventory needs
+            QUERY_ALL_PACKAGES, which this app does not request, so only apps that were
+            actually used appear. Labelled differently so the two are not compared. */}
         <Spec
-          label="Applications"
+          label={isPhone ? "Apps seen" : "Applications"}
           value={
             applications.isPending
               ? "Reading…"
               : applications.isError
                 ? "Unavailable"
                 : installed.length === 0
-                  ? "None reported"
+                  ? isPhone
+                    ? "Usage access not granted"
+                    : "None reported"
                   : `${installed.length} reported`
           }
         />
       </dl>
 
+      {/* Said once, plainly, rather than left to be inferred from four empty tabs.
+          docs/design.md positions this as workforce intelligence rather than
+          surveillance, and the honest form of that is stating what is NOT collected —
+          this is also the disclosure the employee sees on their own phone. */}
+      {isPhone ? (
+        <p className="border-t px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          Phones do not record screenshots, window titles or websites. What is collected
+          is app usage, screen-on time and the device readings above.
+        </p>
+      ) : null}
+
+      <BrowserLinkStrip device={device} className="border-t px-4 py-3 sm:px-5" />
+
       {installed.length > 0 ? <InstalledApplications rows={installed} /> : null}
+
+      <CollectionScope device={device} canEdit={canEdit} />
 
       {device.status === "revoked" ? (
         <p className="border-t px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
@@ -236,6 +343,118 @@ function DevicePanel({ device }: { device: DeviceRow }) {
         <RevokeDeviceDialog device={device} onClose={() => setRevoking(false)} />
       ) : null}
     </Panel>
+  );
+}
+
+/**
+ * What this one machine may collect, and who last decided each answer.
+ *
+ * Always rendered, never conditional on something being switched off: the reader's
+ * question is "what is this laptop recording", and a panel that only appears once
+ * somebody has narrowed the scope answers it for the exceptional case and stays silent
+ * for the normal one. That is also what makes it the read surface for an employee
+ * looking at their own devices, which non-negotiable #3 requires.
+ *
+ * Only the types the platform can physically report are listed. Offering an admin a
+ * Location switch on a laptop would be a control that changes nothing — desktop
+ * "location" is a Wi-Fi lookup accurate to tens of metres and the agents do not collect
+ * it — and a switch that does nothing is worse than an absent one.
+ *
+ * A switch is used rather than a checkbox because this takes effect on save, not on a
+ * later submit; it is navy rather than indigo because indigo marks model output, and
+ * nothing here is inferred.
+ */
+function CollectionScope({ device, canEdit }: { device: DeviceRow; canEdit: boolean }) {
+  const collection = useDeviceCollection(device.id);
+  const update = useUpdateDeviceCollection(device.id);
+
+  const settings = useMemo(() => {
+    const byType = new Map(collection.data?.map((row) => [row.dataType, row]) ?? []);
+    return typesFor(device.platform).map((id) => ({ id, row: byType.get(id) ?? null }));
+  }, [collection.data, device.platform]);
+
+  const offCount = settings.filter((entry) => entry.row?.enabled === false).length;
+
+  return (
+    <details className="border-t">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-2.5 text-xs font-medium transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-5 [&::-webkit-details-marker]:hidden">
+        What this device collects
+        {/* The count is the reason to open it. "6 of 6" is as worth saying as "4 of 6":
+            a reader who cannot see the total cannot tell a full scope from an unread one. */}
+        <Badge variant={offCount > 0 ? "offline" : "secondary"}>
+          {collection.isPending
+            ? "Reading…"
+            : collection.isError
+              ? "Could not be read"
+              : `${settings.length - offCount} of ${settings.length} on`}
+        </Badge>
+      </summary>
+
+      <div className="space-y-3 border-t px-4 py-3 sm:px-5">
+        {collection.isError ? (
+          /* Never "everything is on" on a failed read. An unanswered question and a
+             known answer must not look the same on the one screen that says what is
+             being recorded about a person. */
+          <p role="alert" className="text-xs text-muted-foreground">
+            This device&apos;s collection settings could not be read, so what is listed
+            below cannot be confirmed either way.{" "}
+            <button
+              type="button"
+              onClick={() => void collection.refetch()}
+              className="rounded font-medium underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Try again
+            </button>
+          </p>
+        ) : (
+          <>
+            <ul className="divide-y">
+              {settings.map(({ id, row }) => {
+                const enabled = row?.enabled ?? true;
+                return (
+                  <li key={id} className="flex items-start justify-between gap-4 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-sm">{DATA_TYPE_LABEL[id]}</p>
+                      {/* Who and when, on the row it belongs to. Attribution is stored
+                          per (device, type) precisely so two administrators' two
+                          decisions on two days do not both read as the later one. */}
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {row
+                          ? `${enabled ? "Switched on" : "Switched off"} by ${
+                              row.changedByName?.trim() || "an administrator who is no longer listed"
+                            } on ${calendarDate(row.changedAt) ?? "an unrecorded date"}`
+                          : "Collected since this device was enrolled"}
+                      </p>
+                    </div>
+
+                    {canEdit ? (
+                      <Switch
+                        checked={enabled}
+                        disabled={update.isPending}
+                        aria-label={DATA_TYPE_LABEL[id]}
+                        onCheckedChange={(next) => update.mutate(oneType(id, next))}
+                      />
+                    ) : (
+                      <Badge variant={enabled ? "success" : "offline"} dot>
+                        {enabled ? "On" : "Off"}
+                      </Badge>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+
+            {update.isError ? <FormError message={describeError(update.error)} /> : null}
+
+            <p className="text-xs text-muted-foreground">
+              {canEdit
+                ? "The agent picks this up on its next heartbeat, within a minute. Switching something off stops it immediately and keeps what was already recorded. Switching one back on collects nothing until the employee has agreed to it on the device — they were never asked about a type that was off."
+                : "This is the list you agreed to on this device. Only an administrator can change it, and anything switched back on has to be agreed to again before it is collected."}
+            </p>
+          </>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -358,6 +577,66 @@ function RevokeDeviceDialog({ device, onClose }: { device: DeviceRow; onClose: (
  * An unreported value renders as a dash, never as an empty cell: an agent that has not
  * sent a CPU string and a machine with no CPU must not look the same.
  */
+/**
+ * The four phone readings, each said only when it is actually known.
+ *
+ * `null` renders as an em dash, which is right here and wrong on the desktop grid:
+ * these are live values that legitimately have not arrived yet, not fields the
+ * platform cannot answer. "Reading…" while the request is in flight keeps the two
+ * apart, because a phone that has not checked in and a phone with a flat battery must
+ * not look the same.
+ */
+function batteryLabel(row: DeviceTelemetryRow | null, pending: boolean): string | null {
+  if (pending) return "Reading…";
+  if (!row || row.battery_level === null) return null;
+  return `${String(row.battery_level)}%${row.battery_charging === true ? " · charging" : ""}`;
+}
+
+const NETWORK_LABEL: Record<string, string> = {
+  wifi: "Wi-Fi",
+  cellular: "Mobile data",
+  ethernet: "Ethernet",
+  offline: "No connection",
+};
+
+function networkLabel(row: DeviceTelemetryRow | null, pending: boolean): string | null {
+  if (pending) return "Reading…";
+  if (!row?.network_type) return null;
+  return NETWORK_LABEL[row.network_type] ?? row.network_type;
+}
+
+/**
+ * Today's total, from the newest sample — never a sum.
+ *
+ * `screen_active_seconds` accumulates from local midnight and is reset by the agent at
+ * the day boundary, so the latest row already IS the day's figure. Migration …0015
+ * carries the same warning on the column itself.
+ */
+function screenOnLabel(row: DeviceTelemetryRow | null, pending: boolean): string | null {
+  if (pending) return "Reading…";
+  const seconds = row?.screen_active_seconds;
+  if (seconds === null || seconds === undefined) return null;
+
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return hours > 0 ? `${String(hours)}h ${String(minutes)}m` : `${String(minutes)}m`;
+}
+
+/** Free space against the total, because 4 GB free means nothing without the capacity. */
+function freeStorageLabel(
+  row: DeviceTelemetryRow | null,
+  device: DeviceRow,
+  pending: boolean,
+): string | null {
+  if (pending) return "Reading…";
+  const free = row?.storage_free_mb;
+  if (free === null || free === undefined) return null;
+
+  const freeGb = Math.round(free / 1024);
+  const total = device.storage_mb;
+  return total ? `${String(freeGb)} of ${String(Math.round(total / 1024))} GB` : `${String(freeGb)} GB`;
+}
+
 function Spec({ label, value, mono }: { label: string; value: string | null; mono?: boolean }) {
   const text = value && value !== "—" ? value : null;
 
@@ -369,11 +648,4 @@ function Spec({ label, value, mono }: { label: string; value: string | null; mon
       </dd>
     </div>
   );
-}
-
-function calendarDate(iso: string | null): string | null {
-  if (!iso) return null;
-  const parsed = Date.parse(iso);
-  if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 }

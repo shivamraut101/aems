@@ -2,6 +2,7 @@ import type {
   ActivityBatch,
   ActivityBatchResult,
   HeartbeatInput,
+  HeartbeatResponse,
   ScreenshotUploadResult,
 } from "@aems/types";
 import { describe, expect, it } from "vitest";
@@ -80,10 +81,13 @@ class FakeApi {
     return this.uploadResult ?? { screenshotId: this.uploads.length };
   }
 
-  async heartbeat(body: HeartbeatInput): Promise<{ ok: true }> {
+  /** What the next heartbeat answers with, beyond `ok`. The scope arrives on this route. */
+  heartbeatResponse: HeartbeatResponse = { ok: true };
+
+  async heartbeat(body: HeartbeatInput): Promise<HeartbeatResponse> {
     this.heartbeats.push(body);
     if (this.heartbeatError !== null) throw this.heartbeatError;
-    return { ok: true };
+    return this.heartbeatResponse;
   }
 }
 
@@ -342,7 +346,47 @@ describe("SyncQueue", () => {
     await expect(queue.heartbeat(7)).resolves.toBe("sent");
 
     expect(api.heartbeats).toEqual([{ deviceId: DEVICE, workSessionId: 7 }]);
+    // Omitted, not sent as undefined. The API reads an absent key as "this agent did not
+    // say" and leaves the browser columns alone; a present one is an answer about a
+    // machine that has no bridge at all.
+    expect(Object.keys(api.heartbeats[0] ?? {})).not.toContain("browserLink");
   });
+  it("carries what the browser bridge left, read at the beat rather than at construction", async () => {
+    const api = new FakeApi();
+    let browsers = 1;
+    const queue = new SyncQueue(api, DEVICE, {
+      browserLink: () => ({ linked: true, extensionVersion: "0.1.0", lastSeenAt: null, browsers }),
+    });
+
+    await queue.heartbeat(null);
+    browsers = 2;
+    await queue.heartbeat(null);
+
+    // A separate process writes that file, so a value captured once would report the
+    // machine as it was at agent launch for the rest of the day.
+    expect(api.heartbeats.map((beat) => beat.browserLink?.browsers)).toEqual([1, 2]);
+  });
+
+  /**
+   * The link file is published by rename from a *different* process, so EPERM during the
+   * replace window is ordinary on Windows and a quarantined file is permanent. Thrown out
+   * of `heartbeat`, it would land in the collector's catch with the beat already marked
+   * as sent — and revocation, withdrawn consent, a new policy and a changed collection
+   * scope all arrive on the heartbeat *response*, so a file permission would switch all
+   * four off while collection carried on.
+   */
+  it("classifies a failure reading the link file instead of throwing out of the beat", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE, {
+      browserLink: () => {
+        throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+      },
+    });
+
+    await expect(queue.heartbeat(null)).resolves.toBe("retry");
+    expect(api.heartbeats).toEqual([]);
+  });
+
   it("reports a revocation learned from the heartbeat, which also passes the device guard", async () => {
     const api = new FakeApi();
     const queue = new SyncQueue(api, DEVICE);
@@ -628,5 +672,58 @@ describe("SyncQueue durability", () => {
 
     const restored = new SyncQueue(new FakeApi(), DEVICE, { lastSyncAt: stamps[0] ?? null });
     expect(restored.lastSyncAt).toBe(T0.toISOString());
+  });
+});
+
+/**
+ * The heartbeat as the delivery channel for this device's collection scope.
+ *
+ * Chosen over a route of its own because it already runs every 60 s, already re-reads
+ * the device row and is already the consent-exempt channel revocation travels on — a
+ * second poll for two string arrays buys nothing. Every field is optional, so an API
+ * that does not send them leaves the agent collecting exactly what it collected before.
+ */
+describe("SyncQueue heartbeat scope delivery", () => {
+  it("hands the scope and the pending set to the caller", async () => {
+    const api = new FakeApi();
+    const seen: HeartbeatResponse[] = [];
+    const queue = new SyncQueue(api, DEVICE, { onHeartbeat: (response) => seen.push(response) });
+
+    api.heartbeatResponse = {
+      ok: true,
+      collection: ["applications", "idle"],
+      pendingTypes: ["screenshots"],
+    };
+    await queue.heartbeat(null);
+
+    expect(seen).toEqual([
+      { ok: true, collection: ["applications", "idle"], pendingTypes: ["screenshots"] },
+    ]);
+  });
+
+  it("says nothing to the caller when the heartbeat never landed", async () => {
+    // A network blip must not be read as "the administrator switched everything off".
+    const api = new FakeApi();
+    const seen: HeartbeatResponse[] = [];
+    const queue = new SyncQueue(api, DEVICE, { onHeartbeat: (response) => seen.push(response) });
+
+    api.heartbeatError = new TypeError("fetch failed");
+
+    await expect(queue.heartbeat(null)).resolves.toBe("retry");
+    expect(seen).toEqual([]);
+  });
+
+  it("lets the caller's own write fail as itself rather than as a refused heartbeat", async () => {
+    const api = new FakeApi();
+    const queue = new SyncQueue(api, DEVICE, {
+      onHeartbeat: () => {
+        throw new Error("ENOSPC");
+      },
+    });
+
+    // The callback writes the config to disk. A full disk there is not the API refusing
+    // the heartbeat, and classifying it as one would stop the loop for the wrong reason.
+    await expect(queue.heartbeat(null)).rejects.toThrow("ENOSPC");
+    expect(api.heartbeats).toHaveLength(1);
   });
 });

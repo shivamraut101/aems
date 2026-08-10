@@ -5,13 +5,16 @@
  * in one place — which state is on screen is a compliance question, not a layout one.
  */
 
+import { PLATFORM_DATA_TYPES } from "@aems/types";
+
 import type {
   AgentPermissions,
   AgentStatus,
+  DataTypeId,
   PauseReason,
   PermissionTarget,
 } from "../../shared/types/index.js";
-import { isPermissionBlocked, pausedBecause } from "../../shared/types/index.js";
+import { isPermissionBlocked, offeredTypes, pausedBecause } from "../../shared/types/index.js";
 
 export type Screen = "login" | "consent" | "status";
 
@@ -146,4 +149,31 @@ export function unreachableMessage(detail: string | null): string {
  */
 export function trackedSecondsToday(status: AgentStatus): number | null {
   return status.totals.totalSeconds > 0 ? status.totals.totalSeconds : null;
+}
+
+/**
+ * What a desktop agent may collect before any per-device scope has reached it.
+ *
+ * `windows` and `macos` carry the same set, so one constant covers both platforms this
+ * agent ships on — the renderer is sandboxed and has no `process.platform` to branch on
+ * anyway. Reached whenever `status.collection` is null, which is an agent that has not
+ * heartbeated since an upgrade or one talking to an API that does not send the field:
+ * both must describe exactly what the agent collected before this existed.
+ */
+const DESKTOP_DEFAULT_TYPES: readonly DataTypeId[] = PLATFORM_DATA_TYPES.windows;
+
+/** What this device is recording right now. Never empty by accident — null means default. */
+export function collectedTypes(status: AgentStatus): readonly DataTypeId[] {
+  return status.collection ?? DESKTOP_DEFAULT_TYPES;
+}
+
+/**
+ * What the consent gate lists: permitted now, plus anything an administrator has added.
+ *
+ * The pending types belong on the gate precisely because they are not being collected —
+ * they are what the employee is being asked about, and they stay uncollected until this
+ * set is submitted.
+ */
+export function consentTypes(status: AgentStatus): readonly DataTypeId[] {
+  return offeredTypes(status.collection, status.pendingTypes) ?? DESKTOP_DEFAULT_TYPES;
 }

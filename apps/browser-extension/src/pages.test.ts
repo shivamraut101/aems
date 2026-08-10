@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { PageState } from "./pages.js";
-import { blockedHeadline, blockedReason, blockedRows, popupRows, ruleIdFrom } from "./pages.js";
+import {
+  blockedFooter,
+  blockedHeadline,
+  blockedReason,
+  blockedRows,
+  popupRows,
+  ruleIdFrom,
+} from "./pages.js";
 
 function page(patch: Partial<PageState> = {}): PageState {
   return {
@@ -10,6 +17,7 @@ function page(patch: Partial<PageState> = {}): PageState {
     contact: "it-support@acme.test",
     restrictedCount: 2,
     rule: null,
+    websites: true,
     ...patch,
   };
 }
@@ -60,6 +68,44 @@ describe("blockedRows", () => {
       label: "Policy",
       value: "Not available — the AEMS agent is not reachable",
     });
+  });
+});
+
+describe("blockedFooter", () => {
+  it("says addresses are reported while they actually are", () => {
+    const foot = blockedFooter(page());
+
+    expect(foot).toContain("reported to the AEMS agent");
+    expect(foot).toContain("the person named above can change it");
+  });
+
+  /**
+   * The reason this is a function and not a line of markup. `mayEnforce` is deliberately
+   * wider than `mayReport`, so this page is reachable by design in front of someone who
+   * has not accepted the monitoring policy — and telling that person their browsing is
+   * already reported is the reading that makes the consent screen look like theatre.
+   */
+  it("does not claim reporting in a state where nothing is reported", () => {
+    for (const monitoring of ["consent-required", "not-enrolled", "revoked", null]) {
+      const foot = blockedFooter(page({ monitoring }));
+
+      expect(foot).toContain("Nothing you open in this browser is being recorded");
+      expect(foot).not.toContain("reported to the AEMS agent");
+    }
+  });
+
+  it("names the switched-off scope rather than claiming a recording that is off", () => {
+    const foot = blockedFooter(page({ websites: false }));
+
+    expect(foot).toContain("your organisation has switched that off");
+    expect(foot).not.toContain("reported to the AEMS agent");
+  });
+
+  /** The default in blocked.html is the unreachable-agent branch, so it must be true. */
+  it("keeps the restriction attributable in every state", () => {
+    for (const state of [page(), page({ monitoring: null }), page({ websites: false })]) {
+      expect(blockedFooter(state)).toContain("device policy named above");
+    }
   });
 });
 

@@ -1,7 +1,13 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { PATHNAME_HEADER, isPublicPath, loginRedirectPath, safeNextPath } from "@/lib/session";
+import {
+  PATHNAME_HEADER,
+  SET_PASSWORD_PATH,
+  isPublicPath,
+  loginRedirectPath,
+  safeNextPath,
+} from "@/lib/session";
 
 /** See the note in `lib/supabase-server.ts` — the library's union defeats inference. */
 type CookieToSet = { name: string; value: string; options: CookieOptions };
@@ -31,8 +37,13 @@ function passThrough(request: NextRequest): NextResponse {
  * This is a UX boundary, not the security one. It decides what renders. The API
  * verifies every token itself and RLS decides what any of it may read — a forged
  * cookie gets someone a sidebar and nothing behind it.
+ *
+ * Named `proxy` in `src/proxy.ts` rather than `middleware` in `src/middleware.ts`:
+ * Next 16 renamed the convention. The behaviour is unchanged — same request, same
+ * position in the pipeline — and Next still resolves `middleware.ts` for now, but
+ * running on the deprecated name is how a build starts warning and then breaks.
  */
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
   // `response` is reassigned by `setAll` below so that rotated cookies survive.
@@ -70,6 +81,25 @@ export async function middleware(request: NextRequest) {
 
   if (!user && !isPublicPath(pathname)) {
     return redirectTo(request, loginRedirectPath(pathname, search), response);
+  }
+
+  /*
+   * A temporary password has to be replaced before anything else happens.
+   *
+   * `POST /api/employees` mints one, shows it to the admin exactly once, and the
+   * admin reads it out — so the credential has already passed through a third party
+   * by the time the employee first signs in. Nothing used to ask them to change it,
+   * which left that password valid indefinitely.
+   *
+   * Enforced here rather than in a layout because this is the one gate every page
+   * passes through: a client-side redirect is bypassed by typing /people. The flag
+   * rides in the JWT, so reading it costs nothing.
+   *
+   * Checked before the public-path redirect below, or somebody mid-change who
+   * navigated to /login would be bounced to the app and then straight back here.
+   */
+  if (user?.user_metadata?.["must_change_password"] === true && pathname !== SET_PASSWORD_PATH) {
+    return redirectTo(request, SET_PASSWORD_PATH, response);
   }
 
   if (user && isPublicPath(pathname)) {

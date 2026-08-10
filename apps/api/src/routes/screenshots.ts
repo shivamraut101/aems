@@ -12,8 +12,9 @@ import { AEMS_BUCKET, screenshotPath } from "@aems/supabase";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { assertConsent } from "../plugins/context.js";
+import { collectionDenial, resolveCollection } from "../plugins/context.js";
 import { validationFailure } from "../lib/validation.js";
+import { profileVisibilityDenial } from "../lib/visibility.js";
 
 const metadataSchema = z.object({
   clientEventId: z.string().uuid(),
@@ -90,11 +91,17 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
   app.post("/", { preHandler: app.requireDevice }, async (request, reply) => {
     const device = request.device!;
 
-    const consent = await assertConsent(app.supabase, device.deviceId);
+    const consent = await resolveCollection(app.supabase, device);
     if (!consent.ok) {
       return reply
         .code(403)
         .send({ error: "consent_required", message: consent.message, statusCode: 403 });
+    }
+
+    // Answered before the multipart body is read: a refused frame must not cost the
+    // agent an upload, and reading it first would mean it did.
+    if (!consent.types.has("screenshots")) {
+      return reply.code(403).send(collectionDenial("screenshots"));
     }
 
     const file = await request.file();
@@ -194,11 +201,8 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const { profileId, from, to, limit } = parsed.data;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply
-        .code(403)
-        .send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     const { data: rows } = await app.supabase
       .from("screenshots")
@@ -263,11 +267,8 @@ export const screenshotRoutes: FastifyPluginAsync = async (app) => {
     // Identical to the gate on the list route above: an employee reads their own
     // record and nobody else's, and every query is scoped to the caller's company.
     // RLS is the boundary; this is the UI-facing half of the same rule.
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply
-        .code(403)
-        .send({ error: "forbidden", message: "Not your data", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     const windowMs = Date.parse(to) - Date.parse(from);
     if (windowMs <= 0) {

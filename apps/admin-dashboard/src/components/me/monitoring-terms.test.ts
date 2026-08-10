@@ -22,10 +22,11 @@ const policy: PolicyTerms = {
 };
 
 describe("platform capability", () => {
-  it("reads a browser address on macOS only", () => {
+  it("reads a browser address on macOS, or wherever the extension is connected", () => {
     expect(readsBrowserAddress("macos")).toBe(true);
     expect(readsBrowserAddress("windows")).toBe(false);
     expect(readsBrowserAddress("android")).toBe(false);
+    expect(readsBrowserAddress("windows", true)).toBe(true);
   });
 
   it("labels every platform the schema allows", () => {
@@ -71,7 +72,7 @@ describe("toPolicyTerms", () => {
         name: "Standard Monitoring Policy",
         screenshot_interval_seconds: 600,
         idle_threshold_seconds: 60,
-        max_open_break_seconds: 10800,
+        max_open_break_seconds: 18000,
         tracked_categories: ["development"],
         created_at: "2026-08-05T13:31:48.000Z",
         updated_at: "2026-08-05T13:31:48.000Z",
@@ -123,6 +124,46 @@ describe("collectedItems", () => {
 
     expect(line?.absent).toBe(true);
     expect(items.some((item) => item.title === "Website domains you visit")).toBe(false);
+  });
+
+  /**
+   * The absence is only true while the extension is missing. Leaving it in place on a
+   * Windows machine that is reporting addresses would make this page — the one the
+   * monitored person reads — the inaccurate one.
+   */
+  it("drops the Windows absence once the browser extension is connected", () => {
+    const items = collectedItems("windows", policy, true);
+
+    expect(items.some((item) => item.title === "Website domains you visit")).toBe(true);
+    expect(items.some((item) => item.title.startsWith("Not the websites"))).toBe(false);
+  });
+
+  /**
+   * A connected extension says the machine *can* read an address. It says nothing about
+   * whether one is written down — withdrawn consent and a switched-off `websites` scope
+   * both stop that without closing the channel. Read as a single fact, this page told an
+   * employee whose manager had switched websites off that the sites they visit are
+   * recorded, on the one screen that exists so they can check exactly that.
+   */
+  it("states the absence again when website collection is switched off for the device", () => {
+    for (const items of [
+      collectedItems("windows", policy, true, false),
+      collectedItems("macos", policy, false, false),
+    ]) {
+      const line = items.find((item) => item.title.startsWith("Not the websites"));
+
+      expect(line?.absent).toBe(true);
+      // And says which of the two absences it is: "cannot" and "was told not to" are
+      // different facts, and only the second has somebody's decision behind it.
+      expect(line?.detail).toContain("switched off for this device");
+      expect(items.some((item) => item.title === "Website domains you visit")).toBe(false);
+    }
+  });
+
+  it("reads an unanswered scope as permitting, the same way the agent does", () => {
+    const items = collectedItems("windows", policy, true, null);
+
+    expect(items.some((item) => item.title === "Website domains you visit")).toBe(true);
   });
 
   it("never claims a keystroke is recorded, and says so explicitly", () => {

@@ -21,7 +21,8 @@
     "db:types": "pnpm --filter @aems/types db:types",
     "check:wiring": "node scripts/check-wiring.mjs",
     "check:routes": "node scripts/check-api-routes.mjs",
-    "check": "pnpm check:wiring && pnpm check:routes",
+    "check:schema": "node scripts/check-migrations.mjs",
+    "check": "pnpm check:wiring && pnpm check:routes && pnpm check:schema",
     "smoke": "node scripts/smoke.mjs",
     "prepare": "husky"
   },

@@ -57,8 +57,8 @@ begin
 
   insert into public.companies (id, name) values (co, 'Acme Corp') on conflict (id) do nothing;
 
-  insert into public.policies (company_id, version, name, screenshot_interval_seconds, idle_threshold_seconds, max_open_break_seconds, tracked_categories)
-  values (co, '2026.08.1', 'Standard Monitoring Policy', 300, 120, 10800,
+  insert into public.policies (company_id, version, name, screenshot_interval_seconds, idle_threshold_seconds, tracked_categories)
+  values (co, '2026.08.1', 'Standard Monitoring Policy', 300, 120,
           array['development','communication','documentation','browsing'])
   on conflict (company_id, version) do nothing;
 

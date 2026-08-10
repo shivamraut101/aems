@@ -6,7 +6,11 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
+import { sendInBackground } from "../lib/email/mailer.js";
+import { accountCreatedEmail, nameOrEmail } from "../lib/email/templates.js";
 import { validationFailure } from "../lib/validation.js";
+import { profileVisibilityDenial } from "../lib/visibility.js";
+import { visibleRoleFilter } from "@aems/auth";
 
 /**
  * A ban long enough to be permanent without being forever.
@@ -208,6 +212,43 @@ export function offboardingDenial(
 }
 
 /**
+ * The other way a company locks itself out: the last super admin demotes themselves.
+ *
+ * Same unrecoverable outcome as deactivating them — no route promotes anyone without an
+ * existing super admin to call it, so the only fix is hand-written SQL against
+ * production — reached by a different door. `offboardingDenial` guards deactivation and
+ * says nothing about roles, which is why this is its own function rather than a third
+ * branch there: they are called from different handlers and one must not start
+ * depending on the other's argument list.
+ *
+ * Lives beside its sibling deliberately. Somebody auditing "what stops a company losing
+ * its last admin" should find both answers in one place, and the reason this one had no
+ * test for so long is that it was five lines inside a route handler where nobody looking
+ * for a lockout guard would think to check.
+ *
+ * Only self-demotion is refused. Demoting *another* super admin is safe by construction:
+ * the caller is a super admin and cannot demote themselves, so at least one always
+ * survives the change.
+ */
+export function roleChangeDenial(
+  targetProfileId: string,
+  actorProfileId: string,
+  nextRole: Tables<"profiles">["role"] | undefined,
+): RouteDenial | null {
+  // `undefined` means the patch does not touch the role at all — a name or department
+  // edit must not be refused because the editor happens to be looking at themselves.
+  if (nextRole === undefined) return null;
+  if (targetProfileId !== actorProfileId) return null;
+  if (nextRole === "super_admin") return null;
+
+  return {
+    statusCode: 400,
+    error: "cannot_demote_self",
+    message: "Ask another super admin to change your role",
+  };
+}
+
+/**
  * A first password an admin can read out loud.
  *
  * Returned once, in the create response, and never stored, logged or written to
@@ -298,7 +339,25 @@ export async function createEmployeeAccount(
     // No mail is going out, so leaving the address unconfirmed would block the
     // first sign-in on a confirmation link nobody receives.
     email_confirm: true,
-    user_metadata: { full_name: input.fullName },
+    /*
+     * `must_change_password` rides here so the dashboard's middleware can read it
+     * straight from the JWT with no extra query.
+     *
+     * In `user_metadata`, not `app_metadata`, and the difference is the whole design
+     * — see docs/superpowers/specs/2026-08-07-password-lifecycle-design.md.
+     * `app_metadata` is service-role-only and would be tamper-proof, but clearing it
+     * needs an endpoint that can set any user's password, and
+     * `components/me/password.ts` argues against exactly that: this service holds the
+     * service-role key and has no business handling a plaintext credential. So the
+     * browser sets the password and clears this flag in one `updateUser` call under
+     * the person's own session, and nothing passes through us.
+     *
+     * The cost is recorded rather than hidden: a user can clear this without choosing
+     * a new password. Accepted — the flag exists because a temporary password was read
+     * aloud by an admin who therefore already knows it, so the only person harmed by
+     * skipping is the account owner. It is a prompt, not a boundary against them.
+     */
+    user_metadata: { full_name: input.fullName, must_change_password: true },
   });
 
   if (created.error || !created.data.user) {
@@ -405,6 +464,16 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
       .select(ROSTER_COLUMNS)
       .eq("company_id", session.companyId);
 
+    // A manager's roster stops at their own rank. Self is or-ed back in because the
+    // rank comparison is strict, and a manager missing from their own roster reads as
+    // a bug — it is also the row the account page links to.
+    const roles = visibleRoleFilter(session.role);
+    if (roles) {
+      query = query.or(
+        `role.in.(${roles.join(",")}),id.eq.${session.profileId}`,
+      );
+    }
+
     // Off-boarded people are hidden unless asked for. `monitoring_enabled = false`
     // is a pause, not a removal — before this column existed the roster had no way
     // to say "this person has left" at all.
@@ -421,11 +490,8 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
     const { profileId } = request.params as { profileId: string };
     const session = request.session!;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply
-        .code(403)
-        .send({ error: "forbidden", message: "Not your profile", statusCode: 403 });
-    }
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) return reply.code(denial.statusCode).send({ ...denial });
 
     const { data } = await app.supabase
       .from("profiles")
@@ -542,11 +608,52 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
       app.log,
     );
 
+    /*
+     * Send the new employee their own credentials.
+     *
+     * The gap this closes: the temporary password is shown to the admin exactly once
+     * and then read out or pasted into a chat, so the credential reaches its owner
+     * through a third party over a channel nobody controls. Mail is not a perfect
+     * channel either, but it is addressed to the one person who should have it.
+     *
+     * The password is still returned below, and deliberately. Mail is best-effort —
+     * unconfigured, greylisted, or a wrong address — and an admin left with no way to
+     * onboard someone is worse than one who has the password on screen as well. The
+     * response field is the fallback, not the primary path.
+     */
+    if (result.profile) {
+      // One extra read, on a route an admin hits a handful of times. The company's own
+      // name is what makes this look like their employer's mail rather than a phishing
+      // attempt from a product nobody told the recipient about.
+      const { data: company } = await app.supabase
+        .from("companies")
+        .select("name")
+        .eq("id", session.companyId)
+        .maybeSingle();
+
+      const message = accountCreatedEmail(
+        {
+          recipientName: nameOrEmail(body.fullName, body.email),
+          companyName: company?.name ?? "your company",
+          dashboardUrl: app.dashboardUrl,
+        },
+        { temporaryPassword: password, createdByName: session.email },
+      );
+
+      sendInBackground(app.mailer, { ...message, to: body.email }, app.log);
+    }
+
     return reply.code(201).send({
       profile: result.profile,
       // Shown once, then gone. Null when the admin chose the password themselves,
       // because echoing back something they already know only widens its exposure.
       temporaryPassword: body.temporaryPassword ? null : password,
+      /**
+       * Whether the employee has been sent their password, so the dialog can stop
+       * telling an admin to relay something that is already in an inbox — and can keep
+       * telling them to when it is not.
+       */
+      credentialsEmailed: app.mailer.configured,
     });
   });
 
@@ -567,12 +674,14 @@ export const employeeRoutes: FastifyPluginAsync = async (app) => {
     const session = request.session!;
     const body = parsed.data;
 
-    // Demoting yourself could leave a company with no super admin at all.
-    if (profileId === session.profileId && body.role && body.role !== "super_admin") {
-      return reply.code(400).send({
-        error: "cannot_demote_self",
-        message: "Ask another super admin to change your role",
-        statusCode: 400,
+    // Demoting yourself could leave a company with no super admin at all — the same
+    // unrecoverable state `offboardingDenial` guards, reached by a different door.
+    const roleDenial = roleChangeDenial(profileId, session.profileId, body.role);
+    if (roleDenial) {
+      return reply.code(roleDenial.statusCode).send({
+        error: roleDenial.error,
+        message: roleDenial.message,
+        statusCode: roleDenial.statusCode,
       });
     }
 

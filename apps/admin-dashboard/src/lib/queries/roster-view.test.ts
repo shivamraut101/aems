@@ -42,6 +42,7 @@ function device(overrides: Partial<DeviceRow> = {}): DeviceRow {
     device_name: "ADA-WIN-01",
     os_version: "11",
     agent_version: "0.1.0",
+    is_primary: false,
     model: "ThinkPad X1",
     cpu: "Intel i7",
     ram_mb: 16384,
@@ -49,6 +50,11 @@ function device(overrides: Partial<DeviceRow> = {}): DeviceRow {
     status: "active",
     last_seen_at: "2026-08-05T09:00:00.000Z",
     enrolled_at: "2026-01-01T00:00:00.000Z",
+    browser_extension_linked: null,
+    browser_extension_version: null,
+    browser_extension_seen_at: null,
+    browser_extension_count: null,
+    website_addresses_recorded: null,
     ...overrides,
   };
 }

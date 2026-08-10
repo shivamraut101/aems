@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import {
   Button,
+  CheckboxField,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -18,8 +19,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@aems/ui";
+import { PLATFORM_DATA_TYPES, type DataTypeId, type DevicePlatform } from "@aems/types";
 
 import { describeError, useApiQuery, useSession } from "@/lib/api";
+import { DATA_TYPE_LABEL } from "@/lib/queries/collection";
 import { isDeactivated } from "@/lib/queries/employees-form";
 import { expiryLabel, useCreateEnrollmentCode } from "@/lib/queries/enrollment";
 
@@ -56,6 +59,17 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
   // machine, so they are not asked a question with one answer.
   const canChoose = session?.role === "manager" || session?.role === "super_admin";
   const [profileId, setProfileId] = useState(SELF);
+
+  /*
+   * Held as the DENIED set, not the allowed one, so the empty default means "everything
+   * this machine can do" — the same shape as the column it is written to and the same
+   * rule as a missing settings row. An allowed set would have to be complete at mint
+   * time, and this code does not know yet whether a laptop or a phone will redeem it.
+   */
+  // Windows first: it is the commonest enrolment and the one an admin reaches for
+  // without thinking, so the default should not be the answer they have to change.
+  const [platform, setPlatform] = useState<DevicePlatform>("windows");
+  const [denied, setDenied] = useState<ReadonlySet<DataTypeId>>(() => new Set());
 
   const code = mint.data ?? null;
 
@@ -114,6 +128,36 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
               </p>
             )}
 
+            {/* Asked before the scope, because it decides what the scope can contain.
+                A code is now bound to a kind of machine: redeeming a Windows code on a
+                phone is refused, which is what stops a laptop's deny list being applied
+                to a device with different capabilities. */}
+            <Field label="Kind of device">
+              {(field) => (
+                <Select
+                  value={platform}
+                  onValueChange={(next) => {
+                    setPlatform(next as DevicePlatform);
+                    // Start clean. A type denied while "Windows" was selected is
+                    // meaningless once the answer is "Android", and carrying it over
+                    // would silently deny something the admin can no longer see.
+                    setDenied(new Set());
+                  }}
+                >
+                  <SelectTrigger {...field}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="windows">Windows laptop or desktop</SelectItem>
+                    <SelectItem value="macos">Mac</SelectItem>
+                    <SelectItem value="android">Android phone</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </Field>
+
+            <CollectionScope platform={platform} denied={denied} onChange={setDenied} />
+
             {mint.isError ? (
               <p
                 role="alert"
@@ -130,7 +174,12 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
               <Button
                 type="button"
                 disabled={mint.isPending}
-                onClick={() => mint.mutate(profileId === SELF ? {} : { profileId })}
+                onClick={() =>
+                  mint.mutate({
+                    ...(profileId === SELF ? {} : { profileId }),
+                    deniedTypes: [...denied],
+                  })
+                }
               >
                 {mint.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -144,6 +193,72 @@ export function AddDeviceDialog({ onClose }: { onClose: () => void }) {
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * What the new machine may record — chosen here, and read by the employee there.
+ *
+ * Everything starts on. The default has to be "whatever this platform supports"
+ * because that is what the database means by a missing row, and a dialog whose default
+ * differed from the system's would make the two answers to "what does an untouched
+ * device collect" disagree.
+ *
+ * The copy states, without hedging, that this exact list is what the person reads on
+ * their own screen before they accept. That is not a nicety: the consent screen renders
+ * from the same vocabulary in `@aems/types`, filtered to the permitted set, so a type
+ * unticked here never appears in the promise the employee is asked to agree to — and a
+ * promise wider than the collection, or narrower, is the defect this whole feature is
+ * for.
+ */
+function CollectionScope({
+  platform,
+  denied,
+  onChange,
+}: {
+  platform: DevicePlatform;
+  denied: ReadonlySet<DataTypeId>;
+  onChange: (next: ReadonlySet<DataTypeId>) => void;
+}) {
+  /*
+   * Only what this kind of machine can actually report.
+   *
+   * This list used to be all seven types with a paragraph underneath apologising for
+   * it — "a laptop takes no location, and a phone captures no screenshots or idle
+   * time. Ticking those here does not make them happen." That is a UI admitting it
+   * offers choices that do nothing, and it put the burden of knowing each platform's
+   * limits on the admin. Asking which platform first turns seven checkboxes into the
+   * three or four that are real, and the apology can go.
+   */
+  const offered = PLATFORM_DATA_TYPES[platform];
+
+  function toggle(id: DataTypeId, on: boolean) {
+    const next = new Set(denied);
+    if (on) next.delete(id);
+    else next.add(id);
+    onChange(next);
+  }
+
+  return (
+    <fieldset className="rounded-lg border px-4 py-3">
+      <legend className="px-1 text-sm font-medium">What this device may collect</legend>
+      <p className="text-xs text-muted-foreground">
+        The employee reads this exact list on the machine before they accept the
+        monitoring policy, and nothing outside it is collected. You can change it later
+        from their Devices tab — switching something on afterwards asks them again.
+      </p>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {offered.map((id) => (
+          <CheckboxField
+            key={id}
+            label={DATA_TYPE_LABEL[id]}
+            checked={!denied.has(id)}
+            onCheckedChange={(state) => toggle(id, state === true)}
+          />
+        ))}
+      </div>
+    </fieldset>
   );
 }
 

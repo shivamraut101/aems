@@ -10,8 +10,9 @@ import { z } from "zod";
 
 import { canViewOthers } from "@aems/auth";
 
-import { assertConsent } from "../plugins/context.js";
+import { resolveCollection } from "../plugins/context.js";
 import { validationFailure } from "../lib/validation.js";
+import { profileVisibilityDenial } from "../lib/visibility.js";
 
 const activityEventSchema = z.object({
   clientEventId: z.string().uuid(),
@@ -263,7 +264,10 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
   app.post("/sessions", { preHandler: app.requireDevice }, async (request, reply) => {
     const device = request.device!;
 
-    const consent = await assertConsent(app.supabase, device.deviceId);
+    // Gated on the consent row existing, not on any one type: a work session is the
+    // container everything else hangs on, and switching it off per person is what
+    // `profiles.monitoring_enabled` already does.
+    const consent = await resolveCollection(app.supabase, device);
     if (!consent.ok) {
       return reply
         .code(403)
@@ -354,12 +358,18 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "forbidden", message: "Token does not match device", statusCode: 403 });
     }
 
-    const consent = await assertConsent(app.supabase, device.deviceId);
+    const consent = await resolveCollection(app.supabase, device);
     if (!consent.ok) {
       return reply
         .code(403)
         .send({ error: "consent_required", message: consent.message, statusCode: 403 });
     }
+
+    // One gate, four data types. Each block below consults `types` independently
+    // rather than the whole batch being refused, because an agent that has one type
+    // switched off is otherwise perfectly entitled to send the rest — and a 403 over
+    // the whole batch would make it retry the permitted rows forever.
+    const { types } = consent;
 
     const base = {
       company_id: device.companyId,
@@ -372,7 +382,13 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
     let acceptedBreaks = 0;
     let acceptedLocations = 0;
 
-    if (body.activity?.length) {
+    // Counted and reported rather than folded into `duplicates`, which would tell the
+    // agent its rows were already stored when in fact they were dropped.
+    const refusedActivity = types.has("applications") ? 0 : (body.activity?.length ?? 0);
+    const refusedIdle = types.has("idle") ? 0 : (body.idle?.length ?? 0);
+    const refusedLocations = types.has("location") ? 0 : (body.locations?.length ?? 0);
+
+    if (body.activity?.length && types.has("applications")) {
       // Categorise here, not on the device. Storing the label keeps `rankApps`, the
       // report worker and the dashboard fast; reads that need yesterday relabelled by
       // a rule written today re-run the same pure function instead of waiting for a
@@ -387,12 +403,15 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
             work_session_id: body.workSessionId ?? null,
             app_name: event.appName,
             window_title: event.windowTitle ?? null,
-            url: event.url ?? null,
-            domain: event.domain ?? null,
+            // Nulled rather than the row being dropped: `url` and `domain` ride on the
+            // same row as `app_name`, and discarding it to enforce a website setting
+            // would delete application activity the employee did agree to.
+            url: types.has("websites") ? (event.url ?? null) : null,
+            domain: types.has("websites") ? (event.domain ?? null) : null,
             category: categorizeEvent(rules, {
               appName: event.appName,
               windowTitle: event.windowTitle ?? null,
-              domain: event.domain ?? null,
+              domain: types.has("websites") ? (event.domain ?? null) : null,
             }).category,
             started_at: event.startedAt,
             ended_at: event.endedAt ?? null,
@@ -410,7 +429,7 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       acceptedActivity = data?.length ?? 0;
     }
 
-    if (body.idle?.length) {
+    if (body.idle?.length && types.has("idle")) {
       const { data, error } = await app.supabase
         .from("idle_events")
         .upsert(
@@ -432,6 +451,8 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       acceptedIdle = data?.length ?? 0;
     }
 
+    // Never gated by type. A declared break is the employee's own statement about
+    // their day, not an observation made about them.
     if (body.breaks?.length) {
       const { data, error } = await app.supabase
         .from("break_events")
@@ -455,7 +476,9 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       acceptedBreaks = data?.length ?? 0;
     }
 
-    if (body.locations?.length) {
+    // `location` is absent from both desktop platform sets, so this is also what stops
+    // a laptop's token writing position fixes that no screen in the product renders.
+    if (body.locations?.length && types.has("location")) {
       const { data, error } = await app.supabase
         .from("location_points")
         .upsert(
@@ -492,7 +515,17 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       acceptedBreaks,
       acceptedLocations,
       duplicates:
-        submitted - acceptedActivity - acceptedIdle - acceptedBreaks - acceptedLocations,
+        submitted -
+        acceptedActivity -
+        acceptedIdle -
+        acceptedBreaks -
+        acceptedLocations -
+        refusedActivity -
+        refusedIdle -
+        refusedLocations,
+      refusedActivity,
+      refusedIdle,
+      refusedLocations,
     };
   });
 
@@ -516,12 +549,9 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
 
     const profileId = parsed.data.profileId ?? session.profileId;
 
-    if (profileId !== session.profileId && !canViewOthers(session.role)) {
-      return reply.code(403).send({
-        error: "forbidden",
-        message: "You can only view your own location history",
-        statusCode: 403,
-      });
+    const denial = await profileVisibilityDenial(app, session, profileId);
+    if (denial) {
+      return reply.code(denial.statusCode).send({ ...denial });
     }
 
     let query = app.supabase

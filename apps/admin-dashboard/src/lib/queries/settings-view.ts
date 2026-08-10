@@ -224,24 +224,23 @@ export const IDLE_THRESHOLD_OPTIONS: readonly { seconds: number; label: string }
 ];
 
 /**
- * How long a declared break may run before the agent ends the day for the employee.
+ * How long a declared break may run before the agent closes the day for the employee,
+ * backdated to when the break began.
  *
- * Not a preference. A break nobody ends has no natural end, so the agent would accrue
- * "break" all night and the day would read as an evening of tracked time; past this
- * limit the agent treats it as a break the person forgot to end and closes the day
- * **backdated to when the break began**, which is what actually happened.
- *
- * The offered range starts at 30 minutes rather than the API's 15-minute floor because
- * a limit that short cuts genuine lunches short, and a cut-short break lands in
- * someone's timeline as a second work session they have to explain.
+ * The range is a judgement about how a particular workforce actually breaks, which is
+ * why it is an admin's to set rather than a constant in the agents. The offered values
+ * start at an hour — below that a genuine lunch becomes a second work session someone
+ * has to explain — and stop well short of overnight, which is the case the guard exists
+ * to catch in the first place.
  */
 export const MAX_OPEN_BREAK_OPTIONS: readonly { seconds: number; label: string }[] = [
-  { seconds: 1800, label: "30 min" },
-  { seconds: 3600, label: "1 h" },
-  { seconds: 7200, label: "2 h" },
-  { seconds: 10800, label: "3 h" },
-  { seconds: 14400, label: "4 h" },
-  { seconds: 21600, label: "6 h" },
+  { seconds: 3600, label: "1 hour" },
+  { seconds: 7200, label: "2 hours" },
+  { seconds: 10_800, label: "3 hours" },
+  { seconds: 14_400, label: "4 hours" },
+  { seconds: 18_000, label: "5 hours" },
+  { seconds: 21_600, label: "6 hours" },
+  { seconds: 28_800, label: "8 hours" },
 ];
 
 /**
@@ -301,8 +300,7 @@ export function policyDraftFrom(current: PolicyRecord | null | undefined): Polic
     name: current?.name ?? "Standard monitoring policy",
     screenshotIntervalSeconds: current?.screenshot_interval_seconds ?? 300,
     idleThresholdSeconds: current?.idle_threshold_seconds ?? 300,
-    // The column default, so a first policy proposes what both agents already do.
-    maxOpenBreakSeconds: current?.max_open_break_seconds ?? 10800,
+    maxOpenBreakSeconds: current?.max_open_break_seconds ?? 18_000,
     trackedCategories: (current?.tracked_categories ?? []).join(", "),
   };
 }
@@ -376,14 +374,10 @@ export function validatePolicyDraft(
     errors.idleThresholdSeconds = "The threshold must be between 30 seconds and 1 hour.";
   }
 
-  // Bounds copied from the API schema and the column check, not approximated. Both
-  // directions are a real failure: too short cuts genuine breaks short and invents a
-  // second work session, too long stops catching the overnight case the limit exists
-  // for while still reading as configured.
   if (!isPositiveInteger(draft.maxOpenBreakSeconds)) {
-    errors.maxOpenBreakSeconds = "Choose how long a break may run before the day is closed.";
-  } else if (draft.maxOpenBreakSeconds < 900 || draft.maxOpenBreakSeconds > 43200) {
-    errors.maxOpenBreakSeconds = "The limit must be between 15 minutes and 12 hours.";
+    errors.maxOpenBreakSeconds = "Choose a break limit.";
+  } else if (draft.maxOpenBreakSeconds < 3600 || draft.maxOpenBreakSeconds > 43_200) {
+    errors.maxOpenBreakSeconds = "The break limit must be between 1 and 12 hours.";
   }
 
   const categories = parseTrackedCategories(draft.trackedCategories);
@@ -498,14 +492,20 @@ export function trackedCategoriesLabel(categories: readonly string[]): string {
 /**
  * When a published policy actually reaches an agent.
  *
- * Says "enrolled after" rather than "at the next check-in" because that is what the
- * API does: `POST /api/devices/enroll` hands the newest policy to a device once, and
- * `POST /api/devices/heartbeat` answers `{ ok: true }` and nothing else. Claiming a
- * live rollout the server does not perform would make this panel the least reliable
- * statement in a compliance product. See the reported gap.
+ * Rewritten with the per-device collection scope, because the sentence it replaced —
+ * "the heartbeat does not carry a policy today" — stopped being true the moment
+ * `POST /api/devices/heartbeat` began answering with `policyVersion`, `collection` and
+ * `pendingTypes` instead of a bare `{ ok: true }`.
+ *
+ * It is still careful about what the heartbeat does *not* do. It carries the version
+ * number and the permitted data types; it does not hand down a new screenshot interval
+ * or idle threshold, which still arrive at enrolment. A note that over-claims a live
+ * rollout is the same defect as one that under-claims it — this panel is the statement
+ * of record for what agents are running under, and in a compliance product it must not
+ * be the least reliable thing on the page.
  */
 export const POLICY_ROLLOUT_NOTE =
-  "A published version is handed to every device that enrols after it. Devices already enrolled keep the interval they were given until they enrol again — the heartbeat does not carry a policy today.";
+  "A published version is handed to every device that enrols after it. Devices already enrolled learn on their next heartbeat, within a minute, that a newer version exists and which data types they may collect — but they keep the interval and threshold they were given until they enrol again.";
 
 function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && value > 0;

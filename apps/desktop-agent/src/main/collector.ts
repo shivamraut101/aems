@@ -1,7 +1,5 @@
-import type { AgentPolicy } from "@aems/types";
-
 import type { AgentConfig, DaySpan, DayTotals } from "../shared/types/index.js";
-import { emptyTotals, mayCollect } from "../shared/types/index.js";
+import { emptyTotals, mayCollect, mayCollectType } from "../shared/types/index.js";
 import type { IdleState } from "./idle.js";
 import { IdleWatcher, readIdleSeconds, readIdleState } from "./idle.js";
 import type { DayState } from "./persistence.js";
@@ -301,16 +299,15 @@ export class Collector {
      * This is the automatic counterpart to the tray's End day. Both exist because the
      * alternative is a dashboard that reports overnight idling as a working day, and a
      * manager reading it has no way to tell the difference.
-     *
-     * How long is "this long" is the admin's call, published on the monitoring policy —
-     * it is a statement about what this company counts as a working day, so it belongs
-     * with the terms an employee consents to rather than compiled into the binary.
      */
     const openBreak = this.parts.idle.openBreakSince;
+    const maxOpenBreakMs =
+      (this.parts.config.current.policy?.maxOpenBreakSeconds ?? DEFAULT_MAX_OPEN_BREAK_SECONDS) *
+      1000;
     if (
       this.dayEndedAt === null &&
       openBreak !== null &&
-      now.getTime() - openBreak.getTime() > maxOpenBreakMs(this.parts.config.current.policy)
+      now.getTime() - openBreak.getTime() > maxOpenBreakMs
     ) {
       await this.endDay(openBreak);
       return;
@@ -321,7 +318,8 @@ export class Collector {
     // depend on what any other part of the system currently believes.
     if (this.dayEndedAt !== null) return;
 
-    const collecting = mayCollect(this.parts.config.current);
+    const config = this.parts.config.current;
+    const collecting = mayCollect(config);
 
     if (collecting) {
       await this.ensureSession();
@@ -341,7 +339,7 @@ export class Collector {
     // Telemetry IS collection — the route gates on consent exactly as ingestion does —
     // so it runs only inside the gate, and after the totals are recomputed because the
     // sample carries today's active seconds.
-    if (collecting) await this.maybeTelemetry(now);
+    if (collecting && mayCollectType(config, "telemetry")) await this.maybeTelemetry(now);
 
     this.persistDay();
     this.adapters.onChanged();
@@ -358,11 +356,36 @@ export class Collector {
     // window through one would make those signals a lie, and would record exactly
     // the private browsing a break exists for.
     if (!this.parts.idle.onBreak) {
-      await this.observeFocus(now);
-      this.observeIdle(threshold, now);
+      // Each type is gated on its own, and a switched-off one is not sampled at all —
+      // the stretch that was open when it went off is closed here rather than left to
+      // be emitted by a later drain, which would report an interval spanning hours
+      // during which the employee had been told nothing was being watched.
+      if (mayCollectType(config, "applications")) await this.observeFocus(now);
+      else this.closeFocus(now);
+
+      if (mayCollectType(config, "idle")) this.observeIdle(threshold, now);
+      else this.closeIdle(now);
     }
 
     await this.capture(config, now, state === "locked");
+  }
+
+  /** Closes the focus interval a disabled `applications` setting stopped us extending. */
+  private closeFocus(now: Date): void {
+    const open = this.parts.tracker.flush(now);
+    if (open !== null) this.parts.queue.enqueueActivity(open);
+  }
+
+  /** The same, for the idle stretch. What was observed while permitted is still true. */
+  private closeIdle(now: Date): void {
+    const closed = this.parts.idle.flush(now);
+    if (closed === null) return;
+
+    this.parts.queue.enqueueIdle(closed);
+    this.idleSpans.push({
+      startedAt: closed.idleStartAt,
+      endedAt: closed.idleEndAt ?? null,
+    });
   }
 
   private readState(threshold: number): IdleState {
@@ -796,35 +819,21 @@ function discardBefore(spans: DaySpan[], dayStart: Date): void {
 }
 
 /**
- * How long a declared break may run before the day is closed for the employee, when no
- * policy has arrived yet.
+ * How long a declared break may run before the day is closed for the employee, when the
+ * policy does not say. An admin sets the real value in Settings → Monitoring policy.
  *
- * Three hours is deliberately generous — longer than any lunch, a school run or a
- * dentist appointment, so a real break is never cut short — while being far below the
- * overnight case this exists to catch. The cost of being wrong in each direction is
- * asymmetric: too short and someone's genuine long break becomes a second work session
- * they have to explain, too long and the dashboard reports a night's sleep as tracked
- * time. Three hours sits well clear of both.
+ * Five hours is deliberately generous — longer than any lunch, a school run, a dentist
+ * appointment or half a shift off, so a real break is never cut short — while being far
+ * below the overnight case this exists to catch. The cost of being wrong in each
+ * direction is asymmetric: too short and someone's genuine long break becomes a second
+ * work session they have to explain, too long and the dashboard reports a night's sleep
+ * as tracked time. Five hours sits well clear of both.
  *
- * **Must equal `policies.max_open_break_seconds`'s column default (10800).** This is a
- * fallback, not the rule: the value in force is the admin's, read from the policy by
- * {@link maxOpenBreakMs}. Same discipline as {@link DEFAULT_IDLE_THRESHOLD_SECONDS},
- * and for the same reason — an agent applying a different limit from the server means
- * the same afternoon reads differently depending on which side answered.
+ * The fallback matters: a policy fetched before this field existed has no value for it,
+ * and reading that absence as "never close an abandoned break" would restore exactly the
+ * overnight-billing bug the guard was added for.
  */
-export const DEFAULT_MAX_OPEN_BREAK_MS = 3 * 60 * 60 * 1000;
-
-/**
- * The break limit this agent is operating under.
- *
- * A policy stored before the field existed has no value for it, and reading that
- * absence as "no limit" restores exactly the overnight-billing defect the guard exists
- * for — so the fallback is the default, never infinity.
- */
-export function maxOpenBreakMs(policy: AgentPolicy | null | undefined): number {
-  const seconds = policy?.maxOpenBreakSeconds;
-  return typeof seconds === "number" && seconds > 0 ? seconds * 1000 : DEFAULT_MAX_OPEN_BREAK_MS;
-}
+export const DEFAULT_MAX_OPEN_BREAK_SECONDS = 5 * 60 * 60;
 
 /** Local midnight — the day boundary an employee and their manager both mean. */
 function startOfDay(now: Date): Date {

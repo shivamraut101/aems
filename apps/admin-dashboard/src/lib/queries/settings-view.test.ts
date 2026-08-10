@@ -50,7 +50,7 @@ const policy: PolicyRecord = {
   name: "Standard monitoring policy",
   screenshot_interval_seconds: 300,
   idle_threshold_seconds: 120,
-  max_open_break_seconds: 10800,
+  max_open_break_seconds: 18000,
   tracked_categories: [],
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
@@ -222,7 +222,7 @@ const draft: PolicyDraft = {
   name: "Standard monitoring policy",
   screenshotIntervalSeconds: 300,
   idleThresholdSeconds: 300,
-  maxOpenBreakSeconds: 10800,
+  maxOpenBreakSeconds: 18000,
   trackedCategories: "",
 };
 
@@ -236,6 +236,7 @@ describe("policyDraftFrom", () => {
       ...policy,
       screenshot_interval_seconds: 900,
       idle_threshold_seconds: 45,
+      max_open_break_seconds: 18000,
       tracked_categories: ["Development", "Research"],
     });
     expect(seeded.screenshotIntervalSeconds).toBe(900);
@@ -467,7 +468,7 @@ describe("policyDraftToInput", () => {
       name: "Standard monitoring policy",
       screenshotIntervalSeconds: 300,
       idleThresholdSeconds: 300,
-      maxOpenBreakSeconds: 10800,
+      maxOpenBreakSeconds: 18000,
       trackedCategories: [],
     });
   });
@@ -479,7 +480,7 @@ describe("policyDraftToInput", () => {
         name: "Standard monitoring policy",
         screenshotIntervalSeconds: 300,
         idleThresholdSeconds: 300,
-        maxOpenBreakSeconds: 10800,
+        maxOpenBreakSeconds: 18000,
         trackedCategories: ["A", "B"],
       },
     );
@@ -488,15 +489,21 @@ describe("policyDraftToInput", () => {
 
 describe("POLICY_ROLLOUT_NOTE", () => {
   /**
-   * The API hands a policy to a device at `POST /api/devices/enroll` and nowhere
-   * else — `/heartbeat` answers `{ ok: true }`. The previous copy said agents pick a
-   * change up "at their next check-in", which the server does not do. In a compliance
-   * product the panel that states the terms must not be the least accurate thing on
-   * the page.
+   * Both halves, because this note has now been wrong in each direction. It first
+   * claimed agents picked a change up "at their next check-in", which the server did
+   * not do; it then said "the heartbeat does not carry a policy today", which stopped
+   * being true when the heartbeat began answering with the version and the permitted
+   * data types.
+   *
+   * What the heartbeat still does **not** deliver is the interval and the threshold —
+   * those arrive at enrolment — so the note has to name both mechanisms and must not
+   * promise a live rollout of the cadence.
    */
-  it("describes enrolment, not a check-in rollout the server does not perform", () => {
+  it("names both delivery mechanisms and over-claims neither", () => {
     expect(POLICY_ROLLOUT_NOTE).toContain("enrol");
     expect(POLICY_ROLLOUT_NOTE).toContain("heartbeat");
+    expect(POLICY_ROLLOUT_NOTE).toContain("interval");
+    expect(POLICY_ROLLOUT_NOTE).not.toContain("does not carry a policy");
   });
 });
 

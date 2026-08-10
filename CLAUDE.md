@@ -41,7 +41,7 @@ the work, stop and raise it; don't route around it.
 | Package manager  | pnpm                                  |
 | Monorepo         | Turborepo                             |
 | Language         | TypeScript (Kotlin for Android native modules) |
-| Frontend         | Next.js 15 (App Router)               |
+| Frontend         | Next.js 16 (App Router)               |
 | UI               | Tailwind CSS + shadcn/ui              |
 | Client state     | Zustand                               |
 | Server state     | TanStack Query                        |
@@ -86,7 +86,7 @@ Do not introduce these — each was ruled out deliberately:
 
 ```text
 apps/
-  admin-dashboard/   Next.js 15 admin dashboard
+  admin-dashboard/   Next.js 16 admin dashboard
   api/               Fastify backend
   desktop-agent/     Electron + React + TS (Windows, macOS)
   android-agent/     React Native + Expo
@@ -110,9 +110,16 @@ New shared code goes in an existing package before a new one is created.
 
 ## Per-surface rules
 
-### apps/admin-dashboard (Next.js 15)
+### apps/admin-dashboard (Next.js 16)
 
 - App Router only.
+- **The request gate is `src/proxy.ts`, exporting `proxy`** — Next 16's rename of
+  `middleware.ts`. It refreshes the Supabase session cookie, redirects the signed-out
+  to `/login`, and holds anyone carrying a temporary password on `/set-password`. It
+  is a UX boundary, never the security one.
+- **Turbopack is the default builder.** It rejects CommonJS inside a `"type": "module"`
+  package where webpack quietly allowed it, so a shared `.js` config file must use
+  `export default`.
 - Server state through TanStack Query. Zustand is for client-only state —
   dashboard filters and user preferences. Never mirror server data into Zustand.
 - All forms: React Hook Form + Zod. The Zod schema is the single source of validation
@@ -193,6 +200,50 @@ Android only. Kotlin native modules for app usage tracking, battery information,
 device details, and network state; React Native calls into them. Anything needing an
 Android API goes in the Kotlin layer, not a JS shim.
 
+### Per-device collection scope
+
+What a given machine may record is chosen when its **enrolment code is minted**, and can
+be changed later per device by a manager. Three sets are intersected, most-restrictive
+wins, in `packages/types/src/collection.ts`:
+
+```text
+PLATFORM_DATA_TYPES[platform]     what the platform can physically do
+  minus device_collection_settings rows with enabled = false
+  intersect consent_records.granted_types
+```
+
+- **It is a deny list, not an allow list.** An enrolment code does not know whether a
+  laptop or a phone will redeem it, so an allow list would arrive at a phone as "collect
+  only the four types the dialog listed", and any type added later would be denied on
+  every device already in the field. **No row means permitted** — which is also why the
+  migration needed no backfill and changed no behaviour on deploy.
+- **Enforced on the server, not just the agent** — non-negotiable #1. An agent is a
+  binary on someone's laptop; the ingest routes refuse a forbidden type themselves.
+- **The consent screen renders exactly the permitted set.** A consent that promises more
+  or less than what is collected is not consent.
+- Where a type is switched off, the dashboard says so and **names who did it and when**
+  — never a plain empty state, which reads as "they did nothing".
+
+### Email
+
+Resend, over its REST API — no SMTP anywhere, and no `resend` npm package in a service
+that holds the service-role key. `apps/api/src/lib/email/`.
+
+- **`RESEND_API_KEY` is the only variable needed, and it is optional.** Unset, every
+  message is composed, addressed and logged instead of sent. An unconfigured mailer must
+  never stop the API booting: a missing key taking monitoring down for a whole company
+  over a notification is the worse failure by far.
+- **Sending never throws and never blocks.** Every caller is doing something else, and a
+  bounced mailbox must not roll back an account that was created. `sendInBackground`.
+- **Every template writes HTML *and* plain text.** A message with no text part lands in
+  spam far more often and is unreadable wherever HTML is blocked.
+- `node scripts/email-preview.mjs` renders them all to `.tmp-email/` with no key and
+  sends nothing. **Copy is not reviewable in a diff** — these are read by the people
+  being monitored, and the difference between a notification and a warning is not
+  visible in a template literal.
+- The one thing no env var fixes: the **From domain must be verified in Resend**, or
+  every send is refused with a 403.
+
 ### AI layer
 
 `activity events → analytics processing → AI model → summary storage`.
@@ -234,11 +285,21 @@ strings. Run them with `pnpm check` before any push.
 | --- | --- |
 | `pnpm check:wiring` | A table, column or embed the API or an Edge Function names that the schema does not have |
 | `pnpm check:routes` | An `/api/...` path the dashboard or SDK calls that Fastify never registers |
+| `pnpm check:schema` | A table the API names that the **live database** does not have — i.e. a migration committed but never applied |
 
 The second exists because that failure already shipped: the dashboard called
 `GET /api/analytics/insights` and `GET /api/policies/current`, neither of which
 existed, and both 404s rendered as ordinary empty states — so the AI Insights page
 and the Settings policy block were permanently blank with nothing reporting an error.
+
+So did the third. `…0014_location_tracking.sql` was written, reviewed and committed
+but never applied, and `GET /api/activity/locations` answered `500 Could not find the
+table 'public.location_points' in the schema cache` to every caller. The first two
+checks could not see it — both read the schema this repo *believes* in, and so does
+the code, so a migration that exists on disk and nowhere else looks perfectly wired.
+`check:schema` is the only one that asks the database instead. It **skips**, rather
+than failing, without `SUPABASE_SERVICE_ROLE_KEY` or a network, so a contributor with
+no production credentials can still run `pnpm check`.
 
 ---
 
@@ -278,8 +339,19 @@ client's call.
 4. **Revocation is immediate.** Withdrawn consent, a disabled employee, or a revoked
    device stops collection on the agent's next request.
 5. **The audit log is append-only.** No update or delete policy exists on it.
-6. **Location tracking is not implemented.** `docs/scope.md` marks it optional and
-   client-dependent. Do not add it without an explicit decision.
+6. **Location tracking is in scope as of 2026-08-07, and is the most sensitive thing
+   this product collects.** `docs/scope.md` §3.5 marks it optional and client-dependent;
+   the client asked for it by name on 2026-08-07, choosing current location **plus
+   history** and collection while the app is closed. Geofencing — the third item in
+   §3.5 — was offered and deferred, and no zones table exists.
+   Three things follow and none of them are optional:
+   - **An employee sees their own trail and nobody else's.** Non-negotiable #3 applied
+     to the one dataset where getting it wrong follows someone home.
+   - **Points are written only against a device whose consent is in force**, gated by
+     `assertConsent` on the same path as every other event.
+   - **Retention is deliberately unset.** A location history kept forever is a
+     different product from one kept for 30 days. That is the client's call to make
+     explicitly, and it is still outstanding — chase it before the demo.
 
 ## Scope decisions taken after the documents were locked
 
@@ -292,6 +364,9 @@ until they confirm the edit.
 | 2026-08-05 | **Website restriction is in scope.** The admin panel can set rules that block sites, enforced by a managed browser extension. | `docs/scope.md` §8 lists control features under *Later — not part of MVP* |
 | 2026-08-05 | **The dashboard may go beyond `docs/design.md`** where a change demonstrably improves the product. Asked for by name: "if you can improve the design rather than just docs/design.md and if you have better ideas according to this project please proceed." | `docs/design.md` was previously followed to the letter |
 | 2026-08-06 | **The Android agent's tab bar may be translucent.** Asked for by name ("make the tab bar like ios liquid glass"), and confined to `apps/android-agent/src/components/TabBar.tsx` — chosen over glass everywhere, which was offered and declined. The rest of the app takes iOS *structure* only: collapsing large titles, grouped inset lists, hairline separators, spring presses. | `docs/design.md` lists **glassmorphism** under *Avoid*, and the 2026-08-05 permission above named only the dashboard |
+| 2026-08-08 | **Per-device collection scope, chosen at enrolment.** Whoever mints an enrolment code picks which data types that machine may collect; the consent screen renders exactly that set; a manager can change it later per device and the employee is emailed. Asked for by name. Enforced server-side as well as on the agent, because the agent is a binary on a machine we do not control. | `docs/scope.md` treats collection scope as a company-wide policy, not a per-device one |
+| 2026-08-08 | **Email, via Resend.** `docs/stack.md` names no mail provider at all. Resend is an HTTP API, so it needs no SMTP and no new runtime; the key is optional and mail degrades to logging without it. | `docs/stack.md` §13 lists no email in the deployment stack |
+| 2026-08-08 | **Next.js 15 → 16, and the dashboard's request gate is `src/proxy.ts`.** Asked for by name: "the next latest should be used… must be using proxy.ts". `docs/stack.md` §3 is amended in place rather than overridden here, because the client authorised the document edit. Carried three consequences: the `middleware.ts` → `proxy.ts` rename, Turbopack becoming the default builder (which rejected `module.exports` in the ESM `packages/ui/tailwind-preset.js`), and Node ≥ 20.9 / React ^19, both already met. | `docs/stack.md` locked **Next.js 15** |
 | 2026-08-07 | **That tab bar is a floating capsule, not an edge-to-edge bar.** Asked for by name against a reference screenshot. It is inset from both screen edges, fully rounded (radius = half its height), hairline-bordered, and carries a spring-driven pill behind the selected tab. Same file, same exception — `radius` in `theme.ts` is untouched and still 8, so nothing else in the app can pick this radius up by accident. | `docs/design.md` locks an **8px radius** and lists **huge rounded cards** under *Avoid* |
 
 Two parts of the design direction are **not** loosened by that, because neither is a
@@ -321,6 +396,35 @@ Two things that decision does **not** do, and must not be allowed to drift into:
 The reason it is one piece of work rather than two: on Windows there is no supported way
 to read a browser's address bar, so website *tracking* already needed a managed
 extension. The mechanism that reports a URL is the mechanism that can refuse it.
+
+**Restriction stays a blocklist. Allowlist mode was designed on 2026-08-10 and deliberately
+not built** — along with the per-user scoping and the request-and-approve queue that would
+have come with it. Do not re-propose them without reading this paragraph first.
+
+A browser extension cannot deliver deny-by-default. The employee can disable it, open a
+guest profile, or install a second browser. `ExtensionInstallForcelist` closes the first
+door; controlling *which browsers exist on the machine* is MDM, and MDM is out of scope by
+name in `docs/scope.md` §8. That gap is the whole argument, because the two modes fail in
+different directions:
+
+- A **blocklist** that can be bypassed still works. It is a deterrent, every refusal lands
+  in `website_block_events` as a record, and it degrades gracefully.
+- An **allowlist** that can be bypassed is a false promise. An admin told "only these sites
+  are reachable" learns otherwise from an incident, not from the product.
+
+Two supporting findings. Of the six reference products in `docs/inspiration.md`, exactly one
+does website blocking at all — ActivTrak, as a per-computer blocklist by domain. None does
+an allowlist; that belongs to web filtering and DLP (Zscaler, Umbrella, BrowseControl).
+And an allowlist breaks a working machine faster than it restricts one: a "site" is many
+domains, so allowing `gmail.com` still blocks `mail.google.com`, `accounts.google.com` and
+`gstatic.com`, and sign-in stops working everywhere.
+
+If it is ever revived, the design that makes it survivable is on record: block `main_frame`
+navigations only so page sub-resources are never on the list; match the registrable domain
+and its subdomains; ship starter templates per SaaS suite; allow the identity providers by
+default; run a record-only preview mode before enforcing; and fail **open** when the agent
+is unreachable, because a monitoring product must never leave a laptop unable to open any
+website. It belongs with force-install, in Phase 2, where it can be honest.
 
 **`docs/scope.md` §8 still says otherwise.** Confirm the document edit before the demo.
 

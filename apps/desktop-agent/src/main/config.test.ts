@@ -112,9 +112,11 @@ describe("ConfigStore.update and the write allowlist", () => {
 
     expect(Object.keys(configFileJson()).sort()).toEqual([
       "apiUrl",
+      "collection",
       "companyId",
       "consentedPolicyVersion",
       "deviceId",
+      "pendingTypes",
       "policy",
       "profileId",
       "revoked",
@@ -286,6 +288,8 @@ describe("ConfigStore.load with a damaged file", () => {
       companyId: null,
       consentedPolicyVersion: null,
       policy: null,
+      collection: null,
+      pendingTypes: [],
       revoked: false,
     });
   });

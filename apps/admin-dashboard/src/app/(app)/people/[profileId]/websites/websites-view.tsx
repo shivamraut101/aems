@@ -30,12 +30,13 @@ import {
 /**
  * Websites tab — scope §2.5.
  *
- * The one screen whose completeness depends on which OS the person works on. The
- * agent reads a real address from the browser on macOS; on Windows there is no
- * supported way to read a tab's address from outside the browser, so it records only
- * a domain the window title spells out and refuses to guess. That gap is stated on
- * the page rather than left to be discovered as a bug — a short list here is a
- * platform limit, not an absence of work.
+ * The one screen whose completeness depends on the machine rather than on the day. The
+ * agent reads a real address from the browser on macOS; on Windows there is no supported
+ * way to read a tab's address from outside the browser, so unless the managed AEMS
+ * extension is connected it records only a domain the window title spells out and
+ * refuses to guess. That gap is stated on the page rather than left to be discovered as
+ * a bug — a short list here is a platform limit, not an absence of work, and an empty
+ * one says so in its own title.
  */
 export function WebsitesTabView({ profileId }: { profileId: string }) {
   return (
@@ -57,7 +58,18 @@ function WebsitesTab({ profileId }: { profileId: string }) {
   const coverage = useMemo(
     () =>
       websiteCoverage(
-        devicesForProfile(devices.data ?? [], profileId).map((device) => device.platform),
+        devicesForProfile(devices.data ?? [], profileId)
+          // A machine revoked six months ago reports nothing and explains nothing. Left
+          // in, one retired Windows laptop turned every day on a colleague's Mac into
+          // "some of these devices cannot report addresses", which was false about the
+          // only computer they use.
+          .filter((device) => device.status !== "revoked")
+          .map((device) => ({
+            platform: device.platform,
+            extension: device.browser_extension_linked,
+            extensionSeenAt: device.browser_extension_seen_at,
+            recording: device.website_addresses_recorded,
+          })),
       ),
     [devices.data, profileId],
   );
@@ -96,10 +108,7 @@ function WebsitesTab({ profileId }: { profileId: string }) {
           <LoadingPanel />
         ) : rows.length === 0 ? (
           <Panel>
-            <EmptyState
-              title="No website activity recorded on this day"
-              body={emptyBody(coverage.level)}
-            />
+            <EmptyState title={emptyTitle(coverage.level)} body={emptyBody(coverage.level)} />
           </Panel>
         ) : (
           <>
@@ -113,6 +122,20 @@ function WebsitesTab({ profileId }: { profileId: string }) {
 }
 
 /**
+ * "Recorded none" and "could record none" are different facts, and only the first is a
+ * statement about what this person did.
+ *
+ * `mixed` gets neither. Part of the fleet can report addresses and part cannot, so on a
+ * day with no rows there is genuinely no way to tell which happened, and picking either
+ * sentence would assert something the data does not support — the body says so instead.
+ */
+function emptyTitle(level: CoverageLevel): string {
+  if (level === "browser-url") return "No website activity recorded on this day";
+  if (level === "mixed") return "No website activity on this day";
+  return "No website activity could be recorded on this day";
+}
+
+/**
  * Why the list is empty, in the terms that actually apply to this person.
  *
  * The `unknown` case used to be told to "try another day", which is advice that cannot
@@ -121,12 +144,21 @@ function WebsitesTab({ profileId }: { profileId: string }) {
  * is worse than saying so.
  */
 function emptyBody(level: CoverageLevel): string {
-  if (level === "window-title" || level === "mixed") {
-    return "On Windows this is expected unless a page title spelled out its address. Application usage for the same day is on the Apps tab.";
+  // Says the same thing as the coverage note above it, because they were contradicting
+  // each other: the note correctly reported a mixed fleet while this asserted a single
+  // computer with no extension.
+  if (level === "mixed") {
+    return "Some of this person's devices report browser addresses and some do not, so a day worked on the machine that cannot would look like this whether or not they browsed. Application usage for the same day is on the Apps tab, and the Devices tab says which machines report addresses.";
+  }
+
+  if (level === "window-title") {
+    return "This person's Windows computer is not reporting browser addresses, and Windows gives the agent no other way to read one — so this day would look like this whether or not they browsed. Application usage for the same day is on the Apps tab, and the Devices tab says why.";
   }
 
   if (level === "unknown") {
-    return "No Windows or macOS device is enrolled for this person, and browser addresses come from the desktop agent only. Another day will look the same until one is enrolled — the Devices tab is where to check.";
+    // Not "no device is enrolled": a Mac whose website collection has been switched off
+    // lands here too, and it is very much enrolled.
+    return "No enrolled device is reporting browser addresses for this person, and they come from the Windows and macOS agents only. Another day will look the same until that changes — the Devices tab is where to check.";
   }
 
   return "Browser time is captured only while a work session is open on an enrolled device. Use the day picker above to check another day.";

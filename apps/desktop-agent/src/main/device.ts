@@ -113,7 +113,20 @@ export function readHostFacts(): DeviceHostFacts {
  * length caps — remain testable without a process spawn.
  */
 export async function collectEnrollmentRequest(): Promise<DeviceEnrollmentRequest> {
-  return collectDeviceFacts({ ...readHostFacts(), model: await readMachineModel() });
+  const [model, installedMemoryBytes] = await Promise.all([
+    readMachineModel(),
+    readInstalledMemoryBytes(),
+  ]);
+
+  const host = readHostFacts();
+
+  return collectDeviceFacts({
+    ...host,
+    model,
+    // `readHostFacts` reports usable memory because it is synchronous and cannot
+    // await a subprocess. Prefer the installed figure when the OS gave us one.
+    totalMemoryBytes: installedMemoryBytes ?? host.totalMemoryBytes,
+  });
 }
 
 /**
@@ -207,6 +220,59 @@ export async function readMachineModel(
 async function defaultModelExec(file: string, args: string[]): Promise<string> {
   const { stdout } = await run(file, args, { timeout: 5_000, windowsHide: true });
   return stdout;
+}
+
+/** Sums the DIMM capacities `wmic memorychip` prints, one per line under a header. */
+export function parseWindowsMemory(output: string): number | null {
+  let total = 0;
+
+  for (const line of output.split(/\r?\n/)) {
+    const digits = /^\s*(\d+)\s*$/.exec(line);
+    if (digits?.[1] === undefined) continue;
+    total += Number(digits[1]);
+  }
+
+  return total > 0 ? total : null;
+}
+
+/** `sysctl -n hw.memsize`: one integer, and already installed rather than usable. */
+export function parseMacMemory(output: string): number | null {
+  const parsed = Number(output.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * How much memory is *installed*, which is not what `os.totalmem()` answers.
+ *
+ * `totalmem()` is `GlobalMemoryStatusEx().ullTotalPhys` on Windows — physical memory
+ * **available to the OS**, with hardware reservations already subtracted. Integrated
+ * graphics take their share out of exactly that, so a Ryzen laptop with 8 GB fitted
+ * reports about 6.8 and the inventory column read "6 GB". Measured on a 16 GB machine
+ * here: `totalmem()` 15.65 GB, DIMMs 16.00 GB.
+ *
+ * An inventory answers "what is in this machine", so it has to be the DIMMs. Neither
+ * command is PowerShell, for the reason `readHostFacts` documents — a hardened image
+ * denies it. `wmic` is deprecated and absent from the newest Windows builds, and macOS
+ * `hw.memsize` is already installed memory, so both paths fall back to `totalmem()`
+ * rather than failing: a slightly low number beats an empty column.
+ */
+export async function readInstalledMemoryBytes(
+  platform: string = process.platform,
+  exec: (file: string, args: string[]) => Promise<string> = defaultModelExec,
+): Promise<number | null> {
+  try {
+    if (platform === "win32") {
+      return parseWindowsMemory(await exec("wmic", ["memorychip", "get", "Capacity"]));
+    }
+
+    if (platform === "darwin") {
+      return parseMacMemory(await exec("/usr/sbin/sysctl", ["-n", "hw.memsize"]));
+    }
+  } catch {
+    // Same rule as the model: one field is never worth failing an enrolment over.
+  }
+
+  return null;
 }
 
 /**

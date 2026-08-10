@@ -22,8 +22,12 @@ export function timelineQueryKey(
   from: string,
   to: string,
   bucketSeconds: number = TIMELINE_SLOT_SECONDS,
+  deviceId: string | null = null,
 ) {
-  return ["timeline", profileId, from, to, bucketSeconds] as const;
+  // `deviceId` is part of the key, not a filter applied after the fetch: the whole-person
+  // day and one machine's day are different answers to different questions, and caching
+  // them under one key would serve whichever arrived first.
+  return ["timeline", profileId, from, to, bucketSeconds, deviceId] as const;
 }
 
 /**
@@ -39,14 +43,18 @@ export function useDayTimeline(
   from: string,
   to: string,
   bucketSeconds: number = TIMELINE_SLOT_SECONDS,
+  /** One machine's day. Null asks about the person, which the API answers from their
+   *  primary device when one is set, and from every device when none is. */
+  deviceId: string | null = null,
 ) {
   return useQuery({
-    queryKey: timelineQueryKey(profileId, from, to, bucketSeconds),
+    queryKey: timelineQueryKey(profileId, from, to, bucketSeconds, deviceId),
     queryFn: () =>
       apiFetch<DayTimeline>(
         `/api/analytics/timeline?profileId=${encodeURIComponent(profileId)}` +
           `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` +
-          `&bucketSeconds=${bucketSeconds}`,
+          `&bucketSeconds=${bucketSeconds}` +
+          (deviceId === null ? "" : `&deviceId=${encodeURIComponent(deviceId)}`),
       ),
     // A zero-length window is a day that has not started yet, not a request worth making.
     enabled: Boolean(profileId) && Boolean(from) && Boolean(to) && from !== to,

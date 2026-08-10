@@ -138,13 +138,20 @@ export class Tracker {
   private current: OpenInterval | null = null;
 
   /**
-   * Both dependencies are injectable: ids so tests can assert on them without
-   * matching a random string, and the URL reader so the Windows and macOS halves of
-   * website tracking are both exercisable from either machine.
+   * Every dependency is injectable: ids so tests can assert on them without matching a
+   * random string, the URL reader so the Windows and macOS halves of website tracking
+   * are both exercisable from either machine, and the website gate because these two
+   * fields are the whole of what a `websites` setting governs on this side.
+   *
+   * `mayReportUrls` is a function read per call rather than a captured boolean, so an
+   * administrator switching websites off reaches the very next focus change instead of
+   * the next restart. Defaults to permitting, which is what an agent with no per-device
+   * scope has always done.
    */
   constructor(
     private readonly newEventId: () => string = randomUUID,
     private readonly urlReader: BrowserUrlReader = createBrowserUrlReader(process.platform),
+    private readonly mayReportUrls: () => boolean = () => true,
   ) {}
 
   /**
@@ -173,7 +180,7 @@ export class Tracker {
     // The reader, not the raw sample, decides what may be called an address: only it
     // knows whether this platform can see a URL at all, and whether a window title is
     // a browser's or an editor's.
-    const domain = extractDomain(this.urlReader.read(sample));
+    const domain = this.mayReportUrls() ? extractDomain(this.urlReader.read(sample)) : null;
     if (
       previous !== null &&
       previous.sample.appName === sample.appName &&
@@ -187,12 +194,19 @@ export class Tracker {
   }
 
   private close(interval: OpenInterval, now: Date): ActivityEventInput {
+    // Asked again here rather than trusted from open time: an interval that began while
+    // websites were permitted must not carry an address out of a machine where they
+    // have since been switched off. The row itself is still emitted — it is a true
+    // record of an application in focus, which is `applications` data, and dropping it
+    // would blank the Apps view to enforce a website setting.
+    const urls = this.mayReportUrls();
+
     return {
       clientEventId: this.newEventId(),
       appName: interval.sample.appName,
       windowTitle: interval.sample.windowTitle,
-      url: interval.sample.url,
-      domain: interval.domain,
+      url: urls ? interval.sample.url : null,
+      domain: urls ? interval.domain : null,
       startedAt: interval.startedAt.toISOString(),
       endedAt: now.toISOString(),
     };

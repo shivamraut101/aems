@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { SESSION_QUERY } from "@/lib/api";
+import { ApiError, SESSION_QUERY } from "@/lib/api";
 import type { Session } from "@/lib/session";
 
 import { RenderedAtProvider } from "./relative-time";
@@ -48,7 +48,24 @@ export function Providers({
           // Monitoring data ages fast; a stale dashboard is a misleading one.
           staleTime: 15_000,
           refetchOnWindowFocus: true,
-          retry: 1,
+          /*
+           * Three attempts, but only for failures that retrying can fix.
+           *
+           * One attempt meant a single dropped packet put a warning strip on screen
+           * that a manager had to read, decide about and dismiss by hand — for a
+           * condition that had already cleared. Most of what these banners reported
+           * was one bad request, not an outage.
+           *
+           * A refused request is never retried, whatever its count. A 403 on someone
+           * else's profile and a 400 on a bad range are settled answers; asking twice
+           * more delays the real error state and spends the server's time arguing.
+           * `ApiError` is exactly "the API answered and said no" — `NetworkError` is
+           * "no answer at all", which is the retryable case.
+           */
+          retry: (failureCount, error) => !(error instanceof ApiError) && failureCount < 3,
+          // 400ms, 800ms, 1.6s. Fast enough that a blip resolves before anyone reads a
+          // banner, slow enough not to hammer an API that is genuinely struggling.
+          retryDelay: (attempt) => Math.min(400 * 2 ** attempt, 4_000),
         },
       },
     });

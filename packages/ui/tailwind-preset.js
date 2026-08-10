@@ -7,7 +7,10 @@
  */
 
 /** @type {import("tailwindcss").Config} */
-module.exports = {
+// `export default`, not `module.exports`. This package is `"type": "module"`, so the
+// CommonJS form was always a mismatch — webpack tolerated it, and Next 16's Turbopack
+// (now the default builder) does not: "Export default doesn't exist in target module".
+export default {
   darkMode: ["class"],
   theme: {
     container: {

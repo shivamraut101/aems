@@ -427,6 +427,23 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/")).toBe(false);
     expect(isPublicPath("/people")).toBe(false);
   });
+
+  it("lets both halves of password recovery through unauthenticated", () => {
+    // Somebody who cannot sign in is by definition not signed in. /reset-password in
+    // particular has to be public because Supabase puts the recovery session in the
+    // URL *fragment*, which a browser never sends to a server — so the middleware
+    // cannot see it and would bounce the emailed link to /login.
+    expect(isPublicPath("/forgot-password")).toBe(true);
+    expect(isPublicPath("/reset-password")).toBe(true);
+  });
+
+  it("keeps /set-password behind a session", () => {
+    // The opposite of the two above, and the distinction matters. Recovery is for
+    // people with no session; the forced change is for somebody who has just signed
+    // in with a temporary password. Making it public would let anyone open the page,
+    // and `updateUser` there acts on whoever's session the browser happens to hold.
+    expect(isPublicPath("/set-password")).toBe(false);
+  });
 });
 
 describe("safeNextPath", () => {

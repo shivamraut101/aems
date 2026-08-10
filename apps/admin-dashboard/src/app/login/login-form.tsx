@@ -4,6 +4,7 @@ import { Button, Field, Input } from "@aems/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
@@ -45,7 +46,10 @@ function describeAuthError(message: string): string {
   const lower = message.toLowerCase();
 
   if (lower.includes("invalid login credentials") || lower.includes("invalid_credentials")) {
-    return "That email and password do not match. Check for caps lock or a trailing space, then try again — your administrator can reset the password.";
+    // No longer sends them to an administrator: there is a reset link on this form now,
+    // and pointing somebody at a colleague for something they can do themselves is how
+    // a five-second problem becomes a next-morning one.
+    return "That email and password do not match. Check for caps lock or a trailing space, then try again — or reset your password below.";
   }
   if (lower.includes("email not confirmed")) {
     return "This account has not been confirmed yet. Ask your administrator to finish setting it up.";
@@ -219,6 +223,18 @@ export function LoginForm({ next }: { next: string }) {
           </div>
         )}
       </Field>
+
+      {/* Below the field rather than beside its label: somebody reaches for this only
+          after the password has failed them, and putting it in the tab order before
+          they have typed anything makes it a distraction on the way in. */}
+      <p className="-mt-1 text-right text-xs">
+        <Link
+          href="/forgot-password"
+          className="rounded text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Forgot your password?
+        </Link>
+      </p>
 
       {/* One busy state spanning all three waits. It clears when the destination
           renders and this form unmounts — never before.
