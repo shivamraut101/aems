@@ -71,6 +71,7 @@ describe("toPolicyTerms", () => {
         name: "Standard Monitoring Policy",
         screenshot_interval_seconds: 600,
         idle_threshold_seconds: 60,
+        max_open_break_seconds: 10800,
         tracked_categories: ["development"],
         created_at: "2026-08-05T13:31:48.000Z",
         updated_at: "2026-08-05T13:31:48.000Z",

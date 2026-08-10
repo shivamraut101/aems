@@ -2,11 +2,11 @@ import type { BreakEventInput } from "@aems/types";
 
 import { client } from "./api";
 import {
+  DEFAULT_MAX_OPEN_BREAK_SECONDS,
   hasEnded,
   isOnBreak,
   loadDay,
   localDayKey,
-  MAX_OPEN_BREAK_MS,
   openBreak,
   saveDay,
   type DayState,
@@ -162,17 +162,31 @@ async function closeOpenBreak(state: DayState, endedAtMs: number): Promise<DaySt
 }
 
 /**
- * Ends a day whose break has been open for more than three hours, backdated to when
- * the break began.
+ * Ends a day whose break has been open past the policy's limit, backdated to when the
+ * break began.
  *
  * Called from the sync cycle rather than a timer, for the same reason the day rolls
  * over on read: a phone asleep in a drawer runs no timers, but it does sync when it
  * wakes. Without this a break started at 5pm reports as a break until morning.
+ *
+ * `maxOpenBreakSeconds` is **passed in, not re-read**. The caller already holds the
+ * policy it loaded from `SecureStore`; reading it a second time here would make two
+ * sources for one number, and two sources eventually disagree. Absence falls back to
+ * {@link DEFAULT_MAX_OPEN_BREAK_SECONDS} rather than to no limit at all — see the note
+ * on that constant.
  */
-export async function closeForgottenBreak(nowMs: number = Date.now()): Promise<DayState> {
+export async function closeForgottenBreak(
+  maxOpenBreakSeconds: number | undefined,
+  nowMs: number = Date.now(),
+): Promise<DayState> {
+  const limitMs =
+    (typeof maxOpenBreakSeconds === "number" && maxOpenBreakSeconds > 0
+      ? maxOpenBreakSeconds
+      : DEFAULT_MAX_OPEN_BREAK_SECONDS) * 1000;
+
   const current = await loadDay();
   const open = openBreak(current);
-  if (open === null || nowMs - open.startedAtMs < MAX_OPEN_BREAK_MS) return current;
+  if (open === null || nowMs - open.startedAtMs < limitMs) return current;
 
   const closed = await closeOpenBreak(current, open.startedAtMs);
   const next: DayState = { ...closed, endedAtMs: open.startedAtMs };

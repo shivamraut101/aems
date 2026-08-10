@@ -115,6 +115,7 @@ export interface Database {
           name: string;
           screenshot_interval_seconds: number;
           idle_threshold_seconds: number;
+          max_open_break_seconds: number;
           tracked_categories: string[];
           created_at: string;
           updated_at: string;
@@ -126,6 +127,7 @@ export interface Database {
           name: string;
           screenshot_interval_seconds?: number;
           idle_threshold_seconds?: number;
+          max_open_break_seconds?: number;
           tracked_categories?: string[];
           created_at?: string;
           updated_at?: string;

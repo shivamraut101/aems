@@ -141,7 +141,9 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
 
     const { data: policy } = await app.supabase
       .from("policies")
-      .select("version, name, screenshot_interval_seconds, idle_threshold_seconds, tracked_categories")
+      .select(
+        "version, name, screenshot_interval_seconds, idle_threshold_seconds, max_open_break_seconds, tracked_categories",
+      )
       .eq("company_id", ids.companyId)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -194,6 +196,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           name: policy.name,
           screenshotIntervalSeconds: policy.screenshot_interval_seconds,
           idleThresholdSeconds: policy.idle_threshold_seconds,
+          maxOpenBreakSeconds: policy.max_open_break_seconds,
           trackedCategories: policy.tracked_categories,
         },
       },

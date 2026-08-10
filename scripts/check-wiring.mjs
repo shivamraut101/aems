@@ -36,13 +36,20 @@ if (process.argv.includes('--print-schema')) {
 // 20260805000011 (profiles.deactivated_at), 20260805000012 (device enrolment codes)
 // and 20260805000013 (website restrictions).
 //
-// ⚠️ `location_points` below is the one entry NOT yet confirmed against the live
-// database. Migration 20260807000014 (location tracking, scope §3.5) is written and
-// committed but has not been applied — the CLI on the machine that wrote it is
-// authenticated to a different organisation and cannot reach project
-// dayyrqcfktwwnkttlres. Until somebody applies it, this check passes while the live
-// database would answer `POST /api/activity/events` with a 500 on any batch carrying
-// locations. Re-run the query above and refresh this whole snapshot once it is applied.
+// ⚠️ TWO entries below are NOT yet confirmed against the live database, both because
+// their migration is written and committed but unapplied — the CLI on the machine that
+// wrote them is authenticated to a different organisation and cannot reach project
+// dayyrqcfktwwnkttlres. Until somebody applies them, this check passes while the live
+// database would fail:
+//
+//   * `location_points` — migration 20260807000014 (location tracking, scope §3.5).
+//     `POST /api/activity/events` answers 500 on any batch carrying locations.
+//   * `policies.max_open_break_seconds` — migration 20260810000015 (the forgotten-break
+//     limit as a policy field). `POST /api/devices/enroll` selects the column, so
+//     enrolment fails outright until the migration lands — every agent, not an edge
+//     case. Apply this one before the demo.
+//
+// Re-run the query above and refresh this whole snapshot once they are applied.
 const SCHEMA = {
   activity_events: 'id,company_id,profile_id,device_id,work_session_id,app_name,window_title,url,category,started_at,ended_at,client_event_id,created_at,domain',
   ai_summaries: 'id,company_id,profile_id,kind,period_start,period_end,provider,model,content,created_at',
@@ -57,7 +64,7 @@ const SCHEMA = {
   devices: 'id,company_id,profile_id,platform,label,os_version,agent_version,enrolled_at,last_seen_at,status,created_at,updated_at,device_name,model,cpu,ram_mb,storage_mb',
   idle_events: 'id,company_id,profile_id,device_id,idle_start_at,idle_end_at,duration_seconds,client_event_id,created_at',
   location_points: 'id,company_id,profile_id,device_id,work_session_id,recorded_at,latitude,longitude,accuracy_m,client_event_id,created_at',
-  policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at',
+  policies: 'id,company_id,version,name,screenshot_interval_seconds,idle_threshold_seconds,tracked_categories,created_at,updated_at,max_open_break_seconds',
   profiles: 'id,company_id,email,full_name,role,department,created_at,updated_at,manager_id,monitoring_enabled,deactivated_at',
   reports: 'id,company_id,profile_id,kind,period_start,period_end,status,storage_path,created_at,updated_at,format,grouping,params,requested_by,row_count,failure_reason',
   screenshots: 'id,company_id,profile_id,device_id,work_session_id,captured_at,storage_path,thumbnail_path,blurred,client_event_id,created_at',

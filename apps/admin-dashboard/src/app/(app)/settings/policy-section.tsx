@@ -20,6 +20,7 @@ import { describeError, useSession } from "@/lib/api";
 import { useCompanyPolicy, usePublishPolicy } from "@/lib/queries/settings";
 import {
   IDLE_THRESHOLD_OPTIONS,
+  MAX_OPEN_BREAK_OPTIONS,
   POLICY_ROLLOUT_NOTE,
   SCREENSHOT_INTERVAL_OPTIONS,
   intervalLabel,
@@ -109,6 +110,9 @@ export function PolicySection() {
             <ValueSkeleton className="w-20" />
           </DefinitionRow>
           <DefinitionRow term="Idle threshold">
+            <ValueSkeleton className="w-20" />
+          </DefinitionRow>
+          <DefinitionRow term="Forgotten-break limit">
             <ValueSkeleton className="w-20" />
           </DefinitionRow>
           <DefinitionRow term="Tracked categories">
@@ -208,6 +212,15 @@ function PolicyFacts({ policy }: { policy: PolicyRecord }) {
       </DefinitionRow>
 
       <DefinitionRow
+        term="Forgotten-break limit"
+        hint="A break running longer than this is treated as one the employee forgot to end. The agent closes their day backdated to when the break started, so an evening is not recorded as tracked time."
+      >
+        <span className="tabular font-medium">
+          {intervalLabel(policy.max_open_break_seconds)}
+        </span>
+      </DefinitionRow>
+
+      <DefinitionRow
         term="Tracked categories"
         hint={
           policy.tracked_categories.length === 0
@@ -266,8 +279,10 @@ function PolicyForm({
 
   const screenshotSeconds = watch("screenshotIntervalSeconds");
   const idleSeconds = watch("idleThresholdSeconds");
+  const breakSeconds = watch("maxOpenBreakSeconds");
   const screenshotOptions = screenshotIntervalChoices(screenshotSeconds);
   const idleOptions = intervalOptionsWith(IDLE_THRESHOLD_OPTIONS, idleSeconds);
+  const breakOptions = intervalOptionsWith(MAX_OPEN_BREAK_OPTIONS, breakSeconds);
 
   const publish = (draft: PolicyDraft) => {
     // The version in the confirmation comes from the stored row, never from the
@@ -364,6 +379,36 @@ function PolicyForm({
                     </SelectTrigger>
                     <SelectContent>
                       {idleOptions.map((option) => (
+                        <SelectItem key={option.seconds} value={String(option.seconds)}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
+          </Field>
+
+          <Field
+            label="Forgotten-break limit"
+            hint="A break running longer than this is treated as one the employee forgot to end. Their day is closed backdated to when the break started, so an evening does not accrue as tracked time."
+            error={errors.maxOpenBreakSeconds?.message}
+          >
+            {(field) => (
+              <Controller
+                control={control}
+                name="maxOpenBreakSeconds"
+                render={({ field: control }) => (
+                  <Select
+                    value={String(control.value)}
+                    onValueChange={(value) => control.onChange(Number(value))}
+                  >
+                    <SelectTrigger {...field}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {breakOptions.map((option) => (
                         <SelectItem key={option.seconds} value={String(option.seconds)}>
                           {option.label}
                         </SelectItem>

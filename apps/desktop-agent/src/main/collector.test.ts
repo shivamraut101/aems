@@ -19,7 +19,7 @@ import {
   TICK_INTERVAL_MS,
 } from "./collector.js";
 import type { CollectorAdapters } from "./collector.js";
-import { MAX_OPEN_BREAK_MS } from "./collector.js";
+import { DEFAULT_MAX_OPEN_BREAK_MS } from "./collector.js";
 import { IdleWatcher } from "./idle.js";
 import type { DayState } from "./persistence.js";
 import { emptyDayState } from "./persistence.js";
@@ -81,6 +81,7 @@ class FakeApi {
       acceptedActivity: 0,
       acceptedIdle: 0,
       acceptedBreaks: 0,
+      acceptedLocations: 0,
       duplicates: 0,
     });
   }
@@ -1170,11 +1171,11 @@ describe("an abandoned break", () => {
     h.collector.startBreak(at(60));
 
     // Still a plausible break: nothing happens.
-    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 - 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 - 60));
     expect(h.collector.dayEnded).toBe(false);
 
     // Past the ceiling: the person went home.
-    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 + 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 + 60));
     expect(h.collector.dayEnded).toBe(true);
     expect(h.sessions.current).toBeNull();
   });
@@ -1183,11 +1184,11 @@ describe("an abandoned break", () => {
     const h = harness();
     await h.collector.tick(at(0));
     h.collector.startBreak(at(60));
-    await h.collector.tick(at(60 + MAX_OPEN_BREAK_MS / 1000 + 60));
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 + 60));
 
     // The whole point. Ending at `now` would count every hour of the break as tracked;
     // ending at the break start says what happened — work stopped there.
-    expect(h.collector.dayTotals.breakSeconds).toBeLessThan(MAX_OPEN_BREAK_MS / 1000);
+    expect(h.collector.dayTotals.breakSeconds).toBeLessThan(DEFAULT_MAX_OPEN_BREAK_MS / 1000);
   });
 
   it("leaves a short break alone", async () => {
@@ -1199,5 +1200,57 @@ describe("an abandoned break", () => {
     // Lunch is not an abandoned day.
     expect(h.collector.dayEnded).toBe(false);
     expect(h.sessions.current).not.toBeNull();
+  });
+
+  /*
+   * The limit is the admin's, not the binary's.
+   *
+   * Without this the policy field can be added, plumbed through four surfaces and read
+   * by nothing — the suite would stay green on the hardcoded default and the setting
+   * would be decorative. So the assertion is specifically that a policy value SHORTER
+   * than the default takes effect at its own boundary, which the default cannot fake.
+   */
+  it("ends the day at the limit the policy sets, not the built-in default", async () => {
+    const oneHour = 60 * 60;
+    const h = harness(
+      consented({
+        policy: {
+          version: "2026-01",
+          name: "Standard",
+          screenshotIntervalSeconds: 300,
+          idleThresholdSeconds: 120,
+          maxOpenBreakSeconds: oneHour,
+          trackedCategories: [],
+        },
+      }),
+    );
+
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+
+    // Past the built-in three hours this would already be over; under the policy's
+    // hour it is not yet.
+    await h.collector.tick(at(60 + oneHour - 60));
+    expect(h.collector.dayEnded).toBe(false);
+
+    await h.collector.tick(at(60 + oneHour + 60));
+    expect(h.collector.dayEnded).toBe(true);
+    expect(h.sessions.current).toBeNull();
+  });
+
+  /*
+   * Non-negotiable, and the reason `maxOpenBreakSeconds` is optional rather than
+   * required: a policy stored before the column existed carries no value for it. Reading
+   * that absence as "no limit" restores the overnight-billing defect the guard exists
+   * for — the failure mode being guarded is silent, so it needs its own test.
+   */
+  it("falls back to the default when the stored policy predates the field", async () => {
+    // `consented()` builds exactly that policy — no `maxOpenBreakSeconds` at all.
+    const h = harness();
+    await h.collector.tick(at(0));
+    h.collector.startBreak(at(60));
+
+    await h.collector.tick(at(60 + DEFAULT_MAX_OPEN_BREAK_MS / 1000 + 60));
+    expect(h.collector.dayEnded).toBe(true);
   });
 });

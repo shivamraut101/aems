@@ -15,6 +15,7 @@ insert into public.policies (
   name,
   screenshot_interval_seconds,
   idle_threshold_seconds,
+  max_open_break_seconds,
   tracked_categories
 )
 values (
@@ -23,6 +24,7 @@ values (
   'Standard Monitoring Policy',
   300,
   120,
+  10800,
   array['development', 'communication', 'documentation', 'browsing']
 )
 on conflict (company_id, version) do nothing;

@@ -1,3 +1,5 @@
+import type { AgentPolicy } from "@aems/types";
+
 import type { AgentConfig, DaySpan, DayTotals } from "../shared/types/index.js";
 import { emptyTotals, mayCollect } from "../shared/types/index.js";
 import type { IdleState } from "./idle.js";
@@ -299,12 +301,16 @@ export class Collector {
      * This is the automatic counterpart to the tray's End day. Both exist because the
      * alternative is a dashboard that reports overnight idling as a working day, and a
      * manager reading it has no way to tell the difference.
+     *
+     * How long is "this long" is the admin's call, published on the monitoring policy —
+     * it is a statement about what this company counts as a working day, so it belongs
+     * with the terms an employee consents to rather than compiled into the binary.
      */
     const openBreak = this.parts.idle.openBreakSince;
     if (
       this.dayEndedAt === null &&
       openBreak !== null &&
-      now.getTime() - openBreak.getTime() > MAX_OPEN_BREAK_MS
+      now.getTime() - openBreak.getTime() > maxOpenBreakMs(this.parts.config.current.policy)
     ) {
       await this.endDay(openBreak);
       return;
@@ -790,7 +796,8 @@ function discardBefore(spans: DaySpan[], dayStart: Date): void {
 }
 
 /**
- * How long a declared break may run before the day is closed for the employee.
+ * How long a declared break may run before the day is closed for the employee, when no
+ * policy has arrived yet.
  *
  * Three hours is deliberately generous — longer than any lunch, a school run or a
  * dentist appointment, so a real break is never cut short — while being far below the
@@ -798,8 +805,26 @@ function discardBefore(spans: DaySpan[], dayStart: Date): void {
  * asymmetric: too short and someone's genuine long break becomes a second work session
  * they have to explain, too long and the dashboard reports a night's sleep as tracked
  * time. Three hours sits well clear of both.
+ *
+ * **Must equal `policies.max_open_break_seconds`'s column default (10800).** This is a
+ * fallback, not the rule: the value in force is the admin's, read from the policy by
+ * {@link maxOpenBreakMs}. Same discipline as {@link DEFAULT_IDLE_THRESHOLD_SECONDS},
+ * and for the same reason — an agent applying a different limit from the server means
+ * the same afternoon reads differently depending on which side answered.
  */
-export const MAX_OPEN_BREAK_MS = 3 * 60 * 60 * 1000;
+export const DEFAULT_MAX_OPEN_BREAK_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * The break limit this agent is operating under.
+ *
+ * A policy stored before the field existed has no value for it, and reading that
+ * absence as "no limit" restores exactly the overnight-billing defect the guard exists
+ * for — so the fallback is the default, never infinity.
+ */
+export function maxOpenBreakMs(policy: AgentPolicy | null | undefined): number {
+  const seconds = policy?.maxOpenBreakSeconds;
+  return typeof seconds === "number" && seconds > 0 ? seconds * 1000 : DEFAULT_MAX_OPEN_BREAK_MS;
+}
 
 /** Local midnight — the day boundary an employee and their manager both mean. */
 function startOfDay(now: Date): Date {

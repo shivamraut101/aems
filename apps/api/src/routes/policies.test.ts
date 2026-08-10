@@ -178,6 +178,27 @@ describe("policyDraftSchema", () => {
     expect(policyDraftSchema.safeParse({ ...DRAFT, idleThresholdSeconds: 86_400 }).success).toBe(false);
   });
 
+  it("keeps the forgotten-break limit inside the column check", () => {
+    expect(policyDraftSchema.safeParse({ ...DRAFT, maxOpenBreakSeconds: 899 }).success).toBe(false);
+    expect(policyDraftSchema.safeParse({ ...DRAFT, maxOpenBreakSeconds: 900 }).success).toBe(true);
+    expect(policyDraftSchema.safeParse({ ...DRAFT, maxOpenBreakSeconds: 43_200 }).success).toBe(true);
+    // Past 12 hours the limit can no longer catch the overnight case it exists for, so
+    // it is the guard switched off while still reading as configured.
+    expect(policyDraftSchema.safeParse({ ...DRAFT, maxOpenBreakSeconds: 43_201 }).success).toBe(
+      false,
+    );
+  });
+
+  /**
+   * The default is not cosmetic. Absence has to resolve to the limit both agents
+   * already enforce (and the column's own default, 10800) — resolving it to nothing
+   * would let a policy publish with no forgotten-break guard at all, which is the
+   * overnight-billing defect the field exists to prevent.
+   */
+  it("defaults the forgotten-break limit to the column default", () => {
+    expect(policyDraftSchema.parse(DRAFT).maxOpenBreakSeconds).toBe(10_800);
+  });
+
   it("defaults trackedCategories rather than demanding one", () => {
     const { name, screenshotIntervalSeconds, idleThresholdSeconds } = DRAFT;
     const parsed = policyDraftSchema.parse({ name, screenshotIntervalSeconds, idleThresholdSeconds });
@@ -296,6 +317,10 @@ describe("POST /api/policies", () => {
       name: DRAFT.name,
       screenshot_interval_seconds: 300,
       idle_threshold_seconds: 120,
+      // `DRAFT` omits it, so this is the schema default landing in the row — which is
+      // the case that matters: a client written against the previous shape of this
+      // route must still publish the limit both agents already enforce, not a null.
+      max_open_break_seconds: 10800,
       tracked_categories: ["development", "communication"],
     });
   });

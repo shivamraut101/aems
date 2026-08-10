@@ -34,6 +34,7 @@ export interface PolicyRecord {
   name: string;
   screenshot_interval_seconds: number;
   idle_threshold_seconds: number;
+  max_open_break_seconds: number;
   tracked_categories: string[];
   created_at: string;
   updated_at: string;
@@ -171,6 +172,7 @@ export interface PolicyPublishInput {
   name: string;
   screenshotIntervalSeconds: number;
   idleThresholdSeconds: number;
+  maxOpenBreakSeconds: number;
   trackedCategories: string[];
 }
 
@@ -187,6 +189,7 @@ export interface PolicyDraft {
   name: string;
   screenshotIntervalSeconds: number;
   idleThresholdSeconds: number;
+  maxOpenBreakSeconds: number;
   /** Comma-separated. Empty means "record everything", which is the common case. */
   trackedCategories: string;
 }
@@ -218,6 +221,27 @@ export const IDLE_THRESHOLD_OPTIONS: readonly { seconds: number; label: string }
   { seconds: 300, label: "5 min" },
   { seconds: 600, label: "10 min" },
   { seconds: 900, label: "15 min" },
+];
+
+/**
+ * How long a declared break may run before the agent ends the day for the employee.
+ *
+ * Not a preference. A break nobody ends has no natural end, so the agent would accrue
+ * "break" all night and the day would read as an evening of tracked time; past this
+ * limit the agent treats it as a break the person forgot to end and closes the day
+ * **backdated to when the break began**, which is what actually happened.
+ *
+ * The offered range starts at 30 minutes rather than the API's 15-minute floor because
+ * a limit that short cuts genuine lunches short, and a cut-short break lands in
+ * someone's timeline as a second work session they have to explain.
+ */
+export const MAX_OPEN_BREAK_OPTIONS: readonly { seconds: number; label: string }[] = [
+  { seconds: 1800, label: "30 min" },
+  { seconds: 3600, label: "1 h" },
+  { seconds: 7200, label: "2 h" },
+  { seconds: 10800, label: "3 h" },
+  { seconds: 14400, label: "4 h" },
+  { seconds: 21600, label: "6 h" },
 ];
 
 /**
@@ -277,6 +301,8 @@ export function policyDraftFrom(current: PolicyRecord | null | undefined): Polic
     name: current?.name ?? "Standard monitoring policy",
     screenshotIntervalSeconds: current?.screenshot_interval_seconds ?? 300,
     idleThresholdSeconds: current?.idle_threshold_seconds ?? 300,
+    // The column default, so a first policy proposes what both agents already do.
+    maxOpenBreakSeconds: current?.max_open_break_seconds ?? 10800,
     trackedCategories: (current?.tracked_categories ?? []).join(", "),
   };
 }
@@ -350,6 +376,16 @@ export function validatePolicyDraft(
     errors.idleThresholdSeconds = "The threshold must be between 30 seconds and 1 hour.";
   }
 
+  // Bounds copied from the API schema and the column check, not approximated. Both
+  // directions are a real failure: too short cuts genuine breaks short and invents a
+  // second work session, too long stops catching the overnight case the limit exists
+  // for while still reading as configured.
+  if (!isPositiveInteger(draft.maxOpenBreakSeconds)) {
+    errors.maxOpenBreakSeconds = "Choose how long a break may run before the day is closed.";
+  } else if (draft.maxOpenBreakSeconds < 900 || draft.maxOpenBreakSeconds > 43200) {
+    errors.maxOpenBreakSeconds = "The limit must be between 15 minutes and 12 hours.";
+  }
+
   const categories = parseTrackedCategories(draft.trackedCategories);
   if (categories.length > MAX_TRACKED_CATEGORIES) {
     errors.trackedCategories = `${MAX_TRACKED_CATEGORIES} categories is the limit for one policy.`;
@@ -377,6 +413,7 @@ export function policyFormSchema(existingVersions: readonly string[] = []) {
       name: z.string(),
       screenshotIntervalSeconds: z.number(),
       idleThresholdSeconds: z.number(),
+      maxOpenBreakSeconds: z.number(),
       trackedCategories: z.string(),
     })
     .superRefine((draft, ctx) => {
@@ -395,6 +432,7 @@ export function policyDraftToInput(draft: PolicyDraft): PolicyPublishInput {
     name: draft.name.trim(),
     screenshotIntervalSeconds: draft.screenshotIntervalSeconds,
     idleThresholdSeconds: draft.idleThresholdSeconds,
+    maxOpenBreakSeconds: draft.maxOpenBreakSeconds,
     trackedCategories: parseTrackedCategories(draft.trackedCategories),
   };
 }
@@ -436,6 +474,11 @@ export function policyChanges(
       label: "Idle threshold",
       from: current ? intervalLabel(current.idle_threshold_seconds) : null,
       to: intervalLabel(draft.idleThresholdSeconds),
+    },
+    {
+      label: "Forgotten-break limit",
+      from: current ? intervalLabel(current.max_open_break_seconds) : null,
+      to: intervalLabel(draft.maxOpenBreakSeconds),
     },
     {
       label: "Tracked categories",

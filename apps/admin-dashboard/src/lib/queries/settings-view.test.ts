@@ -50,6 +50,7 @@ const policy: PolicyRecord = {
   name: "Standard monitoring policy",
   screenshot_interval_seconds: 300,
   idle_threshold_seconds: 120,
+  max_open_break_seconds: 10800,
   tracked_categories: [],
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
@@ -221,6 +222,7 @@ const draft: PolicyDraft = {
   name: "Standard monitoring policy",
   screenshotIntervalSeconds: 300,
   idleThresholdSeconds: 300,
+  maxOpenBreakSeconds: 10800,
   trackedCategories: "",
 };
 
@@ -465,6 +467,7 @@ describe("policyDraftToInput", () => {
       name: "Standard monitoring policy",
       screenshotIntervalSeconds: 300,
       idleThresholdSeconds: 300,
+      maxOpenBreakSeconds: 10800,
       trackedCategories: [],
     });
   });
@@ -476,6 +479,7 @@ describe("policyDraftToInput", () => {
         name: "Standard monitoring policy",
         screenshotIntervalSeconds: 300,
         idleThresholdSeconds: 300,
+        maxOpenBreakSeconds: 10800,
         trackedCategories: ["A", "B"],
       },
     );

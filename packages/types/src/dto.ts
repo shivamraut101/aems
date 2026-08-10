@@ -63,6 +63,17 @@ export interface AgentPolicy {
   name: string;
   screenshotIntervalSeconds: number;
   idleThresholdSeconds: number;
+  /**
+   * Seconds a declared break may run before the agent ends the day, backdated to when
+   * the break began.
+   *
+   * **Optional, and absence must not be read as "no limit".** A policy an agent stored
+   * before this field existed has no value for it, and an agent that treats that as
+   * unlimited restores exactly the overnight-billing defect the guard was added for.
+   * Fall back to the column default (10800 — see migration `...0015`), never to
+   * infinity.
+   */
+  maxOpenBreakSeconds?: number;
   trackedCategories: string[];
 }
 

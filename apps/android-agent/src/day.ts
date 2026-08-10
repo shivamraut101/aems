@@ -124,12 +124,23 @@ export function hasEnded(state: DayState): boolean {
 }
 
 /**
- * A break left open past this is treated as one the employee forgot to end, and the day
- * is closed at the point the break began. Same guard, and the same three hours, as the
- * desktop collector's `MAX_OPEN_BREAK_MS` — without it a phone put down at 5pm reports
- * a break running until the following morning.
+ * The break limit to apply when the stored policy does not carry one.
+ *
+ * A break left open past the limit is treated as one the employee forgot to end, and the
+ * day is closed at the point the break began — without it a phone put down at 5pm
+ * reports a break running until the following morning.
+ *
+ * The limit in force is `policies.max_open_break_seconds`, chosen by an admin and handed
+ * to the device at enrolment. This constant is only the fallback, and it exists because
+ * a policy stored before that column did has no value for it: reading that absence as
+ * "no limit" would restore exactly the overnight-billing defect the guard was added for.
+ *
+ * **Must equal the column default (10800), and the desktop collector's
+ * `DEFAULT_MAX_OPEN_BREAK_MS`.** A phone and a laptop that disagree end the same
+ * forgotten break at different times, which is far harder to find later than to prevent
+ * here.
  */
-export const MAX_OPEN_BREAK_MS = 3 * 60 * 60 * 1000;
+export const DEFAULT_MAX_OPEN_BREAK_SECONDS = 3 * 60 * 60;
 
 /**
  * The four-way split `docs/scope.md` §2.2 is written around, computed so the parts

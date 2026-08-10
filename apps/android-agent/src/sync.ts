@@ -51,8 +51,9 @@ export async function runSyncCycle(): Promise<SyncOutcome> {
   }
 
   // A break the employee forgot to end is closed here rather than on a timer, because
-  // a sleeping phone runs no timers but does reach this line when it wakes.
-  await closeForgottenBreak();
+  // a sleeping phone runs no timers but does reach this line when it wakes. How long is
+  // "forgotten" is the admin's, published on the policy this device enrolled under.
+  await closeForgottenBreak(credentials.policy.maxOpenBreakSeconds);
 
   const day = await ensureWorkSession(await loadDay(), credentials.deviceId);
 
