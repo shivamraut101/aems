@@ -135,12 +135,13 @@ export function hasEnded(state: DayState): boolean {
  * a policy stored before that column did has no value for it: reading that absence as
  * "no limit" would restore exactly the overnight-billing defect the guard was added for.
  *
- * **Must equal the column default (10800), and the desktop collector's
- * `DEFAULT_MAX_OPEN_BREAK_MS`.** A phone and a laptop that disagree end the same
- * forgotten break at different times, which is far harder to find later than to prevent
+ * **Must equal the column default (18000) and the desktop collector's
+ * `DEFAULT_MAX_OPEN_BREAK_SECONDS`.** A phone and a laptop that disagree end the same
+ * forgotten break at different times, and a discrepancy that only shows up on the
+ * device someone happened to be carrying is far harder to find later than to prevent
  * here.
  */
-export const DEFAULT_MAX_OPEN_BREAK_SECONDS = 3 * 60 * 60;
+export const DEFAULT_MAX_OPEN_BREAK_SECONDS = 5 * 60 * 60;
 
 /**
  * The four-way split `docs/scope.md` §2.2 is written around, computed so the parts

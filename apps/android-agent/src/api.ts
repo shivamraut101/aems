@@ -43,7 +43,7 @@ const MOCK_POLICY: AgentPolicy = {
   name: "Preview Policy",
   screenshotIntervalSeconds: 300,
   idleThresholdSeconds: 300,
-  maxOpenBreakSeconds: 3 * 60 * 60,
+  maxOpenBreakSeconds: 5 * 60 * 60,
   trackedCategories: [],
 };
 
