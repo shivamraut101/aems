@@ -7,8 +7,10 @@ import type {
   HeartbeatResponse,
   IdleEventInput,
   ScreenshotUploadResult,
+  WebsiteBlockEventsInput,
 } from "@aems/types";
 
+import type { BrowserBlockRecord } from "./bridge-link.js";
 import type { DeadLetterSink } from "./dead-letter.js";
 import type { JournalKind, RestoredEvents } from "./persistence.js";
 import type { CapturedScreenshot } from "./screenshot.js";
@@ -28,6 +30,9 @@ export interface SyncApiClient {
   ingestActivity(batch: ActivityBatch): Promise<ActivityBatchResult>;
   uploadScreenshot(form: FormData): Promise<ScreenshotUploadResult>;
   heartbeat(body: HeartbeatInput): Promise<HeartbeatResponse>;
+  reportWebsiteBlocks(
+    body: WebsiteBlockEventsInput,
+  ): Promise<{ accepted: number; rejected: number }>;
 }
 
 /**
@@ -386,6 +391,34 @@ export class SyncQueue {
    * has no consent gate — so an enrolled but unconsented device must keep heartbeating
    * rather than appearing to have vanished.
    */
+  /**
+   * Sends the refusals the browser bridge left behind.
+   *
+   * At-most-once by design — see `BrowserLinkStore.takeBlocks`. A failure is logged and
+   * the batch is gone, which is the right trade for an enforcement record: the block
+   * itself already happened in the browser, the employee already saw the page, and
+   * holding refusals in a document that a browser-spawned process rewrites on every
+   * navigation is how the *observations* get lost too.
+   */
+  async reportBlocks(records: BrowserBlockRecord[]): Promise<SyncOutcome> {
+    if (records.length === 0) return "empty";
+
+    try {
+      await this.client.reportWebsiteBlocks({
+        deviceId: this.deviceId,
+        events: records.map((record) => ({
+          clientEventId: record.clientEventId,
+          url: record.url,
+          blockedAt: record.at,
+          ruleId: record.ruleId,
+        })),
+      });
+      return "sent";
+    } catch (error) {
+      return classifyError(error);
+    }
+  }
+
   async heartbeat(workSessionId: number | null): Promise<SyncOutcome> {
     let response: HeartbeatResponse;
 

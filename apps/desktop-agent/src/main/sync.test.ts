@@ -2,6 +2,7 @@ import type {
   ActivityBatch,
   ActivityBatchResult,
   HeartbeatInput,
+  WebsiteBlockEventsInput,
   HeartbeatResponse,
   ScreenshotUploadResult,
 } from "@aems/types";
@@ -48,6 +49,16 @@ class FakeApi {
   readonly batches: ActivityBatch[] = [];
   readonly uploads: UploadCall[] = [];
   readonly heartbeats: HeartbeatInput[] = [];
+  readonly blockReports: WebsiteBlockEventsInput[] = [];
+  blockError: unknown = null;
+
+  async reportWebsiteBlocks(
+    body: WebsiteBlockEventsInput,
+  ): Promise<{ accepted: number; rejected: number }> {
+    if (this.blockError) throw this.blockError;
+    this.blockReports.push(body);
+    return { accepted: body.events.length, rejected: 0 };
+  }
 
   ingestError: unknown = null;
   uploadError: unknown = null;
@@ -725,5 +736,51 @@ describe("SyncQueue heartbeat scope delivery", () => {
     // the heartbeat, and classifying it as one would stop the loop for the wrong reason.
     await expect(queue.heartbeat(null)).rejects.toThrow("ENOSPC");
     expect(api.heartbeats).toHaveLength(1);
+  });
+});
+
+describe("SyncQueue.reportBlocks", () => {
+  const refusal = {
+    clientEventId: "44444444-4444-4444-8444-444444444444",
+    url: "https://blocked.test/x",
+    ruleId: 99,
+    at: "2026-08-05T09:00:00.000Z",
+  };
+
+  it("skips the round trip when the browser refused nothing", async () => {
+    const api = new FakeApi();
+
+    await expect(new SyncQueue(api, DEVICE).reportBlocks([])).resolves.toBe("empty");
+    expect(api.blockReports).toHaveLength(0);
+  });
+
+  it("sends the numeric rule id the browser enforced, not a uuid it never had", async () => {
+    const api = new FakeApi();
+
+    await expect(new SyncQueue(api, DEVICE).reportBlocks([refusal])).resolves.toBe("sent");
+
+    expect(api.blockReports[0]).toEqual({
+      deviceId: DEVICE,
+      events: [
+        {
+          clientEventId: refusal.clientEventId,
+          url: refusal.url,
+          blockedAt: refusal.at,
+          ruleId: 99,
+        },
+      ],
+    });
+  });
+
+  /**
+   * The refusal already happened in the browser and the employee already saw the page.
+   * Classifying the failure keeps this on the same footing as every other route — a
+   * revoked device must read as revoked here too, not as a network blip.
+   */
+  it("classifies a failure rather than throwing into the tick", async () => {
+    const api = new FakeApi();
+    api.blockError = new ApiError("Device revoked", 403, "device_revoked");
+
+    await expect(new SyncQueue(api, DEVICE).reportBlocks([refusal])).resolves.toBe("revoked");
   });
 });

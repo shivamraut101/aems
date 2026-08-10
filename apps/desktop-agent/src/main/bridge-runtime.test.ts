@@ -133,6 +133,7 @@ function harness(config: string | null = ENROLLED): Harness {
         for (const message of decoder.push(chunk)) frames.push(message);
       },
     },
+    newEventId: () => '00000000-0000-4000-8000-00000000beef',
     readConfig: () => config,
     link,
     log: (message) => logs.push(message),

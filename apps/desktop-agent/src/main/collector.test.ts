@@ -4,6 +4,7 @@ import type {
   ActivityEventInput,
   BreakEventInput,
   HeartbeatInput,
+  WebsiteBlockEventsInput,
   IdleEventInput,
   ScreenshotUploadResult,
   WorkSession,
@@ -63,6 +64,15 @@ class ApiError extends Error {
 class FakeApi {
   readonly batches: ActivityBatch[] = [];
   readonly heartbeats: HeartbeatInput[] = [];
+  readonly blockReports: WebsiteBlockEventsInput[] = [];
+
+  async reportWebsiteBlocks(
+    body: WebsiteBlockEventsInput,
+  ): Promise<{ accepted: number; rejected: number }> {
+    this.blockReports.push(body);
+    return { accepted: body.events.length, rejected: 0 };
+  }
+
   readonly uploads: FormData[] = [];
   readonly startCalls: string[] = [];
   readonly endCalls: number[] = [];

@@ -86,12 +86,46 @@ export interface BrowserObservation {
   extensionVersion: string | null;
 }
 
+/**
+ * One navigation the extension refused, waiting to be reported.
+ *
+ * `ruleId` is the numeric `declarativeNetRequest` id the extension enforced, not the
+ * rule's uuid — the browser is never told the uuid and must not be. The API maps it
+ * back against the company's own rules, which is also what stops a fabricated id from
+ * naming a rule belonging to somebody else.
+ */
+export interface BrowserBlockRecord {
+  clientEventId: string;
+  url: string;
+  ruleId: number | null;
+  at: string;
+}
+
+/**
+ * How many refusals are held before the oldest are dropped.
+ *
+ * Matches the ingest route's own per-request cap, so a full buffer is exactly one
+ * request. The bound exists because this file is written by a process a browser
+ * spawns: a machine that browses for a week with the agent stopped must not grow an
+ * unbounded document that then fails to parse.
+ */
+export const MAX_PENDING_BLOCKS = 200;
+
 export interface BrowserLinkDocument {
   browsers: Record<string, BrowserObservation>;
+  /**
+   * Refusals the agent has not yet reported.
+   *
+   * Here rather than in the agent's own event journal because the process that learns
+   * about a block is the bridge, which Chrome starts and stops at will and which never
+   * holds the device token. This document is the one thing both processes already
+   * share.
+   */
+  blocks: BrowserBlockRecord[];
 }
 
 export function emptyBrowserLink(): BrowserLinkDocument {
-  return { browsers: {} };
+  return { browsers: {}, blocks: [] };
 }
 
 /**
@@ -114,7 +148,39 @@ export function parseBrowserLink(value: unknown): BrowserLinkDocument {
     if (observation !== null) parsed[key] = observation;
   }
 
-  return { browsers: parsed };
+  return { browsers: parsed, blocks: parseBlocks((value as { blocks?: unknown }).blocks) };
+}
+
+/**
+ * Absent is the ordinary case — every document written before refusals were reported
+ * has no such key, and a machine that has never blocked anything never grows one.
+ */
+function parseBlocks(value: unknown): BrowserBlockRecord[] {
+  if (!Array.isArray(value)) return [];
+
+  const parsed: BrowserBlockRecord[] = [];
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const record = raw as Record<string, unknown>;
+    const clientEventId = record["clientEventId"];
+    const url = record["url"];
+    const at = record["at"];
+    if (typeof clientEventId !== "string" || typeof url !== "string" || typeof at !== "string") {
+      continue;
+    }
+    const ruleId = record["ruleId"];
+    parsed.push({
+      clientEventId,
+      url,
+      // A non-integer id is dropped to null rather than the whole record: the refusal
+      // happened either way, and losing the record loses the evidence the block list
+      // exists to produce.
+      ruleId: typeof ruleId === "number" && Number.isInteger(ruleId) ? ruleId : null,
+      at,
+    });
+  }
+
+  return parsed.slice(-MAX_PENDING_BLOCKS);
 }
 
 /**
@@ -293,6 +359,10 @@ export class BrowserLinkStore {
     );
 
     const next: BrowserLinkDocument = {
+      // Carried through untouched. A navigation report and a refusal arrive on the same
+      // channel microseconds apart, and rebuilding the document without this drops the
+      // refusal that the very next page load would have reported.
+      blocks: document.blocks,
       browsers: {
         ...kept(document.browsers, key, now),
         [key]: {
@@ -310,6 +380,37 @@ export class BrowserLinkStore {
 
     this.file.write(next);
     return next;
+  }
+
+  /**
+   * Records a refusal for the agent to report.
+   *
+   * Oldest-first eviction at {@link MAX_PENDING_BLOCKS}: with the agent stopped, the
+   * recent refusals are the ones worth keeping, and an unbounded array in a file two
+   * processes rewrite on every navigation is a slow way to corrupt it.
+   */
+  appendBlock(record: BrowserBlockRecord): void {
+    const document = this.read();
+    this.file.write({
+      ...document,
+      blocks: [...document.blocks, record].slice(-MAX_PENDING_BLOCKS),
+    });
+  }
+
+  /**
+   * Hands the pending refusals to the caller and clears them in one write.
+   *
+   * At-most-once, deliberately. The alternative is holding them until the API confirms,
+   * which needs a second state machine in a document a browser-spawned process rewrites
+   * constantly — and a refusal reported twice would show an employee two blocks where
+   * one happened. `client_event_id` still de-duplicates a retry within one request.
+   */
+  takeBlocks(): BrowserBlockRecord[] {
+    const document = this.read();
+    if (document.blocks.length === 0) return [];
+
+    this.file.write({ ...document, blocks: [] });
+    return document.blocks;
   }
 }
 

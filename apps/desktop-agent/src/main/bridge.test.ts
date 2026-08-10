@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentPolicy } from "../shared/types/index.js";
-import type { BridgeConfigFacts, BridgeObservation, BridgePorts } from "./bridge.js";
+import type {
+  BridgeBlock,
+  BridgeConfigFacts,
+  BridgeObservation,
+  BridgePorts,
+} from "./bridge.js";
 import {
   BRIDGE_FLAG,
   BridgeFramingError,
@@ -228,6 +233,7 @@ interface Harness {
   ports: BridgePorts;
   sent: unknown[];
   observed: BridgeObservation[];
+  blocked: BridgeBlock[];
   logs: string[];
   closed: () => number;
 }
@@ -235,6 +241,7 @@ interface Harness {
 function harness(current: BridgeConfigFacts = facts()): Harness {
   const sent: unknown[] = [];
   const observed: BridgeObservation[] = [];
+  const blocked: BridgeBlock[] = [];
   const logs: string[] = [];
   let closes = 0;
   const decoder = new FrameDecoder();
@@ -245,6 +252,7 @@ function harness(current: BridgeConfigFacts = facts()): Harness {
     },
     readFacts: () => current,
     observe: (observation) => observed.push(observation),
+    recordBlock: (block) => blocked.push(block),
     log: (message) => logs.push(message),
     close: () => {
       closes += 1;
@@ -252,7 +260,15 @@ function harness(current: BridgeConfigFacts = facts()): Harness {
     now: () => new Date("2026-08-05T09:00:00.000Z"),
   };
 
-  return { bridge: new NativeBridge(ports), ports, sent, observed, logs, closed: () => closes };
+  return {
+    bridge: new NativeBridge(ports),
+    ports,
+    sent,
+    observed,
+    blocked,
+    logs,
+    closed: () => closes,
+  };
 }
 
 function send(bridge: NativeBridge, message: unknown): void {
@@ -345,6 +361,47 @@ describe("NativeBridge", () => {
 
     expect(h.observed).toEqual([]);
     expect(h.logs.join("\n")).toContain("https://blocked.test/ (rule 7)");
+    // Kept for the agent to report. The endpoint, the table and the dashboard page all
+    // existed before this line did, and nothing ever called them — so every refusal the
+    // product enforced ended up in a log file on the employee's own laptop.
+    expect(h.blocked).toEqual([
+      { url: "https://blocked.test/", ruleId: 7, at: "2026-08-05T09:00:00.000Z" },
+    ]);
+  });
+
+  /**
+   * Enforcement is not observation. Consent governs what may be recorded *about a
+   * person*; a refusal records what the policy did, and an administrator who cannot
+   * audit that has a control they cannot show works.
+   */
+  it("keeps a refusal even where nothing may be collected", () => {
+    const h = harness(facts({ consentedPolicyVersion: null }));
+
+    send(h.bridge, {
+      v: BRIDGE_PROTOCOL_VERSION,
+      type: "blocked",
+      url: "https://blocked.test/",
+      ruleId: 7,
+      at: "t",
+    });
+
+    expect(h.observed).toEqual([]);
+    expect(h.blocked).toHaveLength(1);
+  });
+
+  /** A page's own idea of "now" is whatever the web decided it was. */
+  it("stamps the refusal with the host clock, not the browser's", () => {
+    const h = harness();
+
+    send(h.bridge, {
+      v: BRIDGE_PROTOCOL_VERSION,
+      type: "blocked",
+      url: "https://blocked.test/",
+      ruleId: 7,
+      at: "1999-01-01T00:00:00.000Z",
+    });
+
+    expect(h.blocked[0]?.at).toBe("2026-08-05T09:00:00.000Z");
   });
 
   it("answers every message with the current state, so a withdrawal lands on the next navigation", () => {

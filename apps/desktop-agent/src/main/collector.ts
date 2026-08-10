@@ -1,5 +1,6 @@
 import type { AgentConfig, DaySpan, DayTotals } from "../shared/types/index.js";
 import { emptyTotals, mayCollect, mayCollectType } from "../shared/types/index.js";
+import type { BrowserBlockRecord } from "./bridge-link.js";
 import type { IdleState } from "./idle.js";
 import { IdleWatcher, readIdleSeconds, readIdleState } from "./idle.js";
 import type { DayState } from "./persistence.js";
@@ -97,6 +98,13 @@ export interface CollectorParts {
    * here to fix.
    */
   telemetry?: CollectorTelemetry;
+  /**
+   * Refusals the browser bridge has left for the agent to report.
+   *
+   * Optional for the same reason as `telemetry` — every existing test builds a loop
+   * without one, and a machine with no managed extension never produces any.
+   */
+  blocks?: { take(): BrowserBlockRecord[] };
   /**
    * Where the parts of today that live only in memory are kept across a restart.
    *
@@ -558,6 +566,14 @@ export class Collector {
 
     this.lastHeartbeatAt = now;
     this.applyOutcome(await this.parts.queue.heartbeat(this.parts.sessions.current), now);
+
+    // On the beat rather than the flush, because a refusal is not collection: it rides
+    // the one channel that keeps running when consent has lapsed, which is exactly when
+    // an administrator most wants to know the policy is still being enforced. The
+    // outcome is deliberately not applied — a rejected batch of refusals must not stop
+    // the loop, and `heartbeat` above is already the authority on stop signals.
+    const blocks = this.parts.blocks?.take() ?? [];
+    if (blocks.length > 0) await this.parts.queue.reportBlocks(blocks);
   }
 
   /**

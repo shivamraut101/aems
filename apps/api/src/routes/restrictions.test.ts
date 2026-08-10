@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Env } from "../env.js";
 import type { DeviceContext } from "../plugins/context.js";
+import { ruleIdOf } from "../lib/website-restrictions.js";
 
 import {
   MAX_RULES_PER_COMPANY,
@@ -1489,5 +1490,81 @@ describe("POST /api/restrictions/evaluate", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ blocked: false, reason: "default" });
+  });
+});
+
+/**
+ * The browser is never told a rule's uuid, so the only identity a refusal can carry is
+ * the numeric `declarativeNetRequest` id. Until this resolution existed the whole path
+ * was unbuildable, which is why nothing ever reported a block.
+ */
+describe("POST /api/restrictions/events — numeric rule ids", () => {
+  const NUMERIC_EVENT = {
+    clientEventId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    url: "https://www.facebook.com/feed",
+    blockedAt: "2026-08-05T10:00:00.000Z",
+    ruleId: ruleIdOf(RULE_A),
+  };
+
+  function ingestible(rules = [{ id: RULE_A, pattern: "facebook.com" }]) {
+    return fakeSupabase({
+      consent_records: [{ data: { id: "c1" } }],
+      website_restriction_settings: [{ data: settingsRow({ mode: "blocklist" }) }],
+      website_restriction_rules: [{ data: rules }],
+      website_block_events: [{ data: [{ id: 1 }] }],
+    });
+  }
+
+  it("resolves the id the extension enforced back to the rule it came from", async () => {
+    const { client, calls } = ingestible();
+    const app = await buildTestApp({ supabase: client, device });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/restrictions/events",
+      payload: { deviceId: DEVICE, events: [NUMERIC_EVENT] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const row = rowsOf(forTable(calls, "website_block_events")[0]!, "upsert")[0]!;
+    expect(row.rule_id).toBe(RULE_A);
+    expect(row.matched_pattern).toBe("facebook.com");
+  });
+
+  /**
+   * The number is a hash of the uuid, so it is guessable. The company filter on the
+   * lookup is what stops a guess from naming a rule in another tenant — this records
+   * the refusal with no rule rather than with somebody else's.
+   */
+  it("files a fabricated id under no rule at all", async () => {
+    const { client, calls } = ingestible();
+    const app = await buildTestApp({ supabase: client, device });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/restrictions/events",
+      payload: { deviceId: DEVICE, events: [{ ...NUMERIC_EVENT, ruleId: 123456 }] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const row = rowsOf(forTable(calls, "website_block_events")[0]!, "upsert")[0]!;
+    expect(row.rule_id).toBeNull();
+    expect(row.matched_pattern).toBeNull();
+    // Still stored: the refusal happened, and losing it loses the evidence.
+    expect(row.domain).toBe("www.facebook.com");
+  });
+
+  it("still accepts a uuid, for a caller that already knows it", async () => {
+    const { client, calls } = ingestible();
+    const app = await buildTestApp({ supabase: client, device });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/restrictions/events",
+      payload: { deviceId: DEVICE, events: [{ ...NUMERIC_EVENT, ruleId: RULE_A }] },
+    });
+
+    const row = rowsOf(forTable(calls, "website_block_events")[0]!, "upsert")[0]!;
+    expect(row.rule_id).toBe(RULE_A);
   });
 });

@@ -26,6 +26,7 @@
  * Everything imported below is pure Node by construction.
  */
 
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { readBridgeInvocation, readUserDataPath, USER_DATA_FLAG } from "./bridge.js";
@@ -65,6 +66,7 @@ export function main(argv: readonly string[]): void {
     ),
     log,
     now: () => new Date(),
+    newEventId: () => randomUUID(),
     exit: (code) => {
       process.exit(code);
     },

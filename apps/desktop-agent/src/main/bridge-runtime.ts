@@ -107,6 +107,8 @@ export interface BridgeRuntimeDeps {
   now(): Date;
   exit(code: number): void;
   allowedExtensionIds?: readonly string[];
+  /** Injected so a test can assert on a refusal's identity instead of a random uuid. */
+  newEventId(): string;
 }
 
 /**
@@ -198,6 +200,15 @@ export function startBridge(
             }
           : { origin, url: observation.url, observedAt: observation.at },
       );
+    },
+
+    recordBlock: (block) => {
+      if (selfTest || origin === null) return;
+
+      // The id is minted here rather than in the browser for the same reason the stamp
+      // is: an extension can be reloaded, and two reloads producing the same id would
+      // let one refusal overwrite another through the ingest route's de-duplication.
+      deps.link.appendBlock({ clientEventId: deps.newEventId(), ...block });
     },
 
     log: deps.log,

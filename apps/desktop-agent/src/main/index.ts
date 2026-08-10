@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -454,6 +455,9 @@ function attachDevice(deviceId: string, deviceToken: string): void {
       idle: rt.idle,
       screenshots: rt.screenshots,
       telemetry: new TelemetryReporter(rt.client, rt.telemetryReaders),
+      // The same store the bridge appends to. Written by a process Chrome starts and
+      // drained here, which is the only place a device token exists to report with.
+      blocks: { take: () => rt.link.takeBlocks() },
       dayState: day,
     },
     // Every state the loop reaches — a clock-in, a stop signal, a break — has to
@@ -973,6 +977,7 @@ function runBridgeProcess(invocation: BridgeInvocation): void {
     ),
     log,
     now: () => new Date(),
+    newEventId: () => randomUUID(),
     exit: (code) => {
       process.exit(code);
     },

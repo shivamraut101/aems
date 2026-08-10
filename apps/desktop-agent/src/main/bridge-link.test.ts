@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { BrowserLinkDocument } from "./bridge-link.js";
+import type { BrowserBlockRecord, BrowserLinkDocument } from "./bridge-link.js";
 import {
   ACTIVE_LINK_TTL_MS,
   BrowserLinkStore,
@@ -11,6 +11,7 @@ import {
   LINK_CACHE_MS,
   LINK_TTL_MS,
   linkedBrowsers,
+  MAX_PENDING_BLOCKS,
   OBSERVATION_TTL_MS,
   parseBrowserLink,
 } from "./bridge-link.js";
@@ -25,7 +26,7 @@ function at(offsetMs: number): string {
 }
 
 function document(browsers: BrowserLinkDocument["browsers"]): BrowserLinkDocument {
-  return { browsers };
+  return { browsers, blocks: [] };
 }
 
 /** A JsonFile over an in-memory map, so nothing here touches a real directory. */
@@ -52,9 +53,9 @@ function memoryFile(initial: string | null = null): { file: JsonFile; contents: 
 
 describe("parseBrowserLink", () => {
   it("answers an empty document for anything that is not one", () => {
-    expect(parseBrowserLink(null)).toEqual({ browsers: {} });
-    expect(parseBrowserLink("nonsense")).toEqual({ browsers: {} });
-    expect(parseBrowserLink({ browsers: 4 })).toEqual({ browsers: {} });
+    expect(parseBrowserLink(null)).toEqual({ browsers: {}, blocks: [] });
+    expect(parseBrowserLink("nonsense")).toEqual({ browsers: {}, blocks: [] });
+    expect(parseBrowserLink({ browsers: 4 })).toEqual({ browsers: {}, blocks: [] });
   });
 
   it("keeps the entries it can read and drops the ones it cannot", () => {
@@ -421,5 +422,77 @@ describe("createBrowserLinkView", () => {
     view.currentUrl(new Date(NOW.getTime() - 60_000));
 
     expect(reads).toBe(2);
+  });
+});
+
+describe("BrowserLinkStore refusals", () => {
+  function record(id: string, url = "https://blocked.test/"): BrowserBlockRecord {
+    return { clientEventId: id, url, ruleId: 42, at: at(0) };
+  }
+
+  it("keeps a refusal for the agent to report", () => {
+    const { file } = memoryFile();
+    const store = new BrowserLinkStore(file);
+
+    store.appendBlock(record("a"));
+
+    expect(store.read().blocks).toEqual([record("a")]);
+  });
+
+  it("hands the refusals over and clears them, so the next beat does not resend", () => {
+    const { file } = memoryFile();
+    const store = new BrowserLinkStore(file);
+    store.appendBlock(record("a"));
+    store.appendBlock(record("b"));
+
+    expect(store.takeBlocks().map((block) => block.clientEventId)).toEqual(["a", "b"]);
+    expect(store.takeBlocks()).toEqual([]);
+  });
+
+  it("does not rewrite the file when there is nothing to take", () => {
+    const { file, contents } = memoryFile();
+    const store = new BrowserLinkStore(file);
+    store.update(CHROME, { url: "https://a.test/", observedAt: at(0) });
+    const before = contents();
+
+    expect(store.takeBlocks()).toEqual([]);
+    expect(contents()).toBe(before);
+  });
+
+  /**
+   * A navigation report and a refusal arrive microseconds apart on the same channel.
+   * Rebuilding the document on `update` without carrying these forward loses the
+   * refusal that the very next page load would have reported.
+   */
+  it("survives a browser reporting a page in between", () => {
+    const { file } = memoryFile();
+    const store = new BrowserLinkStore(file);
+
+    store.appendBlock(record("a"));
+    store.update(CHROME, { url: "https://a.test/", observedAt: at(1000) });
+
+    expect(store.read().blocks).toHaveLength(1);
+  });
+
+  it("drops the oldest rather than growing without bound while the agent is stopped", () => {
+    const { file } = memoryFile();
+    const store = new BrowserLinkStore(file);
+
+    for (let i = 0; i < MAX_PENDING_BLOCKS + 5; i += 1) store.appendBlock(record(`e${String(i)}`));
+
+    const blocks = store.read().blocks;
+    expect(blocks).toHaveLength(MAX_PENDING_BLOCKS);
+    expect(blocks[0]?.clientEventId).toBe("e5");
+  });
+
+  it("keeps a refusal whose rule id is nonsense, because the refusal still happened", () => {
+    const parsed = parseBrowserLink({
+      browsers: {},
+      blocks: [{ clientEventId: "a", url: "https://x.test/", at: at(0), ruleId: "not-a-number" }],
+    });
+
+    expect(parsed.blocks).toEqual([
+      { clientEventId: "a", url: "https://x.test/", at: at(0), ruleId: null },
+    ]);
   });
 });

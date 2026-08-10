@@ -332,6 +332,32 @@ export interface TelemetryInput {
 }
 
 /**
+ * Navigations the managed browser extension refused, reported after the fact.
+ *
+ * Its own route rather than a heartbeat field, because it is a batch that can be empty
+ * for weeks and then arrive two hundred at a time, and because it is the one thing the
+ * agent sends that is *not* gated on the website collection scope: a refusal is proof
+ * the policy was enforced, not a record of what somebody chose to look at.
+ */
+export interface WebsiteBlockEventsInput {
+  deviceId: string;
+  events: {
+    clientEventId: string;
+    url: string;
+    blockedAt: string;
+    /**
+     * The rule the browser enforced.
+     *
+     * A number is the `declarativeNetRequest` id the extension was given; the API maps
+     * it back to the rule's uuid against that company's own rules, which is what stops
+     * a fabricated id from naming somebody else's rule. A uuid is accepted for a caller
+     * that already knows it. Null where the browser could not say.
+     */
+    ruleId?: string | number | null;
+  }[];
+}
+
+/**
  * An aggregated slice of a person's day, combining activity, idle and screenshots.
  *
  * @deprecated Superseded by {@link DayTimeline}. This shape cannot express scope §2.7

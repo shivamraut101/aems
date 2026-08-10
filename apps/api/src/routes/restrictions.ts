@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { recordAudit } from "../lib/audit.js";
 import { validationFailure } from "../lib/validation.js";
+import { ruleIdOf } from "../lib/website-restrictions.js";
 import { resolveCollection } from "../plugins/context.js";
 
 /**
@@ -767,8 +768,15 @@ const blockEventsSchema = z.object({
         clientEventId: z.string().uuid(),
         url: z.string().min(1).max(MAX_URL_LENGTH),
         blockedAt: z.string().datetime({ offset: true }),
-        /** What the extension enforced. Verified against this company before it is stored. */
-        ruleId: z.string().uuid().nullish(),
+        /**
+         * What the extension enforced. Verified against this company before it is stored.
+         *
+         * A number is the `declarativeNetRequest` id, which is the only identity the
+         * browser has — the rule's uuid is deliberately never sent to an extension. It
+         * is resolved back below against this company's own rules, so a fabricated id
+         * resolves to null rather than to somebody else's rule.
+         */
+        ruleId: z.union([z.string().uuid(), z.number().int().positive()]).nullish(),
       }),
     )
     .min(1)
@@ -1274,7 +1282,13 @@ export const restrictionRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "consent_required", message: consent.message, statusCode: 403 });
     }
 
-    const claimed = [...new Set(body.events.map((e) => e.ruleId).filter((v): v is string => !!v))];
+    const claimed = [...new Set(body.events.map((e) => e.ruleId).filter((v): v is string => typeof v === "string"))];
+
+    // A numeric claim cannot be looked up by primary key, because the number *is* a hash
+    // of the uuid. Resolving it means hashing this company's rules and comparing — a
+    // handful of rows, and the company filter is what keeps a guessed number from ever
+    // naming a rule in another tenant.
+    const claimsNumericRule = body.events.some((e) => typeof e.ruleId === "number");
 
     // The company's posture and the rules the agent claims to have enforced are
     // independent lookups, both behind the consent gate above, so they go in one round
@@ -1282,20 +1296,28 @@ export const restrictionRoutes: FastifyPluginAsync = async (app) => {
     // filter is what turns a foreign rule id into null rather than a cross-tenant read.
     const [settings, claimedRules] = await Promise.all([
       loadSettings(device.companyId),
-      claimed.length > 0
+      claimsNumericRule
         ? app.supabase
             .from("website_restriction_rules")
             .select("id, pattern")
             .eq("company_id", device.companyId)
-            .in("id", claimed)
-        : { data: [] },
+        : claimed.length > 0
+          ? app.supabase
+              .from("website_restriction_rules")
+              .select("id, pattern")
+              .eq("company_id", device.companyId)
+              .in("id", claimed)
+          : { data: [] },
     ]);
 
     const mode = settings?.mode ?? "blocklist";
 
     const patterns = new Map<string, string>();
+    /** `declarativeNetRequest` id -> the uuid it was derived from, for this company only. */
+    const byNumericId = new Map<number, string>();
     for (const row of (claimedRules.data ?? []) as { id: string; pattern: string }[]) {
       patterns.set(row.id, row.pattern);
+      if (claimsNumericRule) byNumericId.set(ruleIdOf(row.id), row.id);
     }
 
     const rows: TablesInsert<"website_block_events">[] = [];
@@ -1310,7 +1332,9 @@ export const restrictionRoutes: FastifyPluginAsync = async (app) => {
         continue;
       }
 
-      const ruleId = event.ruleId && patterns.has(event.ruleId) ? event.ruleId : null;
+      const resolved =
+        typeof event.ruleId === "number" ? (byNumericId.get(event.ruleId) ?? null) : event.ruleId;
+      const ruleId = resolved && patterns.has(resolved) ? resolved : null;
 
       rows.push({
         company_id: device.companyId,

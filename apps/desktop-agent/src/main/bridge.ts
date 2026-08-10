@@ -300,12 +300,30 @@ export interface BridgeObservation {
   browser?: string | null;
 }
 
+/** One navigation the extension refused. The host stamps it; the browser is not asked. */
+export interface BridgeBlock {
+  url: string;
+  /** The numeric `declarativeNetRequest` id enforced. The browser never sees the uuid. */
+  ruleId: number | null;
+  at: string;
+}
+
 export interface BridgePorts {
   write(frame: Buffer): void;
   /** Re-read on every message, so a config change lands without reconnecting. */
   readFacts(): BridgeConfigFacts;
   /** Hands the observation to the running agent. Never called while monitoring is off. */
   observe(observation: BridgeObservation): void;
+  /**
+   * Hands a refusal to the running agent.
+   *
+   * Separate from `observe` because it is not gated the same way. A refusal is an
+   * enforcement record — proof the agent stopped a page — not an observation of what
+   * somebody chose to look at, so it is kept even where website *reporting* is off.
+   * What was refused is a fact about the policy, and an unrecorded refusal is a control
+   * nobody can audit.
+   */
+  recordBlock(block: BridgeBlock): void;
   log(message: string, error?: unknown): void;
   close(): void;
   /**
@@ -401,10 +419,15 @@ export class NativeBridge {
         break;
 
       case "blocked":
-        // Enforcement, not observation. There is no event type for a refused navigation
-        // yet, so it is logged where an administrator can find it rather than invented
-        // into the activity stream.
+        // Enforcement, not observation — so it is kept whatever `collecting` says, and
+        // it does not go into the activity stream. The log line stays because a local
+        // record survives an agent that never comes back to report this one.
         this.ports.log(`Browser policy refused ${message.url} (rule ${String(message.ruleId)})`);
+        this.ports.recordBlock({
+          url: message.url,
+          ruleId: message.ruleId,
+          at: this.ports.now().toISOString(),
+        });
         break;
     }
 

@@ -14,6 +14,7 @@ import type {
   Report,
   ScreenshotUploadResult,
   TelemetryInput,
+  WebsiteBlockEventsInput,
   WorkSession,
 } from "@aems/types";
 
@@ -134,6 +135,12 @@ export class AemsClient {
 
   reportTelemetry(body: TelemetryInput): Promise<{ ok: true }> {
     return this.request("POST", "/api/devices/telemetry", body);
+  }
+
+  reportWebsiteBlocks(
+    body: WebsiteBlockEventsInput,
+  ): Promise<{ accepted: number; rejected: number }> {
+    return this.request("POST", "/api/restrictions/events", body);
   }
 
   // -- consent ------------------------------------------------------------
