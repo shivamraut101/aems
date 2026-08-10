@@ -185,7 +185,7 @@ export function browserExtensionLinkedEmail(
     `${input.deviceLabel} now records the websites you visit`,
     `<p ${P}>Hello ${escapeHtml(context.recipientName)},</p>
      <p ${P}>Until now, <strong style="color:#0f172a;">${escapeHtml(input.deviceLabel)}</strong> could not report the addresses of pages you opened in a browser — Windows gives the AEMS agent no way to read them. The managed AEMS browser extension is now installed there, and it can.</p>
-     <p ${P}>From now on, that computer records the domain of the page in your active tab — github.com, for example — and how long you spend there. It does not record what is on the page, what you type, or anything you open in a private window that the extension is not installed in.</p>
+     <p ${P}>From now on, that computer records the domain of the page in your active tab — github.com, for example — and how long you spend there. It does not record what is on the page, what you type, or anything you open in a browser the extension is not installed in.</p>
      <p ${P}>Nothing else about what is recorded has changed, and you can withdraw your consent for this device at any time.</p>
      ${button(`${context.dashboardUrl}/my-devices`, "See what is recorded")}
      <p style="margin:16px 0 0;font-size:13px;color:#64748b;line-height:1.6;">If this is unexpected, your IT administrator or your manager installed it and is the person to ask.</p>`,

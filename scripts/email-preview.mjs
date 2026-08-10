@@ -77,6 +77,12 @@ const messages = [
       recordedLabels: ["Applications", "Screenshots", "Idle time", "Battery, network and storage"],
     }),
   ],
+  [
+    "browser-extension-linked",
+    templates.browserExtensionLinkedEmail(context, {
+      deviceLabel: "SAM-THINKPAD-X1-FIELD",
+    }),
+  ],
 ];
 
 const out = path.join(root, ".tmp-email");
