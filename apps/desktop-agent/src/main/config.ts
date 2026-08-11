@@ -9,14 +9,43 @@ import { AGENT_CONFIG_FILE as CONFIG_FILE } from "./persistence.js";
 
 const DEFAULT_API_URL = "http://localhost:3001";
 
+/**
+ * The API address frozen into this build by `electron.vite.config.ts`.
+ *
+ * Declared rather than imported because it does not exist as a module — `define`
+ * substitutes the literal at build time. The `typeof` guard is what keeps every test and
+ * every unbundled `tsx`/`vitest` run working, since nothing substitutes it there.
+ */
+declare const __AEMS_BUILD_API_URL__: string | undefined;
+
+function buildTimeApiUrl(): string | undefined {
+  return typeof __AEMS_BUILD_API_URL__ === "string" && __AEMS_BUILD_API_URL__.length > 0
+    ? __AEMS_BUILD_API_URL__
+    : undefined;
+}
+
 // The filename lives in `persistence.ts` and is re-exported here, where it belongs
 // conceptually. A second process — the native messaging host — opens this file, and it
 // must not reach `safeStorage` below to learn its name. See the note there.
 export { AGENT_CONFIG_FILE } from "./persistence.js";
 
+/**
+ * Where this agent should talk to, when the config file does not already say.
+ *
+ * Three sources, most specific first. The runtime environment wins so a developer can
+ * point a build at a local API without rebuilding it; the build-time value is what makes
+ * a shipped installer reach anything at all; localhost is the developer default.
+ *
+ * Note this is only ever a *default* — `ConfigStore` prefers the `apiUrl` already on
+ * disk, so changing any of these leaves an enrolled machine where it was. That is
+ * deliberate: a device is enrolled against one server, and silently moving it would
+ * point it at an installation that has never heard of its device token.
+ */
 export function resolveApiUrl(): string {
   const fromEnv = process.env.AEMS_API_URL?.trim();
-  return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : DEFAULT_API_URL;
+  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
+
+  return buildTimeApiUrl() ?? DEFAULT_API_URL;
 }
 
 /**

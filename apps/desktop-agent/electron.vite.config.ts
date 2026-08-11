@@ -1,8 +1,32 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
+/**
+ * Where the packaged agent will look for the API.
+ *
+ * Baked in here because there is nowhere else it can come from. A packaged Electron app
+ * launched from the Start Menu inherits no environment, the login screen asks only for
+ * an enrolment code, and the stored `apiUrl` in `agent-config.json` only exists after a
+ * first run that already knew the answer. Without this, every installer ever built
+ * points at `http://localhost:3001` — the employee's own laptop — and can never reach
+ * anything.
+ *
+ * Read at BUILD time, from the shell running the build, and frozen into the bundle. One
+ * URL per client is the right granularity for a white-label product: the installer given
+ * to Acme is an Acme installer.
+ *
+ * `pnpm build` with nothing set still yields localhost, which is what a developer wants
+ * and what every existing test expects.
+ */
+const BUILD_TIME_API_URL = process.env.AEMS_API_URL?.trim() || "";
+
 export default defineConfig({
   main: {
+    define: {
+      // A string literal, not a value: `define` performs textual substitution, so the
+      // replacement has to be valid source on its own.
+      __AEMS_BUILD_API_URL__: JSON.stringify(BUILD_TIME_API_URL),
+    },
     // get-windows resolves its macOS Swift binary and its Windows node-pre-gyp
     // binding from its own file location, so bundling it breaks both platforms —
     // it and electron-updater stay external. The workspace packages are the

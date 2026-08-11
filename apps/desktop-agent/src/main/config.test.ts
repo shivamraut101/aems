@@ -95,6 +95,9 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.AEMS_API_URL;
+  // Otherwise a build-time URL stubbed by one case leaks into every later one, and the
+  // localhost defaults above would pass for the wrong reason.
+  vi.unstubAllGlobals();
 });
 
 // -- the allowlist --------------------------------------------------------
@@ -346,6 +349,37 @@ describe("resolveApiUrl", () => {
     else process.env.AEMS_API_URL = value;
 
     expect(resolveApiUrl()).toBe(expected);
+  });
+
+  /**
+   * The build-time value is the only thing standing between a shipped installer and
+   * `http://localhost:3001` — the employee's own laptop. A packaged app inherits no
+   * environment, the login screen asks only for an enrolment code, and the stored
+   * `apiUrl` exists only after a first run that already knew the answer.
+   *
+   * `vi.stubGlobal` stands in for what `define` does textually at build time; in this
+   * suite the identifier is genuinely undeclared, which is the case the `typeof` guard
+   * in `buildTimeApiUrl` exists for.
+   */
+  it("falls back to the URL frozen in at build time before it falls back to localhost", () => {
+    delete process.env.AEMS_API_URL;
+    vi.stubGlobal("__AEMS_BUILD_API_URL__", "https://aems-kbb9.onrender.com");
+
+    expect(resolveApiUrl()).toBe("https://aems-kbb9.onrender.com");
+  });
+
+  it("still prefers the runtime environment, so one build can be pointed at a local API", () => {
+    process.env.AEMS_API_URL = "http://localhost:3001";
+    vi.stubGlobal("__AEMS_BUILD_API_URL__", "https://aems-kbb9.onrender.com");
+
+    expect(resolveApiUrl()).toBe("http://localhost:3001");
+  });
+
+  it("ignores an empty build-time value rather than reaching for an empty base URL", () => {
+    delete process.env.AEMS_API_URL;
+    vi.stubGlobal("__AEMS_BUILD_API_URL__", "");
+
+    expect(resolveApiUrl()).toBe("http://localhost:3001");
   });
 });
 
