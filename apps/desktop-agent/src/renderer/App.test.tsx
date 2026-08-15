@@ -59,6 +59,7 @@ function bridge(overrides: Partial<AgentApi> = {}): AgentApi {
     startDay: () => Promise.resolve(status()),
     quit: () => Promise.resolve(),
     onStatusChanged: () => () => undefined,
+    onEndDayRequested: () => () => undefined,
     ...overrides,
   };
 }
@@ -113,8 +114,32 @@ function consentGateShown(): boolean {
   return host?.querySelector("input[type=checkbox]") !== null;
 }
 
+/**
+ * jsdom 30 parses `<dialog>` and reflects `open`, but implements neither `showModal()`
+ * nor `close()`. Only those two are supplied, to exactly what the HTML spec says they
+ * do — everything the element is actually being used for (the backdrop, the focus trap,
+ * Escape-to-dismiss) is the browser's behaviour, not this component's, and is verified
+ * by running the agent rather than asserted here.
+ */
+function shimDialog(): void {
+  const proto = HTMLDialogElement.prototype as HTMLDialogElement & {
+    showModal?: () => void;
+    close?: () => void;
+  };
+  if (typeof proto.showModal === "function") return;
+
+  proto.showModal = function showModal(this: HTMLDialogElement): void {
+    this.open = true;
+  };
+  proto.close = function close(this: HTMLDialogElement): void {
+    this.open = false;
+    this.dispatchEvent(new Event("close"));
+  };
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  shimDialog();
 });
 
 afterEach(() => {
@@ -458,5 +483,127 @@ describe("the collection scope on the readout", () => {
 
     expect(text()).not.toContain("What this computer records");
     expect(text()).not.toContain("Your administrator has changed what is collected");
+  });
+});
+
+/**
+ * Ending the day is the only control in this window that costs something to get wrong.
+ *
+ * RED-first against two real defects. The window's own button ended the day on a single
+ * click with nothing asked — the tray's did ask, but through `dialog.showMessageBox`, so
+ * the confirmation existed only for people who reached it from the tray and arrived as an
+ * OS warning box carrying none of the agent's design.
+ */
+describe("ending the working day", () => {
+  function dialogNode(): HTMLDialogElement | null {
+    return host?.querySelector("dialog") ?? null;
+  }
+
+  /** Scoped, because "End day" now labels both the footer button and the confirmation. */
+  function labelled(pattern: RegExp, inDialog: boolean): HTMLButtonElement | undefined {
+    return [...(host?.querySelectorAll("button") ?? [])].find(
+      (button) =>
+        pattern.test(button.textContent ?? "") && (button.closest("dialog") !== null) === inDialog,
+    );
+  }
+
+  function click(button: HTMLButtonElement | undefined): void {
+    act(() => {
+      button?.click();
+    });
+  }
+
+  it("asks before it closes the session rather than acting on one click", async () => {
+    const endDay = vi.fn(() => Promise.resolve(status({ dayEnded: true })));
+    window.aems = bridge({ endDay });
+    mount(<App />);
+    await settle();
+
+    click(labelled(/End day/, false));
+
+    expect(endDay).not.toHaveBeenCalled();
+    expect(dialogNode()?.open).toBe(true);
+  });
+
+  it("says what ending the day costs, and that tomorrow is unaffected", async () => {
+    await showing(status());
+    click(labelled(/End day/, false));
+
+    expect(text()).toMatch(/work session will be closed/i);
+    expect(text()).toMatch(/nothing further is recorded today/i);
+    expect(text()).toMatch(/starts again by itself tomorrow/i);
+  });
+
+  it("ends the day once confirmed", async () => {
+    const endDay = vi.fn(() => Promise.resolve(status({ dayEnded: true })));
+    window.aems = bridge({ endDay });
+    mount(<App />);
+    await settle();
+
+    click(labelled(/End day/, false));
+    click(labelled(/End day/, true));
+    await settle();
+
+    expect(endDay).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the day running when the employee cancels", async () => {
+    const endDay = vi.fn(() => Promise.resolve(status({ dayEnded: true })));
+    window.aems = bridge({ endDay });
+    mount(<App />);
+    await settle();
+
+    click(labelled(/End day/, false));
+    click(labelled(/Cancel/, true));
+
+    expect(endDay).not.toHaveBeenCalled();
+    expect(dialogNode()?.open).toBe(false);
+  });
+
+  // The tray used to raise its own message box, which is how the two wordings drifted
+  // apart. It now defers here, so there is one sentence to review and one to keep true.
+  it("opens the same confirmation when the tray asks", async () => {
+    let fire: () => void = () => undefined;
+    const endDay = vi.fn(() => Promise.resolve(status({ dayEnded: true })));
+    window.aems = bridge({
+      endDay,
+      onEndDayRequested: (listener) => {
+        fire = listener;
+        return () => undefined;
+      },
+    });
+    mount(<App />);
+    await settle();
+
+    expect(dialogNode()?.open).toBe(false);
+    act(() => {
+      fire();
+    });
+
+    expect(dialogNode()?.open).toBe(true);
+    expect(endDay).not.toHaveBeenCalled();
+  });
+
+  // A double click on a control that closes a work session over the network would
+  // otherwise close a second one.
+  it("refuses a second click while the first is still in flight", async () => {
+    const endDay = vi.fn(() => new Promise<AgentStatus>(() => undefined));
+    window.aems = bridge({ endDay });
+    mount(<App />);
+    await settle();
+
+    click(labelled(/End day/, false));
+    click(labelled(/End day/, true));
+
+    expect(labelled(/Ending/, true)?.disabled).toBe(true);
+    expect(labelled(/Cancel/, true)?.disabled).toBe(true);
+    expect(endDay).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers nothing to confirm once the day is already over", async () => {
+    await showing(status({ dayEnded: true }));
+
+    expect(labelled(/Start working again/, false)).toBeDefined();
+    expect(dialogNode()?.open).toBe(false);
   });
 });

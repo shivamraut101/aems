@@ -15,12 +15,20 @@ export type { AgentPolicy, DataTypeId };
  * IPC channel names.
  *
  * Every channel is namespaced so a stray `ipcRenderer.on` in third-party code cannot
- * collide with one. `STATUS_CHANGED` is the only main → renderer push; the rest are
- * invoke/handle pairs.
+ * collide with one. `STATUS_CHANGED` and `DAY_END_REQUESTED` are the two main → renderer
+ * pushes; the rest are invoke/handle pairs.
  */
 export const IPC_CHANNELS = {
   STATUS_GET: "aems:status:get",
   STATUS_CHANGED: "aems:status:changed",
+  /**
+   * The tray asked for the day to end, and wants the window to do the asking.
+   *
+   * Carries no payload and ends nothing by itself — it opens the same confirmation the
+   * window's own button opens, so there is exactly one wording of what ending the day
+   * costs rather than one in the renderer and a second in a native dialog box.
+   */
+  DAY_END_REQUESTED: "aems:day:end-requested",
   POLICY_GET: "aems:policy:get",
   ENROLL: "aems:enroll",
   CONSENT_ACCEPT: "aems:consent:accept",
@@ -467,4 +475,6 @@ export interface AgentApi {
   quit(): Promise<void>;
   /** Returns an unsubscribe function — the renderer must call it on unmount. */
   onStatusChanged(listener: (status: AgentStatus) => void): () => void;
+  /** Fires when the tray's End day was chosen. Also returns an unsubscribe function. */
+  onEndDayRequested(listener: () => void): () => void;
 }

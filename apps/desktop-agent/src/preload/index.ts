@@ -47,6 +47,14 @@ const api: AgentApi = {
       ipcRenderer.removeListener(IPC_CHANNELS.STATUS_CHANGED, handler);
     };
   },
+
+  onEndDayRequested: (listener: () => void): (() => void) => {
+    const handler = (): void => listener();
+    ipcRenderer.on(IPC_CHANNELS.DAY_END_REQUESTED, handler);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.DAY_END_REQUESTED, handler);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld("aems", api);

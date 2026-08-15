@@ -248,7 +248,7 @@ function updateTray(status: AgentStatus): void {
         label: status.dayEnded ? "Start working again" : "End day…",
         enabled: status.enrolled && !status.revoked,
         click: () => {
-          void toggleDay(status.dayEnded);
+          toggleDay(status.dayEnded);
         },
       },
       { type: "separator" },
@@ -354,14 +354,30 @@ function openedAtLogin(): boolean {
   return app.getLoginItemSettings().wasOpenedAtLogin;
 }
 
-function showWindow(): void {
+function showWindow(): BrowserWindow {
   if (mainWindow === null || mainWindow.isDestroyed()) {
     mainWindow = createWindow();
-    return;
+    return mainWindow;
   }
 
   mainWindow.show();
   mainWindow.focus();
+  return mainWindow;
+}
+
+/**
+ * Raises the window and pushes it a message, once it is able to receive one.
+ *
+ * `showWindow` may have just created the window, and a `send` into a renderer that is
+ * still loading is dropped with no error — the employee would get an empty window and
+ * no explanation of why the tray item did nothing.
+ */
+function showWindowAndSend(channel: string): void {
+  const window = showWindow();
+  const send = (): void => window.webContents.send(channel);
+
+  if (window.webContents.isLoading()) window.webContents.once("did-finish-load", send);
+  else send();
 }
 
 // -- IPC ------------------------------------------------------------------
@@ -476,8 +492,14 @@ function attachDevice(deviceId: string, deviceToken: string): void {
  * events are flushed, not discarded — but it does stop collection until tomorrow, and a
  * silent stop is exactly as bad as a silent start: the employee would believe they were
  * still clocked in and their manager would see a day that ended at lunch.
+ *
+ * The asking is the window's job rather than `dialog.showMessageBox`'s. A native message
+ * box is drawn by the OS, so it carries none of the agent's type, palette or spacing and
+ * reads as a system warning about the machine — on the one screen where the employee is
+ * using a control that belongs to them. It also split the copy in two: that text and the
+ * window's own button described the same act in different words.
  */
-async function toggleDay(dayEnded: boolean): Promise<void> {
+function toggleDay(dayEnded: boolean): void {
   const collector = runtime?.collector;
   if (!collector) return;
 
@@ -486,20 +508,7 @@ async function toggleDay(dayEnded: boolean): Promise<void> {
     return;
   }
 
-  const { response } = await dialog.showMessageBox({
-    type: "question",
-    buttons: ["End day", "Cancel"],
-    defaultId: 0,
-    cancelId: 1,
-    title: "End day",
-    message: "End your working day?",
-    detail:
-      "Your work session will be closed and nothing further will be recorded today. " +
-      "Monitoring starts again by itself tomorrow, and you can start working again from " +
-      "this menu if you carry on.",
-  });
-
-  if (response === 0) await collector.endDay();
+  showWindowAndSend(IPC_CHANNELS.DAY_END_REQUESTED);
 }
 
 function toggleBreak(onBreak: boolean): void {

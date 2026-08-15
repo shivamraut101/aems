@@ -61,6 +61,7 @@ function bridge(overrides: Partial<AgentApi> = {}): AgentApi {
     startDay: () => Promise.resolve(CONSENTED),
     quit: () => Promise.resolve(),
     onStatusChanged: () => () => undefined,
+    onEndDayRequested: () => () => undefined,
     ...overrides,
   };
 }

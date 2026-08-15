@@ -433,6 +433,46 @@ body {
   cursor: not-allowed;
 }
 
+/* -- dialog ------------------------------------------------------------ */
+
+/**
+ * The confirmation the tray used to raise as a native message box.
+ *
+ * Drawn here rather than by the OS: a native message box reads as a warning about the
+ * machine, on the one screen where the employee is using a control that belongs to them.
+ * `<dialog>` keeps Escape, the focus trap and the backdrop without any of the three being
+ * written by hand.
+ */
+.dialog {
+  max-width: min(340px, calc(100% - 40px));
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.dialog::backdrop {
+  background: rgb(2 6 23 / 55%);
+}
+
+.dialog__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.dialog__body {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+}
+
+.dialog .actions {
+  margin-top: 16px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

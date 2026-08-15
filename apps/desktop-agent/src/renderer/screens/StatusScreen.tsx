@@ -1,5 +1,5 @@
 import { describeDataTypes } from "@aems/types";
-import type { ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import type { AgentStatus } from "../../shared/types/index.js";
 import { Notice } from "../components/Notice.js";
@@ -54,6 +54,50 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
   // needs to be able to say.
   const dayAvailable = status.enrolled && !status.revoked;
 
+  // Ending the day is the one control here that costs something to get wrong — it closes
+  // the work session and records nothing further until tomorrow — so it asks first.
+  const [confirmingEndDay, setConfirmingEndDay] = useState(false);
+  const [endingDay, setEndingDay] = useState(false);
+  const confirmRef = useRef<HTMLDialogElement>(null);
+
+  // The tray's "End day…" raises this same dialog instead of a native message box, so the
+  // employee is asked once and in one wording wherever they started from.
+  useEffect(() => agentBridge()?.onEndDayRequested(() => setConfirmingEndDay(true)), []);
+
+  // Not open once the day is already over: the forgotten-break guard can end it from
+  // under an open dialog, and confirming a decision that has been taken is a way to
+  // report success for something that never ran.
+  const confirmOpen = confirmingEndDay && !status.dayEnded;
+
+  useEffect(() => {
+    const node = confirmRef.current;
+    if (node === null) return;
+
+    // Guarded both ways because `showModal` on an open dialog throws, and `close` on a
+    // shut one fires a spurious `close` event that would loop back through the state.
+    if (confirmOpen && !node.open) node.showModal();
+    else if (!confirmOpen && node.open) node.close();
+  }, [confirmOpen]);
+
+  function endDay(): void {
+    const bridge = agentBridge();
+    if (bridge === null) return;
+
+    // The handler drains the event queue and closes the session over the network before
+    // it answers, which is not instant. Without a pending state the dialog would sit
+    // there looking ignored, and a second click would close a second session.
+    setEndingDay(true);
+    void bridge
+      .endDay()
+      .finally(() => {
+        setEndingDay(false);
+        setConfirmingEndDay(false);
+      })
+      // A failure leaves the readout showing a day that is still running, which is the
+      // truth — the alternative is a dialog that cannot be dismissed.
+      .catch(() => undefined);
+  }
+
   return (
     <Shell
       footer={
@@ -78,14 +122,57 @@ export function StatusScreen({ status }: StatusScreenProps): ReactElement {
                   className="button button--primary button--block"
                   type="button"
                   onClick={() => {
-                    const bridge = agentBridge();
-                    void (status.dayEnded ? bridge?.startDay() : bridge?.endDay());
+                    if (status.dayEnded) void agentBridge()?.startDay();
+                    else setConfirmingEndDay(true);
                   }}
                 >
                   {status.dayEnded ? "Start working again" : "End day"}
                 </button>
               )}
             </div>
+          )}
+
+          {dayAvailable && (
+            // A `<dialog>` rather than a hand-built overlay: the element is what gives
+            // Escape-to-dismiss, the focus trap and the backdrop, and none of the three
+            // is optional on the control that stops someone's day being recorded.
+            <dialog
+              className="dialog"
+              ref={confirmRef}
+              aria-labelledby="end-day-title"
+              onClose={() => {
+                setConfirmingEndDay(false);
+              }}
+            >
+              <h2 className="dialog__title" id="end-day-title">
+                End your working day?
+              </h2>
+              <p className="dialog__body">
+                Your work session will be closed and nothing further is recorded today.
+                Monitoring starts again by itself tomorrow, and you can start working again from
+                here or the tray icon if you carry on.
+              </p>
+              <div className="actions">
+                <button
+                  className="button button--quiet"
+                  type="button"
+                  disabled={endingDay}
+                  onClick={() => {
+                    setConfirmingEndDay(false);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button button--primary"
+                  type="button"
+                  disabled={endingDay}
+                  onClick={endDay}
+                >
+                  {endingDay ? "Ending…" : "End day"}
+                </button>
+              </div>
+            </dialog>
           )}
 
           <p className="app__note">
