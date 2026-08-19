@@ -128,9 +128,24 @@ const plugin: FastifyPluginAsync<{ env: Env }> = async (app, opts) => {
         "id, company_id, profile_id, platform, status, profiles!inner(monitoring_enabled, deactivated_at)",
       )
       .eq("id", payload.deviceId)
-      .single();
+      .maybeSingle();
 
-    if (error || !device) {
+    // A failed query and an unknown device are not the same answer, and collapsing
+    // them cost a fleet its buffered work: when the database was unreachable this
+    // replied 401, the agent classifies any 401 as revocation, and every agent
+    // discarded its journal and stopped collecting. `maybeSingle` reports no rows as
+    // `data: null` with no error, so `error` here is only ever infrastructure —
+    // answered 503 so it classifies as a retry and the buffer survives the outage.
+    if (error) {
+      request.log.error({ err: error, deviceId: payload.deviceId }, "Device lookup failed");
+      return reply.code(503).send({
+        error: "database_unavailable",
+        message: "Could not verify this device right now",
+        statusCode: 503,
+      });
+    }
+
+    if (!device) {
       return reply
         .code(401)
         .send({ error: "unauthorized", message: "Device is not enrolled", statusCode: 401 });

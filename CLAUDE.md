@@ -527,4 +527,22 @@ Ask before acting on these.
     uses wall clock since clock-in, the timeline unions activity/idle/break and ignores
     sessions, the overview KPI sums raw session time. One reduction should serve all four.
 
+13. **A 401 still destroys an agent's buffer, and the agent cannot say "I cannot reach
+    the server".** Found live on 2026-08-19 when the Supabase project went down: the API's
+    `requireDevice` answered `401 Device is not enrolled` for a *failed lookup* as well as
+    a missing row, and `sync.ts:64` maps any 401 to `"revoked"` — so `applyOutcome`
+    (`collector.ts:617`) set `revoked: true`, called `queue.discard()` and abandoned the
+    session. One device lost ~1042 journalled events and told its employee an
+    administrator had stopped them. **The API half is fixed** (`maybeSingle` + `503
+    database_unavailable`, covered by `plugins/context.test.ts`), so an outage is now a
+    retry. Two things remain:
+    - **401 should not discard.** A rejected token means re-enrolment, not revocation —
+      only `403 device_revoked` / `monitoring_disabled` should drop the buffer. As it
+      stands, the `DEVICE_TOKEN_SECRET` rotation described in item 11 would wipe every
+      agent's buffer fleet-wide on the first request after deploy.
+    - **`connectionLabel` never checks reachability.** `renderer/lib/view.ts:57` reads
+      only pause reasons and macOS permission gaps, so an agent that has never once
+      reached its API still shows an emerald "Connected". The screenshot that started
+      this said "Connected" beside "No sync yet" and a climbing unsent-event count.
+
 Delete each item once it is resolved.
